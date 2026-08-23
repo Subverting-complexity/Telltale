@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { ProcessGroupRow } from './types';
-import { formatCpu, formatSize, formatIo, categoriseProcess } from './utils';
+import { formatSize, formatIo, categoriseProcess } from './utils';
 import type { ProcessCategory } from './utils';
 
 interface TopConsumersProps {

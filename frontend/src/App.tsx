@@ -135,7 +135,7 @@ export default function App() {
     setCustomRange({ from, to });
   }
 
-  function handleScrollTo(metric: 'cpu' | 'memory' | 'disk' | 'network') {
+  function handleScrollTo(_metric: 'cpu' | 'memory' | 'disk' | 'network') {
     chartSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
   }
 
