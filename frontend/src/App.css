@@ -343,12 +343,26 @@ body {
   font-size: 0.85rem;
 }
 
-/* Year and month grids */
+/* Year, month, and hour grids */
+.nav-subgrid-section {
+  margin-top: 10px;
+}
+
+.nav-subgrid-label {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
 .year-grid,
-.month-grid {
+.month-grid,
+.hour-grid {
   display: grid;
   gap: 4px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .year-grid {
@@ -356,36 +370,61 @@ body {
 }
 
 .month-grid {
-  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+}
+
+.hour-grid {
+  grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
 }
 
 .month-cell,
-.day-cell {
-  padding: 8px 4px;
+.day-cell,
+.hour-cell {
+  padding: 6px 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   color: var(--text-primary);
   cursor: pointer;
   text-align: center;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
 
 .month-cell.has-data,
-.day-cell.has-data {
+.day-cell.has-data,
+.hour-cell.has-data {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--bg-secondary));
 }
 
 .month-cell.no-data,
-.day-cell.no-data {
+.day-cell.no-data,
+.hour-cell.no-data {
   color: var(--text-muted);
   opacity: 0.6;
 }
 
+.day-cell.today {
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.day-cell.selected,
+.hour-cell.selected {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 .month-cell:hover,
-.day-cell:hover {
+.day-cell:hover,
+.hour-cell:hover {
   background: var(--bg-tertiary);
+}
+
+.day-cell.selected:hover,
+.hour-cell.selected:hover {
+  background: var(--accent-hover);
 }
 
 /* Charts */
@@ -585,19 +624,34 @@ body {
   padding: 16px 0;
 }
 
-.back-btn {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
+.detail-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
   background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.back-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
   color: var(--text-primary);
   border-radius: var(--radius);
   cursor: pointer;
   font-size: 0.85rem;
-  margin-bottom: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .back-btn:hover {
-  background: var(--bg-tertiary);
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 
 .detail-meta {

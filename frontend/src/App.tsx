@@ -98,6 +98,7 @@ export default function App() {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [selectedHour, setSelectedHour] = useState<number | null>(null);
 
   const chartSectionRef = useRef<HTMLElement>(null);
 
@@ -114,6 +115,7 @@ export default function App() {
     updateUrl(newView);
     setSelectedProcess(null);
     setCustomRange(null);
+    setSelectedHour(null);
   }, []);
 
   const refreshData = useCallback(() => {
@@ -145,6 +147,17 @@ export default function App() {
 
   function handleRangeSelect(from: number, to: number) {
     setCustomRange({ from, to });
+  }
+
+  function handleHourSelect(from: number, to: number) {
+    if (from === 0 && to === 0) {
+      setCustomRange(null);
+      setSelectedHour(null);
+    } else {
+      setCustomRange({ from, to });
+      const d = new Date(from);
+      setSelectedHour(d.getHours());
+    }
   }
 
   function handleScrollTo(_metric: 'cpu' | 'memory' | 'disk' | 'network') {
@@ -253,6 +266,8 @@ export default function App() {
       <TimeNav
         view={view}
         onNavigate={navigate}
+        onHourSelect={handleHourSelect}
+        selectedHour={selectedHour}
         minTs={range?.min ?? null}
         maxTs={range?.max ?? null}
       />
@@ -268,8 +283,14 @@ export default function App() {
 
         {customRange && (
           <div className="custom-range-bar">
-            <span>Custom range selected</span>
-            <button onClick={() => setCustomRange(null)}>Clear selection</button>
+            <span>
+              {selectedHour !== null
+                ? `Showing hour: ${selectedHour}:00 - ${selectedHour + 1}:00`
+                : 'Custom range selected'}
+            </span>
+            <button onClick={() => { setCustomRange(null); setSelectedHour(null); }}>
+              Show full {view.scale}
+            </button>
           </div>
         )}
 

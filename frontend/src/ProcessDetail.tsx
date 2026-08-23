@@ -16,6 +16,9 @@ interface ProcessDetailProps {
   thresholds?: ThresholdConfig | null;
 }
 
+type InstanceSort = 'cpu' | 'memory' | 'io' | 'pid';
+type SortDir = 'asc' | 'desc';
+
 export function ProcessDetail({
   type, id, name, groupName, from, to, onBack,
   onSelectInstance, thresholds,
@@ -24,35 +27,75 @@ export function ProcessDetail({
   const [groupData, setGroupData] = useState<ProcessGroupResponse | null>(null);
   const [instances, setInstances] = useState<ProcessInstanceRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [instanceSort, setInstanceSort] = useState<InstanceSort>('cpu');
+  const [instanceSortDir, setInstanceSortDir] = useState<SortDir>('desc');
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     if (type === 'instance' && id !== undefined) {
       getProcessDetail(id, from, to)
         .then(setInstanceData)
+        .catch(() => setError('Could not load process data.'))
         .finally(() => setLoading(false));
     } else if (type === 'group' && name) {
-      Promise.all([
-        getProcessGroup(name, from, to),
-        getProcesses(from, to, { group: false, q: name, limit: 100 }),
-      ]).then(([group, procs]) => {
-        setGroupData(group);
-        const ungrouped = procs.processes as ProcessInstanceRow[];
-        setInstances(ungrouped.filter(p => p.name === name));
-      }).finally(() => setLoading(false));
+      const groupPromise = getProcessGroup(name, from, to)
+        .then(setGroupData)
+        .catch(() => setError('Could not load process group data.'));
+
+      const instancesPromise = getProcesses(from, to, { group: false, q: name, limit: 100 })
+        .then(procs => {
+          const ungrouped = procs.processes as ProcessInstanceRow[];
+          setInstances(ungrouped.filter(p => p.name === name));
+        })
+        .catch(() => {});
+
+      Promise.allSettled([groupPromise, instancesPromise])
+        .finally(() => setLoading(false));
     }
   }, [type, id, name, from, to]);
 
-  if (loading) return <p>Loading...</p>;
+  function toggleInstanceSort(col: InstanceSort) {
+    if (instanceSort === col) {
+      setInstanceSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    } else {
+      setInstanceSort(col);
+      setInstanceSortDir('desc');
+    }
+  }
+
+  function sortIcon(col: InstanceSort) {
+    if (instanceSort !== col) return '';
+    return instanceSortDir === 'desc' ? ' ▼' : ' ▲';
+  }
+
+  const sortedInstances = [...instances].sort((a, b) => {
+    const dir = instanceSortDir === 'desc' ? -1 : 1;
+    switch (instanceSort) {
+      case 'cpu': return (a.cpuPct - b.cpuPct) * dir;
+      case 'memory': return (a.privateMb - b.privateMb) * dir;
+      case 'io': return (a.ioKb - b.ioKb) * dir;
+      case 'pid': return (a.pid - b.pid) * dir;
+      default: return 0;
+    }
+  });
+
+  const displayName = name ?? groupName ?? (instanceData?.info?.name) ?? 'Process';
+
+  if (loading) {
+    return (
+      <div className="process-detail">
+        <BackNav name={displayName} onBack={onBack} groupName={groupName} type={type} />
+        <p className="loading">Loading...</p>
+      </div>
+    );
+  }
 
   if (type === 'group' && groupData) {
     return (
       <div className="process-detail">
-        <nav className="detail-breadcrumbs" aria-label="Navigation">
-          <button className="breadcrumb-link" onClick={onBack}>Dashboard</button>
-          <span className="breadcrumb-sep">&gt;</span>
-          <span className="breadcrumb-current">{groupData.name}</span>
-        </nav>
+        <BackNav name={groupData.name} onBack={onBack} type={type} />
 
         <h2>{groupData.name}</h2>
         <p className="detail-meta">
@@ -62,7 +105,7 @@ export function ProcessDetail({
 
         <ProcessTimeline data={groupData.points} title={groupData.name} thresholds={thresholds} />
 
-        {instances.length > 0 && (
+        {sortedInstances.length > 0 && (
           <div className="instance-list">
             <h3>Instances</h3>
             <div className="process-table-wrapper" role="region" aria-label="Process instances" tabIndex={0}>
@@ -70,15 +113,31 @@ export function ProcessDetail({
                 <caption className="sr-only">Instances of {groupData.name}</caption>
                 <thead>
                   <tr>
-                    <th scope="col" style={{ textAlign: 'left' }}>PID</th>
+                    <th scope="col" style={{ textAlign: 'left' }}>
+                      <button className="sort-btn" onClick={() => toggleInstanceSort('pid')}>
+                        PID{sortIcon('pid')}
+                      </button>
+                    </th>
                     <th scope="col" style={{ textAlign: 'left' }}>Path</th>
-                    <th scope="col">CPU %</th>
-                    <th scope="col">Memory</th>
-                    <th scope="col">I/O</th>
+                    <th scope="col">
+                      <button className="sort-btn" onClick={() => toggleInstanceSort('cpu')}>
+                        CPU %{sortIcon('cpu')}
+                      </button>
+                    </th>
+                    <th scope="col">
+                      <button className="sort-btn" onClick={() => toggleInstanceSort('memory')}>
+                        Memory{sortIcon('memory')}
+                      </button>
+                    </th>
+                    <th scope="col">
+                      <button className="sort-btn" onClick={() => toggleInstanceSort('io')}>
+                        I/O{sortIcon('io')}
+                      </button>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {instances.map(inst => (
+                  {sortedInstances.map(inst => (
                     <tr
                       key={inst.id}
                       className="process-row"
@@ -110,19 +169,7 @@ export function ProcessDetail({
     const info = instanceData.info;
     return (
       <div className="process-detail">
-        <nav className="detail-breadcrumbs" aria-label="Navigation">
-          <button className="breadcrumb-link" onClick={onBack}>Dashboard</button>
-          {groupName && (
-            <>
-              <span className="breadcrumb-sep">&gt;</span>
-              <button className="breadcrumb-link" onClick={onBack}>
-                {groupName}
-              </button>
-            </>
-          )}
-          <span className="breadcrumb-sep">&gt;</span>
-          <span className="breadcrumb-current">PID {info.pid}</span>
-        </nav>
+        <BackNav name={`PID ${info.pid}`} onBack={onBack} groupName={groupName} type={type} />
 
         <h2>{info.name} (PID {info.pid})</h2>
         <dl className="detail-info">
@@ -137,5 +184,36 @@ export function ProcessDetail({
     );
   }
 
-  return <p>No data found.</p>;
+  return (
+    <div className="process-detail">
+      <BackNav name={displayName} onBack={onBack} groupName={groupName} type={type} />
+      <p className="no-data-msg">{error ?? 'No data found for this process in the selected range.'}</p>
+    </div>
+  );
+}
+
+function BackNav({ name, onBack, groupName, type }: {
+  name: string;
+  onBack: () => void;
+  groupName?: string;
+  type: 'instance' | 'group';
+}) {
+  return (
+    <div className="detail-nav">
+      <button className="back-btn" onClick={onBack}>
+        &larr; Back
+      </button>
+      <nav className="detail-breadcrumbs" aria-label="Navigation">
+        <button className="breadcrumb-link" onClick={onBack}>Dashboard</button>
+        {type === 'instance' && groupName && (
+          <>
+            <span className="breadcrumb-sep">&gt;</span>
+            <button className="breadcrumb-link" onClick={onBack}>{groupName}</button>
+          </>
+        )}
+        <span className="breadcrumb-sep">&gt;</span>
+        <span className="breadcrumb-current">{name}</span>
+      </nav>
+    </div>
+  );
 }

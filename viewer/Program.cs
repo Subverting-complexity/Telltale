@@ -220,8 +220,8 @@ try
         {
             cmd.CommandText = $"""
                 SELECT pi.id, pi.pid, pi.name, pi.path,
-                       AVG(s.{cpuCol}) as total_cpu_pct,
-                       MAX(s.{memCol}) as total_private_mb,
+                       AVG(s.{cpuCol}) as avg_cpu_pct,
+                       MAX(s.{memCol}) as peak_private_mb,
                        SUM(s.{ioCol}) as total_io_kb
                 FROM {table} s
                 JOIN process_instance pi ON pi.id = s.instance_id
