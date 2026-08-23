@@ -4,6 +4,8 @@ import { getDaysInMonth } from './utils';
 interface TimeNavProps {
   view: ViewState;
   onNavigate: (view: ViewState) => void;
+  onHourSelect?: (from: number, to: number) => void;
+  selectedHour?: number | null;
   minTs: number | null;
   maxTs: number | null;
 }
@@ -11,7 +13,14 @@ interface TimeNavProps {
 const SCALES: ViewScale[] = ['year', 'month', 'week', 'day'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-export function TimeNav({ view, onNavigate, minTs, maxTs }: TimeNavProps) {
+function formatHourLabel(hour: number): string {
+  if (hour === 0) return '12a';
+  if (hour < 12) return `${hour}a`;
+  if (hour === 12) return '12p';
+  return `${hour - 12}p`;
+}
+
+export function TimeNav({ view, onNavigate, onHourSelect, selectedHour, minTs, maxTs }: TimeNavProps) {
   const now = new Date();
 
   function prev() {
@@ -144,7 +153,27 @@ export function TimeNav({ view, onNavigate, minTs, maxTs }: TimeNavProps) {
         <MonthGrid
           year={view.year}
           month={view.month}
+          selectedDay={view.day}
           onSelectDay={(d) => onNavigate({ scale: 'day', year: view.year, month: view.month, day: d })}
+          minTs={minTs}
+          maxTs={maxTs}
+        />
+      )}
+      {view.scale === 'day' && view.month && view.day && onHourSelect && (
+        <HourGrid
+          year={view.year}
+          month={view.month}
+          day={view.day}
+          selectedHour={selectedHour ?? null}
+          onSelectHour={(hour) => {
+            if (hour === null) {
+              onHourSelect(0, 0);
+            } else {
+              const start = new Date(view.year, view.month! - 1, view.day!, hour);
+              const end = new Date(view.year, view.month! - 1, view.day!, hour + 1);
+              onHourSelect(start.getTime(), end.getTime() - 1);
+            }
+          }}
           minTs={minTs}
           maxTs={maxTs}
         />
@@ -180,32 +209,83 @@ function YearGrid({ year, onSelectMonth, minTs, maxTs }: {
   );
 }
 
-function MonthGrid({ year, month, onSelectDay, minTs, maxTs }: {
+function MonthGrid({ year, month, selectedDay, onSelectDay, minTs, maxTs }: {
   year: number;
   month: number;
+  selectedDay?: number;
   onSelectDay: (day: number) => void;
   minTs: number | null;
   maxTs: number | null;
 }) {
   const days = getDaysInMonth(year, month);
+  const now = new Date();
+  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1;
+
   return (
-    <div className="month-grid" role="grid" aria-label={`Days of ${MONTH_NAMES[month - 1]} ${year}`}>
-      {Array.from({ length: days }, (_, i) => {
-        const day = i + 1;
-        const dayStart = new Date(year, month - 1, day).getTime();
-        const dayEnd = new Date(year, month - 1, day + 1).getTime() - 1;
-        const hasData = minTs !== null && maxTs !== null && dayEnd >= minTs && dayStart <= maxTs;
-        return (
-          <button
-            key={day}
-            className={`day-cell ${hasData ? 'has-data' : 'no-data'}`}
-            onClick={() => onSelectDay(day)}
-            aria-label={`${day} ${MONTH_NAMES[month - 1]}${hasData ? '' : ' (no data)'}`}
-          >
-            {day}
-          </button>
-        );
-      })}
+    <div className="nav-subgrid-section">
+      <span className="nav-subgrid-label">Jump to day</span>
+      <div className="month-grid" role="grid" aria-label={`Days of ${MONTH_NAMES[month - 1]} ${year}`}>
+        {Array.from({ length: days }, (_, i) => {
+          const day = i + 1;
+          const dayStart = new Date(year, month - 1, day).getTime();
+          const dayEnd = new Date(year, month - 1, day + 1).getTime() - 1;
+          const hasData = minTs !== null && maxTs !== null && dayEnd >= minTs && dayStart <= maxTs;
+          const isToday = isCurrentMonth && day === now.getDate();
+          const isSelected = day === selectedDay;
+          return (
+            <button
+              key={day}
+              className={`day-cell ${hasData ? 'has-data' : 'no-data'} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+              onClick={() => onSelectDay(day)}
+              aria-label={`${day} ${MONTH_NAMES[month - 1]}${hasData ? '' : ' (no data)'}${isToday ? ' (today)' : ''}`}
+            >
+              {day}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function HourGrid({ year, month, day, selectedHour, onSelectHour, minTs, maxTs }: {
+  year: number;
+  month: number;
+  day: number;
+  selectedHour: number | null;
+  onSelectHour: (hour: number | null) => void;
+  minTs: number | null;
+  maxTs: number | null;
+}) {
+  return (
+    <div className="nav-subgrid-section">
+      <span className="nav-subgrid-label">Filter by hour</span>
+      <div className="hour-grid" role="grid" aria-label={`Hours of ${day} ${MONTH_NAMES[month - 1]} ${year}`}>
+        <button
+          className={`hour-cell ${selectedHour === null ? 'selected' : ''}`}
+          onClick={() => onSelectHour(null)}
+          aria-label="Show full day"
+          aria-pressed={selectedHour === null}
+        >
+          All
+        </button>
+        {Array.from({ length: 24 }, (_, hour) => {
+          const hourStart = new Date(year, month - 1, day, hour).getTime();
+          const hourEnd = new Date(year, month - 1, day, hour + 1).getTime() - 1;
+          const hasData = minTs !== null && maxTs !== null && hourEnd >= minTs && hourStart <= maxTs;
+          return (
+            <button
+              key={hour}
+              className={`hour-cell ${hasData ? 'has-data' : 'no-data'} ${selectedHour === hour ? 'selected' : ''}`}
+              onClick={() => onSelectHour(hour)}
+              aria-label={`${formatHourLabel(hour)}${hasData ? '' : ' (no data)'}`}
+              aria-pressed={selectedHour === hour}
+            >
+              {formatHourLabel(hour)}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

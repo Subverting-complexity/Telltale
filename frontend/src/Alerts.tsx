@@ -20,6 +20,8 @@ const PERIODS = [
 ];
 
 type AlertTab = 'threshold' | 'anomalies';
+type AlertSortCol = 'name' | 'avgCpu' | 'peakCpu' | 'peakMem' | 'totalIo' | 'count';
+type SortDir = 'asc' | 'desc';
 
 interface AnomalyInfo {
   name: string;
@@ -73,6 +75,8 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
   const [baselines, setBaselines] = useState<BaselineData[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<AlertTab>('threshold');
+  const [sortCol, setSortCol] = useState<AlertSortCol>('avgCpu');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   useEffect(() => {
     setLoading(true);
@@ -88,6 +92,33 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
       .catch(() => setAlerts([]))
       .finally(() => setLoading(false));
   }, [selectedDays]);
+
+  function toggleSort(col: AlertSortCol) {
+    if (sortCol === col) {
+      setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    } else {
+      setSortCol(col);
+      setSortDir('desc');
+    }
+  }
+
+  function sortIcon(col: AlertSortCol) {
+    if (sortCol !== col) return '';
+    return sortDir === 'desc' ? ' ▼' : ' ▲';
+  }
+
+  const sortedAlerts = [...alerts].sort((a, b) => {
+    const dir = sortDir === 'desc' ? -1 : 1;
+    switch (sortCol) {
+      case 'name': return a.name.localeCompare(b.name) * dir;
+      case 'avgCpu': return (a.avgCpuPct - b.avgCpuPct) * dir;
+      case 'peakCpu': return (a.peakCpuPct - b.peakCpuPct) * dir;
+      case 'peakMem': return (a.peakMemoryMb - b.peakMemoryMb) * dir;
+      case 'totalIo': return (a.totalIoKb - b.totalIoKb) * dir;
+      case 'count': return (a.instanceCount - b.instanceCount) * dir;
+      default: return 0;
+    }
+  });
 
   const anomalies = detectAnomalies(alerts, baselines);
 
@@ -132,7 +163,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
       {loading ? (
         <p className="loading">Loading alerts...</p>
       ) : activeTab === 'threshold' ? (
-        alerts.length === 0 ? (
+        sortedAlerts.length === 0 ? (
           <p className="no-data-msg">
             No problematic processes detected in the last {PERIODS.find(p => p.days === selectedDays)?.label ?? `${selectedDays} days`}.
           </p>
@@ -144,17 +175,41 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
               </caption>
               <thead>
                 <tr>
-                  <th scope="col" style={{ textAlign: 'left' }}>Process</th>
-                  <th scope="col">Avg CPU</th>
-                  <th scope="col">Peak CPU</th>
-                  <th scope="col">Peak Memory</th>
-                  <th scope="col">Total I/O</th>
-                  <th scope="col">#</th>
+                  <th scope="col" style={{ textAlign: 'left' }}>
+                    <button className="sort-btn" onClick={() => toggleSort('name')}>
+                      Process{sortIcon('name')}
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button className="sort-btn" onClick={() => toggleSort('avgCpu')}>
+                      Avg CPU{sortIcon('avgCpu')}
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button className="sort-btn" onClick={() => toggleSort('peakCpu')}>
+                      Peak CPU{sortIcon('peakCpu')}
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button className="sort-btn" onClick={() => toggleSort('peakMem')}>
+                      Peak Memory{sortIcon('peakMem')}
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button className="sort-btn" onClick={() => toggleSort('totalIo')}>
+                      Total I/O{sortIcon('totalIo')}
+                    </button>
+                  </th>
+                  <th scope="col">
+                    <button className="sort-btn" onClick={() => toggleSort('count')}>
+                      #{sortIcon('count')}
+                    </button>
+                  </th>
                   <th scope="col" style={{ textAlign: 'left' }}>Reason</th>
                 </tr>
               </thead>
               <tbody>
-                {alerts.map(alert => {
+                {sortedAlerts.map(alert => {
                   const hasAnomaly = anomalies.some(a => a.name === alert.name);
                   const normAvgCpu = alert.avgCpuPct / logicalProcessors;
                   const normPeakCpu = alert.peakCpuPct / logicalProcessors;
