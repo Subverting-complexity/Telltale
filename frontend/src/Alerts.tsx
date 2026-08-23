@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { getAlerts } from './api';
-import type { AlertProcess } from './types';
+import { getAlerts, getBaselines } from './api';
+import type { AlertProcess, BaselineData } from './types';
 import { formatCpu, formatSize, formatIo, formatDateTime } from './utils';
 
 interface AlertsProps {
@@ -18,22 +18,100 @@ const PERIODS = [
   { days: 180, label: '180 days' },
 ];
 
+type AlertTab = 'threshold' | 'anomalies';
+
+interface AnomalyInfo {
+  name: string;
+  metric: string;
+  current: number;
+  average: number;
+  ratio: number;
+  description: string;
+}
+
+function detectAnomalies(alerts: AlertProcess[], baselines: BaselineData[]): AnomalyInfo[] {
+  const baselineMap = new Map<string, BaselineData>();
+  for (const b of baselines) baselineMap.set(b.name, b);
+
+  const anomalies: AnomalyInfo[] = [];
+  for (const alert of alerts) {
+    const baseline = baselineMap.get(alert.name);
+    if (!baseline || baseline.dataHours < 24) continue;
+
+    if (baseline.stddevCpu > 0 && alert.avgCpuPct > baseline.avgCpu + 2 * baseline.stddevCpu) {
+      const ratio = baseline.avgCpu > 0 ? alert.avgCpuPct / baseline.avgCpu : 0;
+      anomalies.push({
+        name: alert.name,
+        metric: 'CPU',
+        current: alert.avgCpuPct,
+        average: baseline.avgCpu,
+        ratio,
+        description: `CPU ${ratio.toFixed(1)}x above 7-day average`,
+      });
+    }
+
+    if (baseline.stddevMemoryMb > 0 && alert.peakMemoryMb > baseline.avgMemoryMb + 2 * baseline.stddevMemoryMb) {
+      const ratio = baseline.avgMemoryMb > 0 ? alert.peakMemoryMb / baseline.avgMemoryMb : 0;
+      anomalies.push({
+        name: alert.name,
+        metric: 'Memory',
+        current: alert.peakMemoryMb,
+        average: baseline.avgMemoryMb,
+        ratio,
+        description: `Memory ${ratio.toFixed(1)}x above 7-day average`,
+      });
+    }
+  }
+
+  return anomalies.sort((a, b) => b.ratio - a.ratio);
+}
+
 export function Alerts({ onSelectProcess }: AlertsProps) {
   const [selectedDays, setSelectedDays] = useState(1);
   const [alerts, setAlerts] = useState<AlertProcess[]>([]);
+  const [baselines, setBaselines] = useState<BaselineData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<AlertTab>('threshold');
 
   useEffect(() => {
     setLoading(true);
     getAlerts(selectedDays)
-      .then(res => setAlerts(res.alerts))
+      .then(res => {
+        setAlerts(res.alerts);
+        if (res.alerts.length > 0) {
+          const names = res.alerts.map(a => a.name);
+          return getBaselines(names).then(b => setBaselines(b.baselines)).catch(() => {});
+        }
+      })
       .catch(() => setAlerts([]))
       .finally(() => setLoading(false));
   }, [selectedDays]);
 
+  const anomalies = detectAnomalies(alerts, baselines);
+
   return (
     <section className="alerts-section" aria-label="Problematic processes">
-      <h2>Alerts</h2>
+      <div className="alerts-header">
+        <h2>Alerts</h2>
+        <div className="alerts-tabs" role="tablist" aria-label="Alert type">
+          <button
+            role="tab"
+            aria-selected={activeTab === 'threshold'}
+            className={`toggle-btn ${activeTab === 'threshold' ? 'active' : ''}`}
+            onClick={() => setActiveTab('threshold')}
+          >
+            Thresholds
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === 'anomalies'}
+            className={`toggle-btn ${activeTab === 'anomalies' ? 'active' : ''}`}
+            onClick={() => setActiveTab('anomalies')}
+          >
+            Anomalies{anomalies.length > 0 ? ` (${anomalies.length})` : ''}
+          </button>
+        </div>
+      </div>
 
       <div className="alerts-periods" role="tablist" aria-label="Select time period">
         {PERIODS.map(p => (
@@ -51,69 +129,133 @@ export function Alerts({ onSelectProcess }: AlertsProps) {
 
       {loading ? (
         <p className="loading">Loading alerts...</p>
-      ) : alerts.length === 0 ? (
-        <p className="no-data-msg">
-          No problematic processes detected in the last {PERIODS.find(p => p.days === selectedDays)?.label ?? `${selectedDays} days`}.
-        </p>
-      ) : (
-        <div className="alerts-table-wrapper" role="region" aria-label="Alerts table" tabIndex={0}>
-          <table className="alerts-table">
-            <caption className="sr-only">
-              Problematic processes over the last {selectedDays} day{selectedDays !== 1 ? 's' : ''}
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col" style={{ textAlign: 'left' }}>Process</th>
-                <th scope="col">Avg CPU</th>
-                <th scope="col">Peak CPU</th>
-                <th scope="col">Peak Memory</th>
-                <th scope="col">Total I/O</th>
-                <th scope="col">#</th>
-                <th scope="col" style={{ textAlign: 'left' }}>Reason</th>
-              </tr>
-            </thead>
-            <tbody>
-              {alerts.map(alert => (
-                <tr
-                  key={alert.name}
-                  className="alert-row"
-                  onClick={() => onSelectProcess(alert.name)}
-                  onKeyDown={e => { if (e.key === 'Enter') onSelectProcess(alert.name); }}
-                  tabIndex={0}
-                  role="button"
-                  aria-label={`View ${alert.name} details`}
-                >
-                  <td style={{ textAlign: 'left' }}>
-                    <span className="alert-process-name">{alert.name}</span>
-                    <span className="alert-time-range">
-                      {formatDateTime(alert.firstTs)} - {formatDateTime(alert.lastTs)}
-                    </span>
-                  </td>
-                  <td>
-                    <span className={`alert-value ${alert.avgCpuPct > 50 ? 'high' : alert.avgCpuPct > 10 ? 'medium' : ''}`}>
-                      {formatCpu(alert.avgCpuPct)}
-                    </span>
-                  </td>
-                  <td>{formatCpu(alert.peakCpuPct)}</td>
-                  <td>
-                    <span className={`alert-value ${alert.peakMemoryMb > 2048 ? 'high' : alert.peakMemoryMb > 500 ? 'medium' : ''}`}>
-                      {formatSize(alert.peakMemoryMb)}
-                    </span>
-                  </td>
-                  <td>{formatIo(alert.totalIoKb)}</td>
-                  <td>{alert.instanceCount}</td>
-                  <td style={{ textAlign: 'left' }}>
-                    <ul className="alert-reasons">
-                      {alert.reasons.map((reason, i) => (
-                        <li key={i} className="alert-reason-tag">{reason}</li>
-                      ))}
-                    </ul>
-                  </td>
+      ) : activeTab === 'threshold' ? (
+        alerts.length === 0 ? (
+          <p className="no-data-msg">
+            No problematic processes detected in the last {PERIODS.find(p => p.days === selectedDays)?.label ?? `${selectedDays} days`}.
+          </p>
+        ) : (
+          <div className="alerts-table-wrapper" role="region" aria-label="Alerts table" tabIndex={0}>
+            <table className="alerts-table">
+              <caption className="sr-only">
+                Problematic processes over the last {selectedDays} day{selectedDays !== 1 ? 's' : ''}
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col" style={{ textAlign: 'left' }}>Process</th>
+                  <th scope="col">Avg CPU</th>
+                  <th scope="col">Peak CPU</th>
+                  <th scope="col">Peak Memory</th>
+                  <th scope="col">Total I/O</th>
+                  <th scope="col">#</th>
+                  <th scope="col" style={{ textAlign: 'left' }}>Reason</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {alerts.map(alert => {
+                  const hasAnomaly = anomalies.some(a => a.name === alert.name);
+                  return (
+                    <tr
+                      key={alert.name}
+                      className={`alert-row ${hasAnomaly ? 'has-anomaly' : ''}`}
+                      onClick={() => onSelectProcess(alert.name)}
+                      onKeyDown={e => { if (e.key === 'Enter') onSelectProcess(alert.name); }}
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`View ${alert.name} details`}
+                    >
+                      <td style={{ textAlign: 'left' }}>
+                        <span className="alert-process-name">
+                          {hasAnomaly && <span className="anomaly-indicator" title="Unusual activity detected">!</span>}
+                          {alert.name}
+                        </span>
+                        <span className="alert-time-range">
+                          {formatDateTime(alert.firstTs)} - {formatDateTime(alert.lastTs)}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`alert-value ${alert.avgCpuPct > 50 ? 'high' : alert.avgCpuPct > 10 ? 'medium' : ''}`}>
+                          {formatCpu(alert.avgCpuPct)}
+                        </span>
+                      </td>
+                      <td>{formatCpu(alert.peakCpuPct)}</td>
+                      <td>
+                        <span className={`alert-value ${alert.peakMemoryMb > 2048 ? 'high' : alert.peakMemoryMb > 500 ? 'medium' : ''}`}>
+                          {formatSize(alert.peakMemoryMb)}
+                        </span>
+                      </td>
+                      <td>{formatIo(alert.totalIoKb)}</td>
+                      <td>{alert.instanceCount}</td>
+                      <td style={{ textAlign: 'left' }}>
+                        <ul className="alert-reasons">
+                          {alert.reasons.map((reason, i) => (
+                            <li key={i} className="alert-reason-tag">{reason}</li>
+                          ))}
+                        </ul>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : (
+        anomalies.length === 0 ? (
+          <p className="no-data-msg">
+            No anomalies detected. Anomaly detection requires at least 24 hours of baseline data.
+          </p>
+        ) : (
+          <div className="alerts-table-wrapper" role="region" aria-label="Anomalies table" tabIndex={0}>
+            <table className="alerts-table">
+              <caption className="sr-only">Anomalous process behaviour</caption>
+              <thead>
+                <tr>
+                  <th scope="col" style={{ textAlign: 'left' }}>Process</th>
+                  <th scope="col">Metric</th>
+                  <th scope="col">Current</th>
+                  <th scope="col">7-day Avg</th>
+                  <th scope="col">Ratio</th>
+                  <th scope="col" style={{ textAlign: 'left' }}>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {anomalies.map((anomaly, i) => (
+                  <tr
+                    key={`${anomaly.name}-${anomaly.metric}-${i}`}
+                    className="alert-row anomaly-row"
+                    onClick={() => onSelectProcess(anomaly.name)}
+                    onKeyDown={e => { if (e.key === 'Enter') onSelectProcess(anomaly.name); }}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`View ${anomaly.name} details`}
+                  >
+                    <td style={{ textAlign: 'left' }}>
+                      <span className="alert-process-name">{anomaly.name}</span>
+                    </td>
+                    <td>{anomaly.metric}</td>
+                    <td>
+                      {anomaly.metric === 'CPU'
+                        ? formatCpu(anomaly.current)
+                        : formatSize(anomaly.current)}
+                    </td>
+                    <td>
+                      {anomaly.metric === 'CPU'
+                        ? formatCpu(anomaly.average)
+                        : formatSize(anomaly.average)}
+                    </td>
+                    <td>
+                      <span className="anomaly-ratio">{anomaly.ratio.toFixed(1)}x</span>
+                    </td>
+                    <td style={{ textAlign: 'left' }}>
+                      <span className="anomaly-tag">{anomaly.description}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
       )}
     </section>
   );
