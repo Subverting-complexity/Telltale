@@ -181,7 +181,7 @@ export function ProcessTable({
                     <div className="bar-cell">
                       <div
                         className="bar cpu-bar"
-                        style={{ width: `${(normCpu / maxCpu) * 100}%` }}
+                        style={{ width: `${Math.min((normCpu / maxCpu) * 100, 100)}%` }}
                         role="meter"
                         aria-valuenow={normCpu}
                         aria-label={`CPU ${formatNormalisedCpu(proc.cpuPct)}`}
@@ -193,7 +193,7 @@ export function ProcessTable({
                     <div className="bar-cell">
                       <div
                         className="bar mem-bar"
-                        style={{ width: `${(proc.privateMb / maxMem) * 100}%` }}
+                        style={{ width: `${Math.min((proc.privateMb / maxMem) * 100, 100)}%` }}
                         role="meter"
                         aria-valuenow={proc.privateMb}
                         aria-label={`Memory ${formatSize(proc.privateMb)}`}

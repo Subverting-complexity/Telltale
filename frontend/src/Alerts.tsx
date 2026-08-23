@@ -4,6 +4,7 @@ import type { AlertProcess, BaselineData } from './types';
 import { formatCpu, formatSize, formatIo, formatDateTime } from './utils';
 
 interface AlertsProps {
+  logicalProcessors: number;
   onSelectProcess: (name: string) => void;
 }
 
@@ -66,7 +67,7 @@ function detectAnomalies(alerts: AlertProcess[], baselines: BaselineData[]): Ano
   return anomalies.sort((a, b) => b.ratio - a.ratio);
 }
 
-export function Alerts({ onSelectProcess }: AlertsProps) {
+export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
   const [selectedDays, setSelectedDays] = useState(1);
   const [alerts, setAlerts] = useState<AlertProcess[]>([]);
   const [baselines, setBaselines] = useState<BaselineData[]>([]);
@@ -154,6 +155,8 @@ export function Alerts({ onSelectProcess }: AlertsProps) {
               <tbody>
                 {alerts.map(alert => {
                   const hasAnomaly = anomalies.some(a => a.name === alert.name);
+                  const normAvgCpu = alert.avgCpuPct / logicalProcessors;
+                  const normPeakCpu = alert.peakCpuPct / logicalProcessors;
                   return (
                     <tr
                       key={alert.name}
@@ -174,11 +177,11 @@ export function Alerts({ onSelectProcess }: AlertsProps) {
                         </span>
                       </td>
                       <td>
-                        <span className={`alert-value ${alert.avgCpuPct > 50 ? 'high' : alert.avgCpuPct > 10 ? 'medium' : ''}`}>
-                          {formatCpu(alert.avgCpuPct)}
+                        <span className={`alert-value ${normAvgCpu > 50 ? 'high' : normAvgCpu > 10 ? 'medium' : ''}`}>
+                          {formatCpu(normAvgCpu)}
                         </span>
                       </td>
-                      <td>{formatCpu(alert.peakCpuPct)}</td>
+                      <td>{formatCpu(normPeakCpu)}</td>
                       <td>
                         <span className={`alert-value ${alert.peakMemoryMb > 2048 ? 'high' : alert.peakMemoryMb > 500 ? 'medium' : ''}`}>
                           {formatSize(alert.peakMemoryMb)}
@@ -236,12 +239,12 @@ export function Alerts({ onSelectProcess }: AlertsProps) {
                     <td>{anomaly.metric}</td>
                     <td>
                       {anomaly.metric === 'CPU'
-                        ? formatCpu(anomaly.current)
+                        ? formatCpu(anomaly.current / logicalProcessors)
                         : formatSize(anomaly.current)}
                     </td>
                     <td>
                       {anomaly.metric === 'CPU'
-                        ? formatCpu(anomaly.average)
+                        ? formatCpu(anomaly.average / logicalProcessors)
                         : formatSize(anomaly.average)}
                     </td>
                     <td>
