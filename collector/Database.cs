@@ -1,0 +1,421 @@
+using Microsoft.Data.Sqlite;
+
+namespace Telltale.Collector;
+
+public sealed class Database : IDisposable
+{
+    private readonly SqliteConnection _conn;
+    private readonly ILogger _logger;
+
+    public Database(string dbPath, ILogger logger)
+    {
+        _logger = logger;
+        var dir = Path.GetDirectoryName(dbPath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
+        _conn = new SqliteConnection($"Data Source={dbPath}");
+        _conn.Open();
+        InitSchema();
+    }
+
+    private void InitSchema()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "PRAGMA journal_mode = WAL;";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "PRAGMA synchronous = NORMAL;";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "PRAGMA auto_vacuum = INCREMENTAL;";
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'";
+        var exists = cmd.ExecuteScalar();
+        if (exists != null) return;
+
+        cmd.CommandText = """
+            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_version VALUES (1);
+
+            CREATE TABLE process_instance (
+                id           INTEGER PRIMARY KEY,
+                pid          INTEGER NOT NULL,
+                create_time  INTEGER NOT NULL,
+                name         TEXT    NOT NULL,
+                path         TEXT,
+                command_line TEXT,
+                first_seen   INTEGER NOT NULL,
+                last_seen    INTEGER NOT NULL,
+                UNIQUE(pid, create_time)
+            );
+
+            CREATE TABLE sample (
+                ts           INTEGER NOT NULL,
+                instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+                cpu_pct      REAL,
+                private_mb   REAL,
+                working_set_mb REAL,
+                io_kb        REAL,
+                threads      INTEGER,
+                handles      INTEGER
+            );
+            CREATE INDEX ix_sample_ts ON sample(ts);
+            CREATE INDEX ix_sample_inst ON sample(instance_id, ts);
+
+            CREATE TABLE sample_1m (
+                ts           INTEGER NOT NULL,
+                instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+                cpu_pct_avg  REAL,
+                cpu_pct_max  REAL,
+                private_mb_max REAL,
+                working_set_mb_max REAL,
+                io_kb_total  REAL,
+                sample_count INTEGER
+            );
+            CREATE INDEX ix_s1m_ts ON sample_1m(ts);
+            CREATE INDEX ix_s1m_inst ON sample_1m(instance_id, ts);
+
+            CREATE TABLE sample_10m (
+                ts           INTEGER NOT NULL,
+                instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+                cpu_pct_avg  REAL,
+                cpu_pct_max  REAL,
+                private_mb_max REAL,
+                working_set_mb_max REAL,
+                io_kb_total  REAL,
+                sample_count INTEGER
+            );
+            CREATE INDEX ix_s10m_ts ON sample_10m(ts);
+            CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
+
+            CREATE TABLE machine (
+                ts              INTEGER PRIMARY KEY,
+                cpu_pct         REAL,
+                memory_avail_mb REAL,
+                commit_mb       REAL,
+                hard_faults     INTEGER,
+                disk_read_ms    REAL,
+                disk_write_ms   REAL,
+                memory_total_mb REAL,
+                disk_busy_pct   REAL,
+                net_kbps        REAL,
+                gpu_busy_pct    REAL
+            );
+
+            CREATE TABLE machine_1m (
+                ts                  INTEGER PRIMARY KEY,
+                cpu_pct_avg         REAL,
+                cpu_pct_max         REAL,
+                memory_avail_mb_avg REAL,
+                memory_total_mb     REAL,
+                commit_mb_max       REAL,
+                hard_faults_total   INTEGER,
+                disk_read_ms_avg    REAL,
+                disk_write_ms_avg   REAL,
+                disk_busy_pct_avg   REAL,
+                disk_busy_pct_max   REAL,
+                net_kbps_avg        REAL,
+                gpu_busy_pct_avg    REAL,
+                sample_count        INTEGER
+            );
+
+            CREATE TABLE machine_10m (
+                ts                  INTEGER PRIMARY KEY,
+                cpu_pct_avg         REAL,
+                cpu_pct_max         REAL,
+                memory_avail_mb_avg REAL,
+                memory_total_mb     REAL,
+                commit_mb_max       REAL,
+                hard_faults_total   INTEGER,
+                disk_read_ms_avg    REAL,
+                disk_write_ms_avg   REAL,
+                disk_busy_pct_avg   REAL,
+                disk_busy_pct_max   REAL,
+                net_kbps_avg        REAL,
+                gpu_busy_pct_avg    REAL,
+                sample_count        INTEGER
+            );
+
+            CREATE TABLE collector_health (
+                ts              INTEGER PRIMARY KEY,
+                cpu_pct         REAL,
+                private_mb      REAL,
+                sample_cost_ms  REAL,
+                process_count   INTEGER,
+                stored_count    INTEGER
+            );
+            """;
+        cmd.ExecuteNonQuery();
+
+        _logger.LogInformation("Database schema created (version 1).");
+    }
+
+    public long GetOrCreateProcessInstance(int pid, long createTime, string name, string? path,
+        string? commandLine, long timestamp)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT id FROM process_instance WHERE pid = @pid AND create_time = @ct";
+        cmd.Parameters.AddWithValue("@pid", pid);
+        cmd.Parameters.AddWithValue("@ct", createTime);
+
+        var result = cmd.ExecuteScalar();
+        if (result != null)
+        {
+            var id = (long)result;
+            using var update = _conn.CreateCommand();
+            update.CommandText = "UPDATE process_instance SET last_seen = @ls WHERE id = @id";
+            update.Parameters.AddWithValue("@ls", timestamp);
+            update.Parameters.AddWithValue("@id", id);
+            update.ExecuteNonQuery();
+            return id;
+        }
+
+        using var insert = _conn.CreateCommand();
+        insert.CommandText = """
+            INSERT INTO process_instance (pid, create_time, name, path, command_line, first_seen, last_seen)
+            VALUES (@pid, @ct, @name, @path, @cmd, @fs, @ls)
+            """;
+        insert.Parameters.AddWithValue("@pid", pid);
+        insert.Parameters.AddWithValue("@ct", createTime);
+        insert.Parameters.AddWithValue("@name", name);
+        insert.Parameters.AddWithValue("@path", (object?)path ?? DBNull.Value);
+        insert.Parameters.AddWithValue("@cmd", (object?)commandLine ?? DBNull.Value);
+        insert.Parameters.AddWithValue("@fs", timestamp);
+        insert.Parameters.AddWithValue("@ls", timestamp);
+        insert.ExecuteNonQuery();
+
+        return GetLastInsertRowId();
+    }
+
+    public void WriteSampleBatch(long timestamp, List<SampleRow> rows)
+    {
+        using var tx = _conn.BeginTransaction();
+
+        using var cmd = _conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO sample (ts, instance_id, cpu_pct, private_mb, working_set_mb, io_kb, threads, handles)
+            VALUES (@ts, @iid, @cpu, @pm, @ws, @io, @th, @ha)
+            """;
+
+        var pTs = cmd.Parameters.Add("@ts", SqliteType.Integer);
+        var pIid = cmd.Parameters.Add("@iid", SqliteType.Integer);
+        var pCpu = cmd.Parameters.Add("@cpu", SqliteType.Real);
+        var pPm = cmd.Parameters.Add("@pm", SqliteType.Real);
+        var pWs = cmd.Parameters.Add("@ws", SqliteType.Real);
+        var pIo = cmd.Parameters.Add("@io", SqliteType.Real);
+        var pTh = cmd.Parameters.Add("@th", SqliteType.Integer);
+        var pHa = cmd.Parameters.Add("@ha", SqliteType.Integer);
+
+        foreach (var row in rows)
+        {
+            pTs.Value = timestamp;
+            pIid.Value = row.InstanceId;
+            pCpu.Value = row.CpuPct.HasValue ? row.CpuPct.Value : DBNull.Value;
+            pPm.Value = row.PrivateMb;
+            pWs.Value = row.WorkingSetMb;
+            pIo.Value = row.IoKb.HasValue ? row.IoKb.Value : DBNull.Value;
+            pTh.Value = row.Threads;
+            pHa.Value = row.Handles;
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    public void WriteMachineSample(long timestamp, MachineSample sample)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO machine
+                (ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults, disk_read_ms, disk_write_ms,
+                 memory_total_mb, disk_busy_pct, net_kbps, gpu_busy_pct)
+            VALUES (@ts, @cpu, @mem, @com, @hf, @dr, @dw, @mt, @db, @net, @gpu)
+            """;
+        cmd.Parameters.AddWithValue("@ts", timestamp);
+        cmd.Parameters.AddWithValue("@cpu", (object?)sample.CpuPct ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@mem", (object?)sample.MemoryAvailMb ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@com", (object?)sample.CommitMb ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@hf", (object?)sample.HardFaults ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@dr", (object?)sample.DiskReadMs ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@dw", (object?)sample.DiskWriteMs ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@mt", (object?)sample.MemoryTotalMb ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@db", (object?)sample.DiskBusyPct ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@net", (object?)sample.NetKbps ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@gpu", (object?)sample.GpuBusyPct ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void WriteCollectorHealth(long timestamp, double cpuPct, double privateMb,
+        double sampleCostMs, int processCount, int storedCount)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO collector_health (ts, cpu_pct, private_mb, sample_cost_ms, process_count, stored_count)
+            VALUES (@ts, @cpu, @pm, @cost, @pc, @sc)
+            """;
+        cmd.Parameters.AddWithValue("@ts", timestamp);
+        cmd.Parameters.AddWithValue("@cpu", cpuPct);
+        cmd.Parameters.AddWithValue("@pm", privateMb);
+        cmd.Parameters.AddWithValue("@cost", sampleCostMs);
+        cmd.Parameters.AddWithValue("@pc", processCount);
+        cmd.Parameters.AddWithValue("@sc", storedCount);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void RollupSamples(long cutoffMs, string sourceTable, string targetTable,
+        int bucketMinutes, bool isMachine)
+    {
+        using var tx = _conn.BeginTransaction();
+        using var cmd = _conn.CreateCommand();
+        cmd.Transaction = tx;
+
+        long bucketMs = bucketMinutes * 60_000L;
+
+        if (isMachine)
+        {
+            cmd.CommandText = $"""
+                INSERT INTO {targetTable}
+                    (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+                     commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+                     disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+                SELECT (ts / @bucket) * @bucket,
+                       AVG(cpu_pct), MAX(cpu_pct), AVG(memory_avail_mb),
+                       (SELECT m2.memory_total_mb FROM {sourceTable} m2
+                        WHERE m2.ts / @bucket = {sourceTable}.ts / @bucket
+                        ORDER BY m2.ts DESC LIMIT 1),
+                       MAX(commit_mb), SUM(hard_faults),
+                       AVG(disk_read_ms), AVG(disk_write_ms),
+                       AVG(disk_busy_pct), MAX(disk_busy_pct),
+                       AVG(net_kbps), AVG(gpu_busy_pct), COUNT(*)
+                FROM {sourceTable}
+                WHERE ts < @cutoff
+                GROUP BY ts / @bucket
+                """;
+        }
+        else
+        {
+            cmd.CommandText = $"""
+                INSERT INTO {targetTable}
+                    (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                     working_set_mb_max, io_kb_total, sample_count)
+                SELECT (ts / @bucket) * @bucket, instance_id,
+                       AVG(cpu_pct), MAX(cpu_pct), MAX(private_mb),
+                       MAX(working_set_mb), SUM(io_kb), COUNT(*)
+                FROM {sourceTable}
+                WHERE ts < @cutoff
+                GROUP BY ts / @bucket, instance_id
+                """;
+        }
+
+        cmd.Parameters.AddWithValue("@bucket", bucketMs);
+        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = $"DELETE FROM {sourceTable} WHERE ts < @cutoff";
+        cmd.Parameters.Clear();
+        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.ExecuteNonQuery();
+
+        tx.Commit();
+    }
+
+    public void DeleteOldData(string table, long cutoffMs)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"DELETE FROM {table} WHERE ts < @cutoff";
+        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void DeleteOrphanedProcessInstances()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM process_instance
+            WHERE id NOT IN (SELECT DISTINCT instance_id FROM sample)
+              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_1m)
+              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_10m)
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    public void IncrementalVacuum()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "PRAGMA incremental_vacuum;";
+        cmd.ExecuteNonQuery();
+    }
+
+    public void WalCheckpoint()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
+        cmd.ExecuteNonQuery();
+    }
+
+    public long GetDatabaseSizeBytes()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size();";
+        return (long)(cmd.ExecuteScalar() ?? 0L);
+    }
+
+    public void EnforceSizeLimit(long maxBytes)
+    {
+        if (GetDatabaseSizeBytes() <= maxBytes) return;
+
+        DeleteOldestRollupData("sample_10m");
+        DeleteOldestRollupData("machine_10m");
+
+        if (GetDatabaseSizeBytes() <= maxBytes) return;
+
+        DeleteOldestRollupData("sample_1m");
+        DeleteOldestRollupData("machine_1m");
+    }
+
+    private void DeleteOldestRollupData(string table)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            DELETE FROM {table}
+            WHERE ts <= (SELECT MIN(ts) + 86400000 FROM {table})
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    private long GetLastInsertRowId()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT last_insert_rowid()";
+        return (long)cmd.ExecuteScalar()!;
+    }
+
+    public void Dispose()
+    {
+        _conn.Dispose();
+    }
+}
+
+public record SampleRow(
+    long InstanceId,
+    double? CpuPct,
+    double PrivateMb,
+    double WorkingSetMb,
+    double? IoKb,
+    int Threads,
+    int Handles);
+
+public record MachineSample(
+    double? CpuPct,
+    double? MemoryAvailMb,
+    double? CommitMb,
+    int? HardFaults,
+    double? DiskReadMs,
+    double? DiskWriteMs,
+    double? MemoryTotalMb,
+    double? DiskBusyPct,
+    double? NetKbps,
+    double? GpuBusyPct);

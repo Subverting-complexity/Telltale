@@ -1,0 +1,17 @@
+collector/bin/
+collector/obj/
+viewer/bin/
+viewer/obj/
+viewer/wwwroot/
+collector.Tests/bin/
+collector.Tests/obj/
+viewer.Tests/bin/
+viewer.Tests/obj/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+publish/
+.vs/
+.vscode/
+*.user
+*.suo

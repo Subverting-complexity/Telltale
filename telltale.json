@@ -1,0 +1,15 @@
+{
+  "intervalSeconds": 5,
+  "databasePath": null,
+  "recordCommandLines": true,
+  "maxDatabaseSizeMb": 500,
+  "rawRetentionHours": 24,
+  "rollup1mRetentionDays": 7,
+  "rollup10mRetentionDays": 365,
+  "healthRetentionDays": 7,
+  "rollupIntervalMinutes": 5,
+  "thresholds": {
+    "cpuPct": 0.0,
+    "privateMemoryMb": 0.0
+  }
+}
