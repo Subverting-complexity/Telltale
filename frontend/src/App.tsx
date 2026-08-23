@@ -152,7 +152,7 @@ export default function App() {
   }
 
   const hasData = range?.min != null;
-  const logicalProcessors = health?.logicalProcessors ?? 1;
+  const logicalProcessors = health?.logicalProcessors || 1;
   const showHeatmapToggle = view.scale === 'week' || view.scale === 'month' || view.scale === 'year';
 
   if (!hasData && !loading) {

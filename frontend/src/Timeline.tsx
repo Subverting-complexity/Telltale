@@ -181,7 +181,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
       {showTable ? (
         <DataTable data={data} columns={processColumns()} caption={`${title} data`} />
       ) : (
-        <>
+        <div className="charts-grid">
           <ChartPanel
             title="CPU %"
             data={data}
@@ -219,7 +219,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
               return `${Math.round(v)} KB`;
             }}
           />
-        </>
+        </div>
       )}
     </div>
   );

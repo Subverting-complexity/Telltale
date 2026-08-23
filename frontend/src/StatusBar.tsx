@@ -15,20 +15,21 @@ export function StatusBar() {
 
   if (!health) return null;
 
-  const ago = health.lastSampleTs > 0
-    ? formatElapsed(Date.now() - health.lastSampleTs) + ' ago'
-    : 'never';
+  const elapsed = health.lastSampleTs > 0 ? Date.now() - health.lastSampleTs : null;
+  const ago = elapsed !== null ? formatElapsed(elapsed) + ' ago' : 'never';
+  const stale = elapsed !== null && elapsed > 5 * 60 * 1000;
+  const stopped = !health.collectorRunning && stale;
 
   return (
     <div className="status-bar" role="status" aria-live="polite">
       <span
-        className={`status-dot ${health.collectorRunning ? 'running' : 'stopped'}`}
-        aria-label={health.collectorRunning ? 'Collector running' : 'Collector stopped'}
+        className={`status-dot ${stopped ? 'stopped' : 'running'}`}
+        aria-label={stopped ? 'Collector stopped' : 'Collector running'}
       />
       <span className="status-text">
-        {health.collectorRunning
-          ? `Collecting (${health.processCount} processes, last sample ${ago})`
-          : `Collector stopped (last sample ${ago})`}
+        {stopped
+          ? `Collector stopped (last captured ${ago})`
+          : `Last captured ${ago}`}
       </span>
       <span className="status-db">{health.dbSizeMb} MB</span>
     </div>

@@ -155,6 +155,8 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
               <tbody>
                 {alerts.map(alert => {
                   const hasAnomaly = anomalies.some(a => a.name === alert.name);
+                  const normAvgCpu = alert.avgCpuPct / logicalProcessors;
+                  const normPeakCpu = alert.peakCpuPct / logicalProcessors;
                   return (
                     <tr
                       key={alert.name}
@@ -175,11 +177,11 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
                         </span>
                       </td>
                       <td>
-                        <span className={`alert-value ${alert.avgCpuPct / logicalProcessors > 50 ? 'high' : alert.avgCpuPct / logicalProcessors > 10 ? 'medium' : ''}`}>
-                          {formatCpu(alert.avgCpuPct / logicalProcessors)}
+                        <span className={`alert-value ${normAvgCpu > 50 ? 'high' : normAvgCpu > 10 ? 'medium' : ''}`}>
+                          {formatCpu(normAvgCpu)}
                         </span>
                       </td>
-                      <td>{formatCpu(alert.peakCpuPct / logicalProcessors)}</td>
+                      <td>{formatCpu(normPeakCpu)}</td>
                       <td>
                         <span className={`alert-value ${alert.peakMemoryMb > 2048 ? 'high' : alert.peakMemoryMb > 500 ? 'medium' : ''}`}>
                           {formatSize(alert.peakMemoryMb)}

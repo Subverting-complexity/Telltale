@@ -29,7 +29,7 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
 
   const items = useMemo(() => {
     const sorted = [...filtered].sort((a, b) => {
-      if (metric === 'cpu') return (b.cpuPct / logicalProcessors) - (a.cpuPct / logicalProcessors);
+      if (metric === 'cpu') return b.cpuPct - a.cpuPct;
       if (metric === 'memory') return b.privateMb - a.privateMb;
       return b.ioKb - a.ioKb;
     }).slice(0, MAX_ITEMS);
