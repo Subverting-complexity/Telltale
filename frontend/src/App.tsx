@@ -6,6 +6,7 @@ import type {
   ProcessSelection,
 } from './types';
 import type { ProcessCategory } from './utils';
+type DashboardTab = 'overview' | 'alerts' | 'processes';
 import { StatusBar } from './StatusBar';
 import { TimeNav } from './TimeNav';
 import { Timeline } from './Timeline';
@@ -95,6 +96,7 @@ export default function App() {
   const [thresholds, setThresholds] = useState<ThresholdConfig | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>('all');
   const [showHeatmap, setShowHeatmap] = useState(false);
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
 
   const chartSectionRef = useRef<HTMLElement>(null);
 
@@ -136,7 +138,8 @@ export default function App() {
   }
 
   function handleScrollTo(_metric: 'cpu' | 'memory' | 'disk' | 'network') {
-    chartSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
+    setDashboardTab('overview');
+    setTimeout(() => chartSectionRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
   }
 
   function handleNavigateToDay(year: number, month: number, day: number) {
@@ -172,7 +175,7 @@ export default function App() {
 
   const activeRange = customRange ?? getViewRange(view);
 
-  function renderContent() {
+  function renderDrillDown() {
     if (selectedProcess?.type === 'comparison') {
       return (
         <ProcessComparison
@@ -214,95 +217,15 @@ export default function App() {
       );
     }
 
-    return (
-      <>
-        {customRange && (
-          <div className="custom-range-bar">
-            <span>Custom range selected</span>
-            <button onClick={() => setCustomRange(null)}>Clear selection</button>
-          </div>
-        )}
-
-        <Alerts onSelectProcess={name => setSelectedProcess({ type: 'group', name })} />
-
-        <HealthSummary
-          timeline={timeline}
-          logicalProcessors={logicalProcessors}
-          onScrollTo={handleScrollTo}
-        />
-
-        <div className="dashboard-columns">
-          <section className="dashboard-main">
-            <section ref={chartSectionRef} className="section-card" aria-label="Machine timeline">
-              <div className="section-header">
-                <h2>System Overview</h2>
-                {showHeatmapToggle && (
-                  <div className="view-toggle">
-                    <button
-                      className={`toggle-btn ${!showHeatmap ? 'active' : ''}`}
-                      onClick={() => setShowHeatmap(false)}
-                      aria-pressed={!showHeatmap}
-                    >
-                      Chart
-                    </button>
-                    <button
-                      className={`toggle-btn ${showHeatmap ? 'active' : ''}`}
-                      onClick={() => setShowHeatmap(true)}
-                      aria-pressed={showHeatmap}
-                    >
-                      Heatmap
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {showHeatmap && showHeatmapToggle ? (
-                <HeatmapView
-                  from={activeRange.from}
-                  to={activeRange.to}
-                  onNavigateToDay={handleNavigateToDay}
-                />
-              ) : (
-                <Timeline
-                  data={timeline}
-                  onRangeSelect={handleRangeSelect}
-                  thresholds={thresholds}
-                />
-              )}
-            </section>
-
-            <section className="section-card" aria-label="Process list">
-              <h2>Processes</h2>
-              <ProcessTable
-                processes={processes}
-                logicalProcessors={logicalProcessors}
-                onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
-                onCompare={names => setSelectedProcess({ type: 'comparison', names })}
-                filter={processFilter}
-                onFilterChange={setProcessFilter}
-                sortBy={processSort}
-                onSortChange={setProcessSort}
-                categoryFilter={categoryFilter}
-                onCategoryChange={setCategoryFilter}
-              />
-              <p className="process-note">
-                CPU values are normalised to total system capacity. Some usage may be from processes shorter than the sampling interval.
-              </p>
-            </section>
-          </section>
-
-          <aside className="dashboard-sidebar">
-            <TopConsumers
-              processes={processes}
-              logicalProcessors={logicalProcessors}
-              onSelectProcess={name => setSelectedProcess({ type: 'group', name })}
-              categoryFilter={categoryFilter}
-            />
-          </aside>
-        </div>
-      </>
-    );
+    return null;
   }
+
+  function selectProcess(name: string) {
+    setSelectedProcess({ type: 'group', name });
+    setDashboardTab('processes');
+  }
+
+  const drillDown = renderDrillDown();
 
   return (
     <div className="app">
@@ -323,7 +246,117 @@ export default function App() {
 
       <main className="app-main" role="main">
         {loading && <div className="loading" aria-live="polite">Loading...</div>}
-        {renderContent()}
+
+        <HealthSummary
+          timeline={timeline}
+          logicalProcessors={logicalProcessors}
+          onScrollTo={handleScrollTo}
+        />
+
+        {customRange && (
+          <div className="custom-range-bar">
+            <span>Custom range selected</span>
+            <button onClick={() => setCustomRange(null)}>Clear selection</button>
+          </div>
+        )}
+
+        {drillDown ? drillDown : (
+          <>
+            <nav className="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
+              {(['overview', 'alerts', 'processes'] as const).map(tab => (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={dashboardTab === tab}
+                  className={`dashboard-tab ${dashboardTab === tab ? 'active' : ''}`}
+                  onClick={() => setDashboardTab(tab)}
+                >
+                  {tab === 'overview' ? 'Overview' : tab === 'alerts' ? 'Alerts' : 'Processes'}
+                </button>
+              ))}
+            </nav>
+
+            {dashboardTab === 'overview' && (
+              <div className="tab-content">
+                <TopConsumers
+                  processes={processes}
+                  logicalProcessors={logicalProcessors}
+                  onSelectProcess={selectProcess}
+                  categoryFilter={categoryFilter}
+                />
+
+                <section ref={chartSectionRef} className="section-card" aria-label="Machine timeline">
+                  <div className="section-header">
+                    <h2>System Overview</h2>
+                    {showHeatmapToggle && (
+                      <div className="view-toggle">
+                        <button
+                          className={`toggle-btn ${!showHeatmap ? 'active' : ''}`}
+                          onClick={() => setShowHeatmap(false)}
+                          aria-pressed={!showHeatmap}
+                        >
+                          Chart
+                        </button>
+                        <button
+                          className={`toggle-btn ${showHeatmap ? 'active' : ''}`}
+                          onClick={() => setShowHeatmap(true)}
+                          aria-pressed={showHeatmap}
+                        >
+                          Heatmap
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {showHeatmap && showHeatmapToggle ? (
+                    <HeatmapView
+                      from={activeRange.from}
+                      to={activeRange.to}
+                      onNavigateToDay={handleNavigateToDay}
+                    />
+                  ) : (
+                    <Timeline
+                      data={timeline}
+                      onRangeSelect={handleRangeSelect}
+                      thresholds={thresholds}
+                    />
+                  )}
+                </section>
+              </div>
+            )}
+
+            {dashboardTab === 'alerts' && (
+              <div className="tab-content">
+                <Alerts
+                  logicalProcessors={logicalProcessors}
+                  onSelectProcess={selectProcess}
+                />
+              </div>
+            )}
+
+            {dashboardTab === 'processes' && (
+              <div className="tab-content">
+                <section className="section-card" aria-label="Process list">
+                  <ProcessTable
+                    processes={processes}
+                    logicalProcessors={logicalProcessors}
+                    onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
+                    onCompare={names => setSelectedProcess({ type: 'comparison', names })}
+                    filter={processFilter}
+                    onFilterChange={setProcessFilter}
+                    sortBy={processSort}
+                    onSortChange={setProcessSort}
+                    categoryFilter={categoryFilter}
+                    onCategoryChange={setCategoryFilter}
+                  />
+                  <p className="process-note">
+                    CPU values are normalised to total system capacity. Some usage may be from processes shorter than the sampling interval.
+                  </p>
+                </section>
+              </div>
+            )}
+          </>
+        )}
       </main>
     </div>
   );
