@@ -1,15 +1,22 @@
-import { useEffect, useState, useCallback } from 'react';
-import { getRange, getTimeline, getProcesses } from './api';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { getRange, getTimeline, getProcesses, getHealth, getThresholds } from './api';
 import type {
   ViewState, ViewScale, Theme, RangeResponse,
-  TimelinePoint, ProcessGroupRow,
+  TimelinePoint, ProcessGroupRow, HealthResponse, ThresholdConfig,
+  ProcessSelection,
 } from './types';
+import type { ProcessCategory } from './utils';
+type DashboardTab = 'overview' | 'alerts' | 'processes';
 import { StatusBar } from './StatusBar';
 import { TimeNav } from './TimeNav';
 import { Timeline } from './Timeline';
 import { ProcessTable } from './ProcessTable';
 import { ProcessDetail } from './ProcessDetail';
+import { ProcessComparison } from './ProcessComparison';
 import { Alerts } from './Alerts';
+import { HealthSummary } from './HealthSummary';
+import { TopConsumers } from './TopConsumers';
+import { HeatmapView } from './Heatmap';
 import {
   getDayRange, getMonthRange, getWeekRange, getYearRange,
 } from './utils';
@@ -82,14 +89,24 @@ export default function App() {
   const [processes, setProcesses] = useState<ProcessGroupRow[]>([]);
   const [processFilter, setProcessFilter] = useState('');
   const [processSort, setProcessSort] = useState('cpu');
-  const [selectedProcess, setSelectedProcess] = useState<{ type: 'group'; name: string } | null>(null);
+  const [selectedProcess, setSelectedProcess] = useState<ProcessSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [customRange, setCustomRange] = useState<{ from: number; to: number } | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [thresholds, setThresholds] = useState<ThresholdConfig | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>('all');
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const chartSectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
 
   useEffect(() => {
     getRange().then(setRange).catch(() => {});
+    getHealth().then(setHealth).catch(() => {});
+    getThresholds().then(setThresholds).catch(() => {});
   }, []);
 
   const navigate = useCallback((newView: ViewState) => {
@@ -97,6 +114,10 @@ export default function App() {
     updateUrl(newView);
     setSelectedProcess(null);
     setCustomRange(null);
+  }, []);
+
+  const refreshData = useCallback(() => {
+    setRefreshKey(k => k + 1);
   }, []);
 
   useEffect(() => {
@@ -115,10 +136,24 @@ export default function App() {
       setProcesses(procs.processes as ProcessGroupRow[]);
       setLoading(false);
     });
-  }, [view, processSort, processFilter, customRange]);
+  }, [view, processSort, processFilter, customRange, refreshKey]);
+
+  useEffect(() => {
+    const id = setInterval(refreshData, 90_000);
+    return () => clearInterval(id);
+  }, [refreshData]);
 
   function handleRangeSelect(from: number, to: number) {
     setCustomRange({ from, to });
+  }
+
+  function handleScrollTo(_metric: 'cpu' | 'memory' | 'disk' | 'network') {
+    setDashboardTab('overview');
+    setTimeout(() => chartSectionRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
+  }
+
+  function handleNavigateToDay(year: number, month: number, day: number) {
+    navigate({ scale: 'day', year, month, day });
   }
 
   function cycleTheme() {
@@ -127,6 +162,8 @@ export default function App() {
   }
 
   const hasData = range?.min != null;
+  const logicalProcessors = health?.logicalProcessors || 1;
+  const showHeatmapToggle = view.scale === 'week' || view.scale === 'month' || view.scale === 'year';
 
   if (!hasData && !loading) {
     return (
@@ -148,11 +185,66 @@ export default function App() {
 
   const activeRange = customRange ?? getViewRange(view);
 
+  function renderDrillDown() {
+    if (selectedProcess?.type === 'comparison') {
+      return (
+        <ProcessComparison
+          names={selectedProcess.names}
+          from={activeRange.from}
+          to={activeRange.to}
+          onBack={() => setSelectedProcess(null)}
+        />
+      );
+    }
+
+    if (selectedProcess?.type === 'instance') {
+      return (
+        <ProcessDetail
+          type="instance"
+          id={selectedProcess.id}
+          groupName={selectedProcess.groupName}
+          from={activeRange.from}
+          to={activeRange.to}
+          onBack={() => setSelectedProcess({ type: 'group', name: selectedProcess.groupName })}
+          thresholds={thresholds}
+        />
+      );
+    }
+
+    if (selectedProcess?.type === 'group') {
+      return (
+        <ProcessDetail
+          type="group"
+          name={selectedProcess.name}
+          from={activeRange.from}
+          to={activeRange.to}
+          onBack={() => setSelectedProcess(null)}
+          onSelectInstance={(id, groupName) =>
+            setSelectedProcess({ type: 'instance', id, groupName })
+          }
+          thresholds={thresholds}
+        />
+      );
+    }
+
+    return null;
+  }
+
+  function selectProcess(name: string) {
+    setSelectedProcess({ type: 'group', name });
+    setDashboardTab('processes');
+  }
+
+  const drillDown = renderDrillDown();
+
   return (
     <div className="app">
       <header className="app-header" role="banner">
         <h1>Telltale</h1>
         <StatusBar />
+        <button className="refresh-btn" onClick={refreshData} aria-label="Refresh data" title="Refresh data">
+          ↻
+        </button>
         <button className="theme-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`}>
           {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
         </button>
@@ -168,44 +260,114 @@ export default function App() {
       <main className="app-main" role="main">
         {loading && <div className="loading" aria-live="polite">Loading...</div>}
 
-        {selectedProcess ? (
-          <ProcessDetail
-            type={selectedProcess.type}
-            name={selectedProcess.name}
-            from={activeRange.from}
-            to={activeRange.to}
-            onBack={() => setSelectedProcess(null)}
-          />
-        ) : (
+        <HealthSummary
+          timeline={timeline}
+          logicalProcessors={logicalProcessors}
+          onScrollTo={handleScrollTo}
+        />
+
+        {customRange && (
+          <div className="custom-range-bar">
+            <span>Custom range selected</span>
+            <button onClick={() => setCustomRange(null)}>Clear selection</button>
+          </div>
+        )}
+
+        {drillDown ? drillDown : (
           <>
-            {customRange && (
-              <div className="custom-range-bar">
-                <span>Custom range selected</span>
-                <button onClick={() => setCustomRange(null)}>Clear selection</button>
+            <nav className="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
+              {(['overview', 'alerts', 'processes'] as const).map(tab => (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={dashboardTab === tab}
+                  className={`dashboard-tab ${dashboardTab === tab ? 'active' : ''}`}
+                  onClick={() => setDashboardTab(tab)}
+                >
+                  {tab === 'overview' ? 'Overview' : tab === 'alerts' ? 'Alerts' : 'Processes'}
+                </button>
+              ))}
+            </nav>
+
+            {dashboardTab === 'overview' && (
+              <div className="tab-content">
+                <TopConsumers
+                  processes={processes}
+                  logicalProcessors={logicalProcessors}
+                  onSelectProcess={selectProcess}
+                  categoryFilter={categoryFilter}
+                />
+
+                <section ref={chartSectionRef} className="section-card" aria-label="Machine timeline">
+                  <div className="section-header">
+                    <h2>System Overview</h2>
+                    {showHeatmapToggle && (
+                      <div className="view-toggle">
+                        <button
+                          className={`toggle-btn ${!showHeatmap ? 'active' : ''}`}
+                          onClick={() => setShowHeatmap(false)}
+                          aria-pressed={!showHeatmap}
+                        >
+                          Chart
+                        </button>
+                        <button
+                          className={`toggle-btn ${showHeatmap ? 'active' : ''}`}
+                          onClick={() => setShowHeatmap(true)}
+                          aria-pressed={showHeatmap}
+                        >
+                          Heatmap
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {showHeatmap && showHeatmapToggle ? (
+                    <HeatmapView
+                      from={activeRange.from}
+                      to={activeRange.to}
+                      onNavigateToDay={handleNavigateToDay}
+                    />
+                  ) : (
+                    <Timeline
+                      data={timeline}
+                      onRangeSelect={handleRangeSelect}
+                      thresholds={thresholds}
+                    />
+                  )}
+                </section>
               </div>
             )}
 
-            <Alerts onSelectProcess={name => setSelectedProcess({ type: 'group', name })} />
+            {dashboardTab === 'alerts' && (
+              <div className="tab-content">
+                <Alerts
+                  logicalProcessors={logicalProcessors}
+                  onSelectProcess={selectProcess}
+                />
+              </div>
+            )}
 
-            <section aria-label="Machine timeline">
-              <h2>System Overview</h2>
-              <Timeline data={timeline} onRangeSelect={handleRangeSelect} />
-            </section>
-
-            <section aria-label="Process list">
-              <h2>Processes</h2>
-              <ProcessTable
-                processes={processes}
-                onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
-                filter={processFilter}
-                onFilterChange={setProcessFilter}
-                sortBy={processSort}
-                onSortChange={setProcessSort}
-              />
-              <p className="process-note">
-                Some CPU usage may be from processes shorter than the sampling interval.
-              </p>
-            </section>
+            {dashboardTab === 'processes' && (
+              <div className="tab-content">
+                <section className="section-card" aria-label="Process list">
+                  <ProcessTable
+                    processes={processes}
+                    logicalProcessors={logicalProcessors}
+                    onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
+                    onCompare={names => setSelectedProcess({ type: 'comparison', names })}
+                    filter={processFilter}
+                    onFilterChange={setProcessFilter}
+                    sortBy={processSort}
+                    onSortChange={setProcessSort}
+                    categoryFilter={categoryFilter}
+                    onCategoryChange={setCategoryFilter}
+                  />
+                  <p className="process-note">
+                    CPU values are normalised to total system capacity. Some usage may be from processes shorter than the sampling interval.
+                  </p>
+                </section>
+              </div>
+            )}
           </>
         )}
       </main>

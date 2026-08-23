@@ -273,8 +273,9 @@ public sealed class Database : IDisposable
         cmd.Transaction = tx;
 
         long bucketMs = bucketMinutes * 60_000L;
+        bool isReRollup = sourceTable.Contains("_1m") || sourceTable.Contains("_10m");
 
-        if (isMachine)
+        if (isMachine && !isReRollup)
         {
             cmd.CommandText = $"""
                 INSERT INTO {targetTable}
@@ -295,7 +296,34 @@ public sealed class Database : IDisposable
                 GROUP BY ts / @bucket
                 """;
         }
-        else
+        else if (isMachine && isReRollup)
+        {
+            cmd.CommandText = $"""
+                INSERT INTO {targetTable}
+                    (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+                     commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+                     disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+                SELECT (ts / @bucket) * @bucket,
+                       SUM(cpu_pct_avg * sample_count) / SUM(sample_count),
+                       MAX(cpu_pct_max),
+                       SUM(memory_avail_mb_avg * sample_count) / SUM(sample_count),
+                       (SELECT m2.memory_total_mb FROM {sourceTable} m2
+                        WHERE m2.ts / @bucket = {sourceTable}.ts / @bucket
+                        ORDER BY m2.ts DESC LIMIT 1),
+                       MAX(commit_mb_max), SUM(hard_faults_total),
+                       SUM(disk_read_ms_avg * sample_count) / SUM(sample_count),
+                       SUM(disk_write_ms_avg * sample_count) / SUM(sample_count),
+                       SUM(disk_busy_pct_avg * sample_count) / SUM(sample_count),
+                       MAX(disk_busy_pct_max),
+                       SUM(net_kbps_avg * sample_count) / SUM(sample_count),
+                       SUM(gpu_busy_pct_avg * sample_count) / SUM(sample_count),
+                       SUM(sample_count)
+                FROM {sourceTable}
+                WHERE ts < @cutoff
+                GROUP BY ts / @bucket
+                """;
+        }
+        else if (!isMachine && !isReRollup)
         {
             cmd.CommandText = $"""
                 INSERT INTO {targetTable}
@@ -304,6 +332,21 @@ public sealed class Database : IDisposable
                 SELECT (ts / @bucket) * @bucket, instance_id,
                        AVG(cpu_pct), MAX(cpu_pct), MAX(private_mb),
                        MAX(working_set_mb), SUM(io_kb), COUNT(*)
+                FROM {sourceTable}
+                WHERE ts < @cutoff
+                GROUP BY ts / @bucket, instance_id
+                """;
+        }
+        else
+        {
+            cmd.CommandText = $"""
+                INSERT INTO {targetTable}
+                    (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                     working_set_mb_max, io_kb_total, sample_count)
+                SELECT (ts / @bucket) * @bucket, instance_id,
+                       SUM(cpu_pct_avg * sample_count) / SUM(sample_count),
+                       MAX(cpu_pct_max), MAX(private_mb_max),
+                       MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
                 GROUP BY ts / @bucket, instance_id

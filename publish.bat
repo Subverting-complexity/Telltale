@@ -1,34 +1,50 @@
 @echo off
-echo Building Telltale...
+setlocal
+set "ROOT=%~dp0"
 
-cd /d "%~dp0"
+echo Building Telltale...
+echo.
 
 :: Build frontend
-echo Building frontend...
-cd frontend
+echo [1/4] Building frontend...
+pushd "%ROOT%frontend"
 if not exist node_modules (
-    echo Installing frontend dependencies...
-    npm install
+    echo       Installing dependencies...
+    call npm install
+    if errorlevel 1 goto :fail
 )
-npm run build
-cd ..
+call npm run build
+if errorlevel 1 goto :fail
+popd
 
 :: Publish collector
-echo Publishing collector...
-dotnet publish collector/Collector.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/collector
-
-:: Copy telltale.json template next to collector
-copy telltale.json publish\collector\telltale.json
+echo [2/4] Publishing collector...
+dotnet publish "%ROOT%collector\Collector.csproj" -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o "%ROOT%publish\collector" --nologo -v quiet
+if errorlevel 1 goto :fail
+copy /y "%ROOT%telltale.json" "%ROOT%publish\collector\telltale.json" >nul
 
 :: Publish viewer
-echo Publishing viewer...
-dotnet publish viewer/Viewer.csproj -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/viewer
+echo [3/4] Publishing viewer...
+dotnet publish "%ROOT%viewer\Viewer.csproj" -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o "%ROOT%publish\viewer" --nologo -v quiet
+if errorlevel 1 goto :fail
 
-:: Copy wwwroot to viewer output
-echo Copying frontend assets...
-xcopy /s /y "viewer\wwwroot\*" "publish\viewer\wwwroot\"
+:: Copy frontend assets into viewer output
+echo [4/4] Copying frontend assets...
+xcopy /s /y /q "%ROOT%viewer\wwwroot\*" "%ROOT%publish\viewer\wwwroot\" >nul
 
 echo.
-echo Build complete. Output in publish/
-echo   publish/collector/Collector.exe  - Background process recorder
-echo   publish/viewer/Viewer.exe        - Web-based viewer (http://localhost:5111)
+echo Build complete. Output in publish\
+echo.
+echo   publish\collector\Collector.exe  - Background process recorder
+echo   publish\viewer\Viewer.exe        - Web-based viewer (http://localhost:5111)
+echo.
+echo To run: start Collector.exe first, then open Viewer.exe.
+goto :end
+
+:fail
+echo.
+echo BUILD FAILED
+exit /b 1
+
+:end
+endlocal

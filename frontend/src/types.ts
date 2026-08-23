@@ -23,6 +23,7 @@ export interface ProcessGroupRow {
   privateMb: number;
   ioKb: number;
   instanceCount: number;
+  path: string | null;
 }
 
 export interface ProcessInstanceRow {
@@ -77,6 +78,7 @@ export interface HealthResponse {
   processCount: number;
   storedCount: number;
   dbSizeMb: number;
+  logicalProcessors: number;
 }
 
 export interface RangeResponse {
@@ -110,5 +112,55 @@ export interface ViewState {
   month?: number;
   day?: number;
 }
+
+export interface BaselineData {
+  name: string;
+  avgCpu: number;
+  stddevCpu: number;
+  avgMemoryMb: number;
+  stddevMemoryMb: number;
+  avgIoKb: number;
+  stddevIoKb: number;
+  dataHours: number;
+}
+
+export interface BaselinesResponse {
+  baselines: BaselineData[];
+}
+
+export interface HeatmapBucket {
+  dayOffset: number;
+  hour: number;
+  avg: number;
+  peak: number;
+  count: number;
+}
+
+export interface HeatmapResponse {
+  metric: string;
+  buckets: HeatmapBucket[];
+}
+
+export interface ThresholdConfig {
+  system: {
+    cpuElevatedPct: number;
+    cpuHighPct: number;
+    memoryHighPct: number;
+  };
+  process: {
+    cpuNotablePct: number;
+    cpuElevatedPct: number;
+    cpuHighPct: number;
+    memoryNotableMb: number;
+    memoryHighMb: number;
+    ioHeavyKb: number;
+    cpuSpikePct: number;
+  };
+}
+
+export type ProcessSelection =
+  | { type: 'group'; name: string }
+  | { type: 'instance'; id: number; groupName: string }
+  | { type: 'comparison'; names: string[] };
 
 export type Theme = 'light' | 'dark' | 'system';

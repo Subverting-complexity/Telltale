@@ -1,7 +1,7 @@
 import type {
   RangeResponse, TimelineResponse, ProcessesResponse,
   ProcessDetailResponse, ProcessGroupResponse, HealthResponse,
-  AlertsResponse,
+  AlertsResponse, BaselinesResponse, HeatmapResponse, ThresholdConfig,
 } from './types';
 
 const API_BASE = '/api';
@@ -46,4 +46,16 @@ export function getHealth(): Promise<HealthResponse> {
 
 export function getAlerts(days: number): Promise<AlertsResponse> {
   return fetchJson(`${API_BASE}/alerts?days=${days}`);
+}
+
+export function getBaselines(names: string[]): Promise<BaselinesResponse> {
+  return fetchJson(`${API_BASE}/baselines?names=${names.map(encodeURIComponent).join(',')}`);
+}
+
+export function getHeatmap(from: number, to: number, metric: string): Promise<HeatmapResponse> {
+  return fetchJson(`${API_BASE}/heatmap?from=${from}&to=${to}&metric=${encodeURIComponent(metric)}`);
+}
+
+export function getThresholds(): Promise<ThresholdConfig> {
+  return fetchJson(`${API_BASE}/thresholds`);
 }
