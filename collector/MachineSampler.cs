@@ -22,6 +22,24 @@ public sealed class MachineSampler : IDisposable
     private static extern int PdhLookupPerfNameByIndex(
         string? szMachineName, uint dwNameIndex, char[] szNameBuffer, ref uint pcchNameBufferSize);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
     public MachineSampler(ILogger logger)
     {
         _logger = logger;
@@ -129,7 +147,6 @@ public sealed class MachineSampler : IDisposable
     public MachineSample Sample()
     {
         double? cpuPct = ReadCounter(_cpuCounter);
-        double? memAvailMb = ReadCounter(_memAvailCounter);
         double? commitBytes = ReadCounter(_commitCounter);
         double? commitMb = commitBytes.HasValue ? commitBytes.Value / (1024 * 1024) : null;
         double? hardFaults = ReadCounter(_hardFaultCounter);
@@ -154,7 +171,19 @@ public sealed class MachineSampler : IDisposable
             if (anyRead) netKbps = sum / 1024.0;
         }
 
-        double memoryTotalMb = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024.0 * 1024.0);
+        double memoryTotalMb;
+        double? memAvailMb;
+        var memStatus = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (GlobalMemoryStatusEx(ref memStatus))
+        {
+            memoryTotalMb = memStatus.ullTotalPhys / (1024.0 * 1024.0);
+            memAvailMb = memStatus.ullAvailPhys / (1024.0 * 1024.0);
+        }
+        else
+        {
+            memoryTotalMb = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024.0 * 1024.0);
+            memAvailMb = ReadCounter(_memAvailCounter);
+        }
 
         return new MachineSample(
             CpuPct: cpuPct,

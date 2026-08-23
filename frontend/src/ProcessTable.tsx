@@ -39,9 +39,10 @@ export function ProcessTable({
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [compareSet, setCompareSet] = useState<Set<string>>(new Set());
 
+  const withoutIdle = processes.filter(p => p.name.toLowerCase() !== 'idle');
   const filtered = categoryFilter === 'all'
-    ? processes
-    : processes.filter(p => categoriseProcess(p.name, p.path) === categoryFilter);
+    ? withoutIdle
+    : withoutIdle.filter(p => categoriseProcess(p.name, p.path) === categoryFilter);
 
   const maxCpu = Math.max(...filtered.map(p => p.cpuPct / logicalProcessors), 1);
   const maxMem = Math.max(...filtered.map(p => p.privateMb), 1);
