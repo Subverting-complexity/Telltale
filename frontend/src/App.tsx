@@ -231,69 +231,75 @@ export default function App() {
           onScrollTo={handleScrollTo}
         />
 
-        <TopConsumers
-          processes={processes}
-          logicalProcessors={logicalProcessors}
-          onSelectProcess={name => setSelectedProcess({ type: 'group', name })}
-          categoryFilter={categoryFilter}
-        />
-
-        <section ref={chartSectionRef} aria-label="Machine timeline">
-          <div className="section-header">
-            <h2>System Overview</h2>
-            {showHeatmapToggle && (
-              <div className="view-toggle">
-                <button
-                  className={`toggle-btn ${!showHeatmap ? 'active' : ''}`}
-                  onClick={() => setShowHeatmap(false)}
-                  aria-pressed={!showHeatmap}
-                >
-                  Chart
-                </button>
-                <button
-                  className={`toggle-btn ${showHeatmap ? 'active' : ''}`}
-                  onClick={() => setShowHeatmap(true)}
-                  aria-pressed={showHeatmap}
-                >
-                  Heatmap
-                </button>
+        <div className="dashboard-columns">
+          <section className="dashboard-main">
+            <section ref={chartSectionRef} className="section-card" aria-label="Machine timeline">
+              <div className="section-header">
+                <h2>System Overview</h2>
+                {showHeatmapToggle && (
+                  <div className="view-toggle">
+                    <button
+                      className={`toggle-btn ${!showHeatmap ? 'active' : ''}`}
+                      onClick={() => setShowHeatmap(false)}
+                      aria-pressed={!showHeatmap}
+                    >
+                      Chart
+                    </button>
+                    <button
+                      className={`toggle-btn ${showHeatmap ? 'active' : ''}`}
+                      onClick={() => setShowHeatmap(true)}
+                      aria-pressed={showHeatmap}
+                    >
+                      Heatmap
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {showHeatmap && showHeatmapToggle ? (
-            <HeatmapView
-              from={activeRange.from}
-              to={activeRange.to}
-              onNavigateToDay={handleNavigateToDay}
-            />
-          ) : (
-            <Timeline
-              data={timeline}
-              onRangeSelect={handleRangeSelect}
-              thresholds={thresholds}
-            />
-          )}
-        </section>
+              {showHeatmap && showHeatmapToggle ? (
+                <HeatmapView
+                  from={activeRange.from}
+                  to={activeRange.to}
+                  onNavigateToDay={handleNavigateToDay}
+                />
+              ) : (
+                <Timeline
+                  data={timeline}
+                  onRangeSelect={handleRangeSelect}
+                  thresholds={thresholds}
+                />
+              )}
+            </section>
 
-        <section aria-label="Process list">
-          <h2>Processes</h2>
-          <ProcessTable
-            processes={processes}
-            logicalProcessors={logicalProcessors}
-            onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
-            onCompare={names => setSelectedProcess({ type: 'comparison', names })}
-            filter={processFilter}
-            onFilterChange={setProcessFilter}
-            sortBy={processSort}
-            onSortChange={setProcessSort}
-            categoryFilter={categoryFilter}
-            onCategoryChange={setCategoryFilter}
-          />
-          <p className="process-note">
-            CPU values are normalised to total system capacity. Some usage may be from processes shorter than the sampling interval.
-          </p>
-        </section>
+            <section className="section-card" aria-label="Process list">
+              <h2>Processes</h2>
+              <ProcessTable
+                processes={processes}
+                logicalProcessors={logicalProcessors}
+                onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
+                onCompare={names => setSelectedProcess({ type: 'comparison', names })}
+                filter={processFilter}
+                onFilterChange={setProcessFilter}
+                sortBy={processSort}
+                onSortChange={setProcessSort}
+                categoryFilter={categoryFilter}
+                onCategoryChange={setCategoryFilter}
+              />
+              <p className="process-note">
+                CPU values are normalised to total system capacity. Some usage may be from processes shorter than the sampling interval.
+              </p>
+            </section>
+          </section>
+
+          <aside className="dashboard-sidebar">
+            <TopConsumers
+              processes={processes}
+              logicalProcessors={logicalProcessors}
+              onSelectProcess={name => setSelectedProcess({ type: 'group', name })}
+              categoryFilter={categoryFilter}
+            />
+          </aside>
+        </div>
       </>
     );
   }

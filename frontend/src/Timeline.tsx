@@ -97,7 +97,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
       {showTable ? (
         <DataTable data={data} columns={timelineColumns()} caption="Machine timeline data" />
       ) : (
-        <>
+        <div className="charts-grid">
           <ChartPanel
             title="CPU %"
             data={data}
@@ -152,7 +152,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             }}
             formatTooltip={v => formatRate(v)}
           />
-        </>
+        </div>
       )}
     </div>
   );

@@ -220,7 +220,7 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
               Memory
             </button>
           </div>
-          <div className="treemap-container" style={{ position: 'relative', width: '100%', height: 200 }}>
+          <div className="treemap-container" style={{ position: 'relative', width: '100%', height: 240 }}>
             {squarify(treemapItems, 100, 100).map(rect => (
               <button
                 key={rect.name}

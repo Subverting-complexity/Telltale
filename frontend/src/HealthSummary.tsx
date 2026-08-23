@@ -49,8 +49,8 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
   const cpuPct = latest.cpuPct ?? 0;
   const memTotalMb = latest.memoryTotalMb ?? 0;
   const memAvailMb = latest.memoryAvailMb ?? 0;
-  const memUsedMb = memTotalMb - memAvailMb;
-  const memPct = memTotalMb > 0 ? (memUsedMb / memTotalMb) * 100 : 0;
+  const memUsedMb = Math.max(0, memTotalMb - memAvailMb);
+  const memPct = memTotalMb > 0 ? Math.min((memUsedMb / memTotalMb) * 100, 100) : 0;
   const diskPct = latest.diskBusyPct ?? 0;
   const netKbps = latest.netKbps;
 
@@ -62,13 +62,14 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         aria-label={`CPU: ${cpuPct.toFixed(0)}% of ${logicalProcessors} cores`}
       >
         <div className="tile-header">CPU</div>
+        <div className="tile-value">{cpuPct.toFixed(0)}%</div>
         <div className="tile-bar-track">
           <div
             className={`tile-bar-fill ${getZoneClass(cpuPct)}`}
             style={{ width: `${Math.min(cpuPct, 100)}%` }}
           />
         </div>
-        <div className="tile-label">{cpuPct.toFixed(0)}% of {logicalProcessors} cores</div>
+        <div className="tile-label">{logicalProcessors} cores</div>
       </button>
 
       <button
@@ -77,13 +78,14 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         aria-label={`Memory: ${formatGb(memUsedMb)} / ${formatGb(memTotalMb)} (${memPct.toFixed(0)}%)`}
       >
         <div className="tile-header">Memory</div>
+        <div className="tile-value">{memPct.toFixed(0)}%</div>
         <div className="tile-bar-track">
           <div
             className={`tile-bar-fill ${getZoneClass(memPct)}`}
             style={{ width: `${Math.min(memPct, 100)}%` }}
           />
         </div>
-        <div className="tile-label">{formatGb(memUsedMb)} / {formatGb(memTotalMb)} ({memPct.toFixed(0)}%)</div>
+        <div className="tile-label">{formatGb(memUsedMb)} / {formatGb(memTotalMb)}</div>
       </button>
 
       <button
@@ -92,19 +94,14 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         aria-label={`Disk: ${diskPct < 5 ? 'Idle' : `${diskPct.toFixed(0)}% busy`}`}
       >
         <div className="tile-header">Disk</div>
-        {diskPct >= 5 ? (
-          <>
-            <div className="tile-bar-track">
-              <div
-                className={`tile-bar-fill ${getZoneClass(diskPct)}`}
-                style={{ width: `${Math.min(diskPct, 100)}%` }}
-              />
-            </div>
-            <div className="tile-label">{diskPct.toFixed(0)}% busy</div>
-          </>
-        ) : (
-          <div className="tile-label tile-idle">{diskPct < 1 ? 'Idle' : `${diskPct.toFixed(0)}% busy`}</div>
-        )}
+        <div className="tile-value">{diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}%`}</div>
+        <div className="tile-bar-track">
+          <div
+            className={`tile-bar-fill ${getZoneClass(diskPct)}`}
+            style={{ width: `${Math.min(diskPct, 100)}%` }}
+          />
+        </div>
+        <div className="tile-label">busy</div>
       </button>
 
       <button
@@ -113,8 +110,8 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         aria-label={`Network: ${formatRate(netKbps)}`}
       >
         <div className="tile-header">Network</div>
+        <div className="tile-value">{formatRate(netKbps)}</div>
         <Sparkline values={sparklineData} />
-        <div className="tile-label">{formatRate(netKbps)}</div>
       </button>
     </section>
   );
