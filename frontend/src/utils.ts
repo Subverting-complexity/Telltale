@@ -78,3 +78,58 @@ export function getDaysInMonth(year: number, month: number): number {
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
+
+export type ProcessCategory = 'system' | 'services' | 'applications';
+
+const SYSTEM_PROCESS_NAMES = new Set([
+  'system', 'idle', 'registry', 'csrss.exe', 'lsass.exe', 'smss.exe',
+  'wininit.exe', 'services.exe', 'svchost.exe', 'dwm.exe', 'conhost.exe',
+  'winlogon.exe', 'fontdrvhost.exe', 'lsaiso.exe', 'memory compression',
+  'secure system', 'ntoskrnl.exe', 'spoolsv.exe', 'dllhost.exe',
+  'sihost.exe', 'taskhostw.exe', 'runtimebroker.exe', 'searchhost.exe',
+  'startmenuexperiencehost.exe', 'textinputhost.exe', 'shellexperiencehost.exe',
+  'explorer.exe', 'ctfmon.exe', 'audiodg.exe',
+]);
+
+const SYSTEM_PATH_PREFIXES = [
+  'c:\\windows\\system32\\',
+  'c:\\windows\\syswow64\\',
+  'c:\\windows\\',
+];
+
+const SERVICE_PATH_PREFIXES = [
+  'c:\\program files\\',
+  'c:\\program files (x86)\\',
+  'c:\\programdata\\',
+];
+
+export function categoriseProcess(name: string, path: string | null): ProcessCategory {
+  const lowerName = name.toLowerCase();
+  if (SYSTEM_PROCESS_NAMES.has(lowerName)) return 'system';
+
+  if (path) {
+    const lowerPath = path.toLowerCase();
+    if (SYSTEM_PATH_PREFIXES.some(p => lowerPath.startsWith(p))) return 'system';
+    if (SERVICE_PATH_PREFIXES.some(p => lowerPath.startsWith(p))) return 'services';
+  }
+
+  return 'applications';
+}
+
+export function formatRate(kbps: number | null): string {
+  if (kbps === null) return '-';
+  if (kbps >= 1048576) return `${(kbps / 1048576).toFixed(1)} GB/s`;
+  if (kbps >= 1024) return `${(kbps / 1024).toFixed(1)} MB/s`;
+  return `${kbps.toFixed(0)} KB/s`;
+}
+
+export function formatMemoryPercent(availMb: number | null, totalMb: number | null): string {
+  if (availMb === null || totalMb === null || totalMb === 0) return '-';
+  const usedPct = ((totalMb - availMb) / totalMb) * 100;
+  return `${usedPct.toFixed(1)}%`;
+}
+
+export function formatSizeGb(mb: number): string {
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb.toFixed(0)} MB`;
+}

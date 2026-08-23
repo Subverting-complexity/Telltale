@@ -42,6 +42,19 @@ try
         return conn;
     }
 
+    // --- Threshold constants (shared by /api/alerts and /api/thresholds) ---
+    const double SystemCpuElevatedPct = 10;
+    const double SystemCpuHighPct = 50;
+    const double SystemMemoryHighPct = 80;
+
+    const double ProcessCpuNotablePct = 5;
+    const double ProcessCpuElevatedPct = 10;
+    const double ProcessCpuHighPct = 50;
+    const double ProcessMemoryNotableMb = 500;
+    const double ProcessMemoryHighMb = 2048;
+    const double ProcessIoHeavyKb = 10485760;
+    const double ProcessCpuSpikePct = 200;
+
     app.MapGet("/api/range", () =>
     {
         try
@@ -184,7 +197,8 @@ try
                        SUM(s.{cpuCol}) as total_cpu_pct,
                        SUM(s.{memCol}) as total_private_mb,
                        SUM(s.{ioCol}) as total_io_kb,
-                       COUNT(DISTINCT s.instance_id) as instance_count
+                       COUNT(DISTINCT s.instance_id) as instance_count,
+                       (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = pi.name AND pi2.path IS NOT NULL LIMIT 1) as path
                 FROM {table} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
@@ -230,6 +244,7 @@ try
                     privateMb = reader.IsDBNull(2) ? 0.0 : reader.GetDouble(2),
                     ioKb = reader.IsDBNull(3) ? 0.0 : reader.GetDouble(3),
                     instanceCount = reader.GetInt32(4),
+                    path = reader.IsDBNull(5) ? null : reader.GetString(5),
                 });
             }
         }
@@ -406,7 +421,7 @@ try
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
                 GROUP BY pi.name
-                HAVING AVG(s.{cpuCol}) > 5.0 OR MAX(s.{memCol}) > 500
+                HAVING AVG(s.{cpuCol}) > {ProcessCpuNotablePct} OR MAX(s.{memCol}) > {ProcessMemoryNotableMb}
                 ORDER BY AVG(s.{cpuCol}) DESC
                 LIMIT 50
                 """;
@@ -424,13 +439,13 @@ try
                 double totalIoKb = reader.IsDBNull(4) ? 0 : reader.GetDouble(4);
 
                 var reasons = new List<string>();
-                if (avgCpu > 50) reasons.Add("Sustained high CPU");
-                else if (avgCpu > 10) reasons.Add("Elevated CPU");
-                else if (avgCpu > 5) reasons.Add("Notable CPU usage");
-                if (peakCpu > 200) reasons.Add("CPU spike above 200%");
-                if (peakMemMb > 2048) reasons.Add("Memory above 2 GB");
-                else if (peakMemMb > 500) reasons.Add("Memory above 500 MB");
-                if (totalIoKb > 10485760) reasons.Add("Heavy I/O (10+ GB total)");
+                if (avgCpu > ProcessCpuHighPct) reasons.Add("Sustained high CPU");
+                else if (avgCpu > ProcessCpuElevatedPct) reasons.Add("Elevated CPU");
+                else if (avgCpu > ProcessCpuNotablePct) reasons.Add("Notable CPU usage");
+                if (peakCpu > ProcessCpuSpikePct) reasons.Add($"CPU spike above {ProcessCpuSpikePct}%");
+                if (peakMemMb > ProcessMemoryHighMb) reasons.Add($"Memory above {ProcessMemoryHighMb / 1024} GB");
+                else if (peakMemMb > ProcessMemoryNotableMb) reasons.Add($"Memory above {ProcessMemoryNotableMb} MB");
+                if (totalIoKb > ProcessIoHeavyKb) reasons.Add("Heavy I/O (10+ GB total)");
 
                 alerts.Add(new
                 {
@@ -502,6 +517,171 @@ try
             processCount,
             storedCount,
             dbSizeMb = Math.Round(dbSizeBytes / (1024.0 * 1024.0), 1),
+            logicalProcessors = Environment.ProcessorCount,
+        }, jsonOptions);
+    });
+
+    app.MapGet("/api/baselines", (string? names) =>
+    {
+        if (string.IsNullOrWhiteSpace(names))
+            return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
+
+        var nameList = names.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (nameList.Length == 0)
+            return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
+
+        try
+        {
+            using var conn = OpenDb();
+            using var checkCmd = conn.CreateCommand();
+            checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='sample_1m'";
+            if (checkCmd.ExecuteScalar() == null)
+                return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long sevenDaysAgo = now - 7L * 86_400_000L;
+
+            // Use sample_1m for 7-day lookback (within the 1m tier range)
+            string table = "sample_1m";
+            int intervalMinutes = 1;
+            int minDataPoints = 24 * 60 / intervalMinutes; // 1440 for 1m, requires 24h of data
+
+            var baselines = new List<object>();
+            foreach (var name in nameList)
+            {
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = $"""
+                    SELECT pi.name,
+                           AVG(s.cpu_pct_avg) as avg_cpu,
+                           SQRT(AVG(s.cpu_pct_avg * s.cpu_pct_avg) - AVG(s.cpu_pct_avg) * AVG(s.cpu_pct_avg)) as stddev_cpu,
+                           AVG(s.private_mb_max) as avg_memory_mb,
+                           SQRT(AVG(s.private_mb_max * s.private_mb_max) - AVG(s.private_mb_max) * AVG(s.private_mb_max)) as stddev_memory_mb,
+                           AVG(s.io_kb_total) as avg_io_kb,
+                           SQRT(AVG(s.io_kb_total * s.io_kb_total) - AVG(s.io_kb_total) * AVG(s.io_kb_total)) as stddev_io_kb,
+                           COUNT(DISTINCT s.ts) as data_points
+                    FROM {table} s
+                    JOIN process_instance pi ON pi.id = s.instance_id
+                    WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
+                    GROUP BY pi.name
+                    HAVING COUNT(DISTINCT s.ts) >= @minPoints
+                    """;
+                cmd.Parameters.AddWithValue("@name", name);
+                cmd.Parameters.AddWithValue("@from", sevenDaysAgo);
+                cmd.Parameters.AddWithValue("@to", now);
+                cmd.Parameters.AddWithValue("@minPoints", minDataPoints);
+
+                using var reader = cmd.ExecuteReader();
+                if (reader.Read())
+                {
+                    long dataPoints = reader.GetInt64(7);
+                    double dataHours = dataPoints * intervalMinutes / 60.0;
+                    baselines.Add(new
+                    {
+                        name = reader.GetString(0),
+                        avgCpu = Math.Round(reader.IsDBNull(1) ? 0 : reader.GetDouble(1), 2),
+                        stddevCpu = Math.Round(reader.IsDBNull(2) ? 0 : reader.GetDouble(2), 2),
+                        avgMemoryMb = Math.Round(reader.IsDBNull(3) ? 0 : reader.GetDouble(3), 2),
+                        stddevMemoryMb = Math.Round(reader.IsDBNull(4) ? 0 : reader.GetDouble(4), 2),
+                        avgIoKb = Math.Round(reader.IsDBNull(5) ? 0 : reader.GetDouble(5), 2),
+                        stddevIoKb = Math.Round(reader.IsDBNull(6) ? 0 : reader.GetDouble(6), 2),
+                        dataHours = Math.Round(dataHours, 1),
+                    });
+                }
+            }
+
+            return Results.Json(new { baselines }, jsonOptions);
+        }
+        catch
+        {
+            return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
+        }
+    });
+
+    app.MapGet("/api/heatmap", (long? from, long? to, string? metric) =>
+    {
+        if (from == null || to == null || string.IsNullOrWhiteSpace(metric))
+            return Results.BadRequest(new { error = "from, to, and metric parameters are required" });
+
+        string[] validMetrics = ["cpu", "memory", "disk", "network"];
+        if (!validMetrics.Contains(metric))
+            return Results.BadRequest(new { error = $"metric must be one of: {string.Join(", ", validMetrics)}" });
+
+        try
+        {
+            using var conn = OpenDb();
+            using var checkCmd = conn.CreateCommand();
+            checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine'";
+            if (checkCmd.ExecuteScalar() == null)
+                return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
+
+            var (table, _) = SelectTier(from.Value, to.Value, isMachine: true);
+
+            string metricCol = metric switch
+            {
+                "cpu" => table == "machine" ? "cpu_pct" : "cpu_pct_avg",
+                "memory" => table == "machine" ? "memory_avail_mb" : "memory_avail_mb_avg",
+                "disk" => table == "machine" ? "disk_busy_pct" : "disk_busy_pct_avg",
+                "network" => table == "machine" ? "net_kbps" : "net_kbps_avg",
+                _ => "cpu_pct"
+            };
+
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"""
+                SELECT (ts - @from) / 86400000 as day_offset,
+                       ((ts % 86400000) / 3600000) as hour,
+                       AVG({metricCol}) as avg_val,
+                       MAX({metricCol}) as peak_val,
+                       COUNT(*) as cnt
+                FROM {table}
+                WHERE ts >= @from AND ts <= @to
+                GROUP BY day_offset, hour
+                ORDER BY day_offset, hour
+                """;
+            cmd.Parameters.AddWithValue("@from", from.Value);
+            cmd.Parameters.AddWithValue("@to", to.Value);
+
+            var buckets = new List<object>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                buckets.Add(new
+                {
+                    dayOffset = reader.GetInt64(0),
+                    hour = reader.GetInt64(1),
+                    avg = reader.IsDBNull(2) ? 0.0 : Math.Round(reader.GetDouble(2), 2),
+                    peak = reader.IsDBNull(3) ? 0.0 : Math.Round(reader.GetDouble(3), 2),
+                    count = reader.GetInt64(4),
+                });
+            }
+
+            return Results.Json(new { metric, buckets }, jsonOptions);
+        }
+        catch
+        {
+            return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
+        }
+    });
+
+    app.MapGet("/api/thresholds", () =>
+    {
+        return Results.Json(new
+        {
+            system = new
+            {
+                cpuElevatedPct = SystemCpuElevatedPct,
+                cpuHighPct = SystemCpuHighPct,
+                memoryHighPct = SystemMemoryHighPct,
+            },
+            process = new
+            {
+                cpuNotablePct = ProcessCpuNotablePct,
+                cpuElevatedPct = ProcessCpuElevatedPct,
+                cpuHighPct = ProcessCpuHighPct,
+                memoryNotableMb = ProcessMemoryNotableMb,
+                memoryHighMb = ProcessMemoryHighMb,
+                ioHeavyKb = ProcessIoHeavyKb,
+                cpuSpikePct = ProcessCpuSpikePct,
+            },
         }, jsonOptions);
     });
 

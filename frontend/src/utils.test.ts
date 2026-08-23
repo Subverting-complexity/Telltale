@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatSize, formatElapsed, formatCpu, formatIo, formatDate, formatTime,
   getDaysInMonth, getDayRange, getMonthRange, getYearRange, getWeekRange, clamp,
+  categoriseProcess, formatRate, formatMemoryPercent, formatSizeGb,
 } from './utils';
 
 describe('formatSize', () => {
@@ -174,5 +175,86 @@ describe('clamp', () => {
   it('handles value at boundary', () => {
     expect(clamp(0, 0, 100)).toBe(0);
     expect(clamp(100, 0, 100)).toBe(100);
+  });
+});
+
+describe('categoriseProcess', () => {
+  it('identifies system processes by name', () => {
+    expect(categoriseProcess('csrss.exe', null)).toBe('system');
+    expect(categoriseProcess('System', null)).toBe('system');
+    expect(categoriseProcess('Idle', null)).toBe('system');
+    expect(categoriseProcess('svchost.exe', null)).toBe('system');
+  });
+
+  it('is case-insensitive for names', () => {
+    expect(categoriseProcess('CSRSS.EXE', null)).toBe('system');
+    expect(categoriseProcess('Svchost.exe', null)).toBe('system');
+  });
+
+  it('identifies system processes by path', () => {
+    expect(categoriseProcess('unknown.exe', 'C:\\Windows\\System32\\unknown.exe')).toBe('system');
+    expect(categoriseProcess('unknown.exe', 'C:\\Windows\\SysWOW64\\unknown.exe')).toBe('system');
+  });
+
+  it('identifies services by path', () => {
+    expect(categoriseProcess('myapp.exe', 'C:\\Program Files\\MyApp\\myapp.exe')).toBe('services');
+    expect(categoriseProcess('myapp.exe', 'C:\\Program Files (x86)\\MyApp\\myapp.exe')).toBe('services');
+  });
+
+  it('categorises unknown processes as applications', () => {
+    expect(categoriseProcess('chrome.exe', 'D:\\Apps\\chrome.exe')).toBe('applications');
+    expect(categoriseProcess('myapp.exe', null)).toBe('applications');
+  });
+
+  it('prefers name match over path', () => {
+    expect(categoriseProcess('svchost.exe', 'D:\\somewhere\\svchost.exe')).toBe('system');
+  });
+});
+
+describe('formatRate', () => {
+  it('handles null', () => {
+    expect(formatRate(null)).toBe('-');
+  });
+  it('formats KB/s', () => {
+    expect(formatRate(500)).toBe('500 KB/s');
+  });
+  it('formats MB/s', () => {
+    expect(formatRate(2048)).toBe('2.0 MB/s');
+  });
+  it('formats GB/s', () => {
+    expect(formatRate(2097152)).toBe('2.0 GB/s');
+  });
+  it('formats zero', () => {
+    expect(formatRate(0)).toBe('0 KB/s');
+  });
+});
+
+describe('formatMemoryPercent', () => {
+  it('handles null available', () => {
+    expect(formatMemoryPercent(null, 16384)).toBe('-');
+  });
+  it('handles null total', () => {
+    expect(formatMemoryPercent(8192, null)).toBe('-');
+  });
+  it('handles zero total', () => {
+    expect(formatMemoryPercent(8192, 0)).toBe('-');
+  });
+  it('calculates used percentage', () => {
+    expect(formatMemoryPercent(8192, 16384)).toBe('50.0%');
+  });
+  it('handles high usage', () => {
+    expect(formatMemoryPercent(1638, 16384)).toBe('90.0%');
+  });
+});
+
+describe('formatSizeGb', () => {
+  it('formats MB', () => {
+    expect(formatSizeGb(512)).toBe('512 MB');
+  });
+  it('formats GB', () => {
+    expect(formatSizeGb(2048)).toBe('2.0 GB');
+  });
+  it('formats exact GB boundary', () => {
+    expect(formatSizeGb(1024)).toBe('1.0 GB');
   });
 });
