@@ -135,7 +135,7 @@ export function HeatmapView({ from, to, onNavigateToDay }: HeatmapViewProps) {
     ).then(results => {
       const map = new Map<string, HeatmapBucket[]>();
       for (const [key, buckets] of results) {
-        map.set(key, buckets);
+        map.set(key, buckets as HeatmapBucket[]);
       }
       setData(map);
       setLoading(false);
