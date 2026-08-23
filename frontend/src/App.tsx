@@ -97,6 +97,7 @@ export default function App() {
   const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>('all');
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const chartSectionRef = useRef<HTMLElement>(null);
 
@@ -115,6 +116,10 @@ export default function App() {
     setCustomRange(null);
   }, []);
 
+  const refreshData = useCallback(() => {
+    setRefreshKey(k => k + 1);
+  }, []);
+
   useEffect(() => {
     setLoading(true);
     const { from, to } = customRange ?? getViewRange(view);
@@ -131,7 +136,12 @@ export default function App() {
       setProcesses(procs.processes as ProcessGroupRow[]);
       setLoading(false);
     });
-  }, [view, processSort, processFilter, customRange]);
+  }, [view, processSort, processFilter, customRange, refreshKey]);
+
+  useEffect(() => {
+    const id = setInterval(refreshData, 90_000);
+    return () => clearInterval(id);
+  }, [refreshData]);
 
   function handleRangeSelect(from: number, to: number) {
     setCustomRange({ from, to });
@@ -232,6 +242,9 @@ export default function App() {
       <header className="app-header" role="banner">
         <h1>Telltale</h1>
         <StatusBar />
+        <button className="refresh-btn" onClick={refreshData} aria-label="Refresh data" title="Refresh data">
+          ↻
+        </button>
         <button className="theme-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`}>
           {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
         </button>

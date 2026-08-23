@@ -48,9 +48,10 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
 
   const cpuPct = latest.cpuPct ?? 0;
   const memTotalMb = latest.memoryTotalMb ?? 0;
-  const memAvailMb = latest.memoryAvailMb ?? 0;
-  const memUsedMb = Math.max(0, memTotalMb - memAvailMb);
-  const memPct = memTotalMb > 0 ? Math.min((memUsedMb / memTotalMb) * 100, 100) : 0;
+  const memAvailMb = latest.memoryAvailMb;
+  const memHasData = memAvailMb !== null && memAvailMb !== undefined && memTotalMb > 0;
+  const memUsedMb = memHasData ? Math.max(0, memTotalMb - memAvailMb) : null;
+  const memPct = memHasData && memUsedMb !== null ? Math.min((memUsedMb / memTotalMb) * 100, 100) : null;
   const diskPct = latest.diskBusyPct ?? 0;
   const netKbps = latest.netKbps;
 
@@ -75,17 +76,25 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
       <button
         className="health-tile"
         onClick={() => onScrollTo('memory')}
-        aria-label={`Memory: ${formatGb(memUsedMb)} / ${formatGb(memTotalMb)} (${memPct.toFixed(0)}%)`}
+        aria-label={memPct !== null
+          ? `Memory: ${formatGb(memUsedMb!)} / ${formatGb(memTotalMb)} (${memPct.toFixed(0)}%)`
+          : `Memory: no data`}
       >
         <div className="tile-header">Memory</div>
-        <div className="tile-value">{memPct.toFixed(0)}%</div>
-        <div className="tile-bar-track">
-          <div
-            className={`tile-bar-fill ${getZoneClass(memPct)}`}
-            style={{ width: `${Math.min(memPct, 100)}%` }}
-          />
-        </div>
-        <div className="tile-label">{formatGb(memUsedMb)} / {formatGb(memTotalMb)}</div>
+        <div className="tile-value">{memPct !== null ? `${memPct.toFixed(0)}%` : '-'}</div>
+        {memPct !== null ? (
+          <>
+            <div className="tile-bar-track">
+              <div
+                className={`tile-bar-fill ${getZoneClass(memPct)}`}
+                style={{ width: `${Math.min(memPct, 100)}%` }}
+              />
+            </div>
+            <div className="tile-label">{formatGb(memUsedMb!)} / {formatGb(memTotalMb)}</div>
+          </>
+        ) : (
+          <div className="tile-label">{memTotalMb > 0 ? formatGb(memTotalMb) : 'No data'}</div>
+        )}
       </button>
 
       <button

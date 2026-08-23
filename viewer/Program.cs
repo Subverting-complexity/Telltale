@@ -177,10 +177,10 @@ try
         int take = Math.Clamp(limit ?? 50, 1, 500);
         string sortCol = sort switch
         {
-            "memory" => "total_private_mb",
+            "memory" => "peak_private_mb",
             "io" => "total_io_kb",
             "name" => "name",
-            _ => "total_cpu_pct"
+            _ => "avg_cpu_pct"
         };
 
         var (table, _) = SelectTier(from, to, isMachine: false);
@@ -193,17 +193,25 @@ try
         if (grouped)
         {
             cmd.CommandText = $"""
-                SELECT pi.name,
-                       SUM(s.{cpuCol}) as total_cpu_pct,
-                       SUM(s.{memCol}) as total_private_mb,
-                       SUM(s.{ioCol}) as total_io_kb,
-                       COUNT(DISTINCT s.instance_id) as instance_count,
-                       (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = pi.name AND pi2.path IS NOT NULL LIMIT 1) as path
-                FROM {table} s
-                JOIN process_instance pi ON pi.id = s.instance_id
-                WHERE s.ts >= @from AND s.ts <= @to
-                {(q != null ? "AND pi.name LIKE @q" : "")}
-                GROUP BY pi.name
+                SELECT sub.name,
+                       AVG(sub.ts_cpu) as avg_cpu_pct,
+                       MAX(sub.ts_mem) as peak_private_mb,
+                       SUM(sub.ts_io) as total_io_kb,
+                       MAX(sub.inst_cnt) as instance_count,
+                       (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = sub.name AND pi2.path IS NOT NULL LIMIT 1) as path
+                FROM (
+                    SELECT pi.name,
+                           SUM(s.{cpuCol}) as ts_cpu,
+                           SUM(s.{memCol}) as ts_mem,
+                           SUM(s.{ioCol}) as ts_io,
+                           COUNT(DISTINCT s.instance_id) as inst_cnt
+                    FROM {table} s
+                    JOIN process_instance pi ON pi.id = s.instance_id
+                    WHERE s.ts >= @from AND s.ts <= @to
+                    {(q != null ? "AND pi.name LIKE @q" : "")}
+                    GROUP BY pi.name, s.ts
+                ) sub
+                GROUP BY sub.name
                 ORDER BY {sortCol} DESC
                 LIMIT @limit
                 """;
@@ -420,6 +428,7 @@ try
                 FROM {table} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
+                  AND LOWER(pi.name) != 'idle'
                 GROUP BY pi.name
                 HAVING AVG(s.{cpuCol}) > {ProcessCpuNotablePct} OR MAX(s.{memCol}) > {ProcessMemoryNotableMb}
                 ORDER BY AVG(s.{cpuCol}) DESC

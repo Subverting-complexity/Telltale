@@ -78,9 +78,10 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
     setLoading(true);
     getAlerts(selectedDays)
       .then(res => {
-        setAlerts(res.alerts);
-        if (res.alerts.length > 0) {
-          const names = res.alerts.map(a => a.name);
+        const filtered = res.alerts.filter(a => a.name.toLowerCase() !== 'idle');
+        setAlerts(filtered);
+        if (filtered.length > 0) {
+          const names = filtered.map(a => a.name);
           return getBaselines(names).then(b => setBaselines(b.baselines)).catch(() => {});
         }
       })

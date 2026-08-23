@@ -23,8 +23,9 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
   const [metric, setMetric] = useState<MetricView>('cpu');
 
   const filtered = useMemo(() => {
-    if (categoryFilter === 'all') return processes;
-    return processes.filter(p => categoriseProcess(p.name, p.path) === categoryFilter);
+    const withoutIdle = processes.filter(p => p.name.toLowerCase() !== 'idle');
+    if (categoryFilter === 'all') return withoutIdle;
+    return withoutIdle.filter(p => categoriseProcess(p.name, p.path) === categoryFilter);
   }, [processes, categoryFilter]);
 
   const items = useMemo(() => {
