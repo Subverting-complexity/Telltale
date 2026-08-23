@@ -175,13 +175,6 @@ try
         using var conn = OpenDb();
         bool grouped = group ?? true;
         int take = Math.Clamp(limit ?? 50, 1, 500);
-        string sortCol = sort switch
-        {
-            "memory" => "peak_private_mb",
-            "io" => "total_io_kb",
-            "name" => "name",
-            _ => "avg_cpu_pct"
-        };
 
         var (table, _) = SelectTier(from, to, isMachine: false);
         string cpuCol = table == "sample" ? "cpu_pct" : "cpu_pct_avg";
@@ -192,6 +185,13 @@ try
 
         if (grouped)
         {
+            string sortExpr = sort switch
+            {
+                "memory" => "MAX(sub.ts_mem)",
+                "io" => "SUM(sub.ts_io)",
+                "name" => "sub.name",
+                _ => "AVG(sub.ts_cpu)"
+            };
             cmd.CommandText = $"""
                 SELECT sub.name,
                        AVG(sub.ts_cpu) as avg_cpu_pct,
@@ -212,12 +212,19 @@ try
                     GROUP BY pi.name, s.ts
                 ) sub
                 GROUP BY sub.name
-                ORDER BY {sortCol} DESC
+                ORDER BY {sortExpr} DESC
                 LIMIT @limit
                 """;
         }
         else
         {
+            string sortExpr = sort switch
+            {
+                "memory" => $"MAX(s.{memCol})",
+                "io" => $"SUM(s.{ioCol})",
+                "name" => "pi.name",
+                _ => $"AVG(s.{cpuCol})"
+            };
             cmd.CommandText = $"""
                 SELECT pi.id, pi.pid, pi.name, pi.path,
                        AVG(s.{cpuCol}) as avg_cpu_pct,
@@ -228,7 +235,7 @@ try
                 WHERE s.ts >= @from AND s.ts <= @to
                 {(q != null ? "AND pi.name LIKE @q" : "")}
                 GROUP BY pi.id
-                ORDER BY {sortCol} DESC
+                ORDER BY {sortExpr} DESC
                 LIMIT @limit
                 """;
         }
