@@ -91,7 +91,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
       <button
         className="health-tile"
         onClick={() => onScrollTo('disk')}
-        aria-label={`Disk: ${diskPct < 5 ? 'Idle' : `${diskPct.toFixed(0)}% busy`}`}
+        aria-label={`Disk: ${diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}% busy`}`}
       >
         <div className="tile-header">Disk</div>
         <div className="tile-value">{diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}%`}</div>
@@ -101,7 +101,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
             style={{ width: `${Math.min(diskPct, 100)}%` }}
           />
         </div>
-        <div className="tile-label">busy</div>
+        {diskPct >= 1 && <div className="tile-label">busy</div>}
       </button>
 
       <button
