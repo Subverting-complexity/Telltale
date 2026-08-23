@@ -315,7 +315,7 @@ function ChartPanel<T extends { ts: number }>({
 
     const opts: uPlot.Options = {
       width: containerRef.current.clientWidth,
-      height: 250,
+      height: 320,
       series,
       scales: {
         y: {
@@ -362,7 +362,7 @@ function ChartPanel<T extends { ts: number }>({
       for (const entry of entries) {
         chartRef.current?.setSize({
           width: entry.contentRect.width,
-          height: 250,
+          height: 320,
         });
       }
     });
