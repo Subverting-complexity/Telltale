@@ -202,7 +202,7 @@ try
                        (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = sub.name AND pi2.path IS NOT NULL LIMIT 1) as path
                 FROM (
                     SELECT pi.name,
-                           {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted")},
+                           {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
                            SUM(s.private_mb) as ts_mem,
                            SUM(s.io_kb) as ts_io,
                            COUNT(DISTINCT s.instance_id) as inst_cnt,
@@ -383,9 +383,9 @@ try
                    MAX(sub.inst_cnt) as instance_count
             FROM (
                 SELECT s.ts,
-                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted")},
-                       {TierSql.WeightedTotal("s.private_mb", "ts_mem_weighted")},
-                       {TierSql.WeightedTotal("s.working_set_mb", "ts_ws_weighted")},
+                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
+                       {TierSql.WeightedTotal("s.private_mb", "ts_mem_weighted", "s.weight")},
+                       {TierSql.WeightedTotal("s.working_set_mb", "ts_ws_weighted", "s.weight")},
                        SUM(s.io_kb) as ts_io,
                        COUNT(DISTINCT s.instance_id) as inst_cnt,
                        {TierSql.InstantWeight("s.weight")} as ts_weight

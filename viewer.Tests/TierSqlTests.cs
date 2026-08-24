@@ -484,7 +484,7 @@ public class TierSqlTests : IDisposable
                    AVG(sub.ts_cpu) as unweighted
             FROM (
                 SELECT pi.name, SUM(s.cpu_pct) as ts_cpu,
-                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted")},
+                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
                        {TierSql.InstantWeight("s.weight")} as ts_weight
                 FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
