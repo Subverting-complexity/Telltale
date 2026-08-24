@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
-    <NoWarn>NU1903;CA1416</NoWarn>
+    <NoWarn>CA1416</NoWarn>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
   </PropertyGroup>
 
