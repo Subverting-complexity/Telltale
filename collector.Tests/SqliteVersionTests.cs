@@ -1,14 +1,14 @@
 using Microsoft.Data.Sqlite;
 
-namespace Viewer.Tests;
+namespace Collector.Tests;
 
 /// <summary>
-/// Guards the native SQLite build that reaches the viewer through
+/// Guards the native SQLite build that reaches the collector through
 /// SQLitePCLRaw.lib.e_sqlite3. CVE-2025-6965 is a memory-corruption defect in
 /// SQLite before 3.50.2, so the version that matters is the one the engine
 /// reports at runtime, not the version declared in a project file.
 ///
-/// The collector has its own copy of this test. The two are deliberately not
+/// The viewer has its own copy of this test. The two are deliberately not
 /// shared: each executable resolves its own dependency chain, and
 /// <c>collector/</c> and <c>viewer/</c> must not reference each other.
 /// </summary>

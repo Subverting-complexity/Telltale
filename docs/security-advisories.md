@@ -36,7 +36,7 @@ library transitively:
 ```
 Microsoft.Data.Sqlite 9.0.7
   -> SQLitePCLRaw.bundle_e_sqlite3 2.1.10
-    -> SQLitePCLRaw.lib.e_sqlite3 2.1.10   (vulnerable)
+    -> SQLitePCLRaw.lib.e_sqlite3 2.1.10   (vendors SQLite 3.46.1, vulnerable)
 ```
 
 This was not a test-only dependency. It was the native library the shipping
@@ -52,40 +52,61 @@ not change which version shipped. It only removed one of the things hiding it.
 
 ### How exposed Telltale actually was
 
-My assessment is that practical exposure was low, but I want to be clear that
-this is a judgement rather than a measurement, and that the fix does not depend
-on it.
+The honest answer is that exposure was lower than the CVSS vector suggests but
+higher than "you would already have to own the machine". This is a judgement
+rather than a measurement, and the fix does not depend on it.
 
 The CVSS vector describes a network-attackable, unauthenticated defect, which is
-how SQLite is scored in the general case. Telltale does not match that shape.
-It is a local-only tool: the collector writes to a SQLite file on the user's own
+how SQLite is scored in the general case. Telltale does not match that shape. It
+is a local-only tool: the collector writes to a SQLite file on the user's own
 machine, the viewer reads that same file and serves it over a loopback HTTP API,
-and nothing leaves the machine. There is no untrusted network input path into
-the database, and the queries the viewer runs are fixed in the source rather
-than composed from user input.
+and nothing leaves the machine.
 
-The realistic exposure was therefore a deliberately crafted database file opened
-by the viewer. Someone able to place such a file already has write access to the
-user's machine, which is a stronger position than this defect would grant them.
+Two qualifications are worth recording, because the first draft of this
+assessment understated both and a security note that flatters the tool is worse
+than none.
 
-I did not rely on that reasoning, because a patched version was available. Where
-a fix can simply be taken, arguing about reachability is the weaker option.
+**The database path is user-supplied.** `viewer/Program.cs` reads it from
+`TELLTALE_DB` through the standard configuration providers, so an environment
+variable or a command-line argument can point the viewer at any file, and
+`collector/Config.cs` takes a `databasePath` the same way. Opening a capture file
+is therefore a supported action, not an anomaly. The realistic vector is not
+only "an attacker overwrote my database" but also "someone was persuaded to open
+a capture file they were sent", which needs no write access to their machine at
+all. My working theory is that a crafted file is a genuine trigger, because a
+malicious database can define `machine` or `sample` as a view whose
+attacker-authored SQL is compiled when the viewer's own fixed query touches it.
+I have not tried to build such a file, so treat that as untested reasoning.
+
+**Requests can reach the API from a browser.** `viewer/Program.cs` configures
+CORS with `AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()` and
+`appsettings.json` sets `AllowedHosts: "*"`, so any page the user visits can
+call the loopback API. That does not reach this defect: `viewer/TierSql.cs`
+composes table names from a hard-coded array and every value from a request is
+bound as a parameter, so no request text becomes SQL text. The accurate claim is
+that no untrusted input reaches the SQL *text*, not that no untrusted input
+reaches the database at all. The permissive CORS policy predates this work and
+is its own question.
+
+None of this changed the decision. A patched version was available, and where a
+fix can simply be taken, arguing about reachability is the weaker option.
 
 ### What was done
 
-`Microsoft.Data.Sqlite` moved from 9.0.7 to 10.0.11 in `collector`, `viewer`
-and `viewer.Tests`, which resolves the native library to a patched build:
+`Microsoft.Data.Sqlite` moved from 9.0.7 to 10.0.11, which resolves the native
+library to a patched build:
 
 ```
 Microsoft.Data.Sqlite 10.0.11
   -> SQLitePCLRaw.bundle_e_sqlite3 2.1.12
-    -> SQLitePCLRaw.lib.e_sqlite3 2.1.12   (outside the vulnerable range)
+    -> SQLitePCLRaw.lib.e_sqlite3 2.1.12   (vendors SQLite 3.53.3, patched)
 ```
 
-The collector and the viewer moved together on purpose. They open the same
-database file and `schema.sql` is the only contract between them, so leaving
-them on different versions would put two different native SQLite builds on one
-file.
+Worth being explicit about the size of that move: the package version changes by
+two patch releases, but the SQLite engine underneath goes from 3.46.1 to 3.53.3,
+which is seven feature releases. The behavioural risk lives in the engine jump,
+not in the package number. What was checked is recorded under "How to check it is
+still resolved" below.
 
 Moving to the 10.x line also matches the `net10.0` target the projects already
 build against. `Microsoft.Data.Sqlite.Core` 10.0.11 depends only on
@@ -96,15 +117,35 @@ Every `<NoWarn>NU1903</NoWarn>` suppression was removed. `CA1416`, which is a
 separate platform-compatibility suppression, was left in place. With nothing
 suppressed, a future vulnerable package will surface as a restore warning again.
 
+### Why the version now lives in one place
+
+`Microsoft.Data.Sqlite` was pinned separately in three project files. That is the
+condition issue #27 warned about: a security upgrade had to be applied in three
+places, and a partial upgrade would have left one executable on a vulnerable
+build. It was also worse than it looked, because `viewer.Tests` carried its own
+direct reference and NuGet resolves a direct reference ahead of one arriving
+through a project reference. A downgrade of `viewer/Viewer.csproj` alone would
+have shipped a vulnerable `TelltaleViewer.exe` while the viewer's own tests kept
+passing at the patched version.
+
+`Directory.Packages.props` now declares every package version once, and the
+project files reference packages without a version. The collector and the viewer
+cannot drift apart, which matters because they open the same database file with
+`schema.sql` as the only contract between them.
+
 ### How to check it is still resolved
 
 ```bash
 dotnet list Telltale.slnx package --vulnerable --include-transitive
 ```
 
-This should report no vulnerable packages for any of the four projects. Because
-that command depends on the live advisory feed and is not part of the quality
-gate, `viewer.Tests/SqliteVersionTests.cs` also asserts that the SQLite library
-actually loaded at runtime is 3.50.2 or newer. That test runs on every build and
-checks the loaded library rather than the declared package version, so a partial
-downgrade in one project file cannot pass unnoticed.
+This should report no vulnerable packages for any of the four projects. That
+command depends on the live advisory feed and is not part of the quality gate,
+so `SqliteVersionTests` exists in both `collector.Tests` and `viewer.Tests` and
+asserts that the SQLite engine each side loads at runtime is 3.50.2 or newer.
+Those tests run on every build and check the engine actually loaded rather than
+the version declared in a file, so a downgrade of the central version is caught
+from both sides.
+
+What the tests do not do is compare project files against each other. They do not
+need to: with a single central version there is nothing left to diverge.

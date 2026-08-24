@@ -98,6 +98,7 @@ during development:
 | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `ClaudeProject.md`       | Project identity, labels, quality gate, branch convention, board config. Read at the start of any workflow command. |
 | `docs/review.config.md`  | Review labels, non-compliance gates, tech-stack review rules, auto-merge settings. Read when reviewing a PR.  |
+| `docs/security-advisories.md` | A NuGet or npm advisory is reported against a dependency. Records what was decided about each one and why. |
 | `.claude/ecosystem.md`   | Companion tools available on this machine (graphify, rtk, headroom, ccusage, fallow) and when to use each.    |
 | `v1-plan.md`             | The v1 design and scope document. Consult for intent behind an existing subsystem.                            |
 | `schema.sql`             | SQLite schema. Read before any change to storage, rollups, or viewer queries.                                 |
