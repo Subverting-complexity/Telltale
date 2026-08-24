@@ -3,6 +3,7 @@ import {
   formatSize, formatElapsed, formatCpu, formatIo, formatDate, formatTime,
   getDaysInMonth, getDayRange, getMonthRange, getYearRange, getWeekRange, clamp,
   categoriseProcess, formatRate, formatMemoryPercent, formatSizeGb,
+  computeMovingAverage, computeLinearFit, computeMean,
 } from './utils';
 
 describe('formatSize', () => {
@@ -256,5 +257,95 @@ describe('formatSizeGb', () => {
   });
   it('formats exact GB boundary', () => {
     expect(formatSizeGb(1024)).toBe('1.0 GB');
+  });
+});
+
+describe('computeMovingAverage', () => {
+  it('returns nulls for empty input', () => {
+    expect(computeMovingAverage([], 3)).toEqual([]);
+  });
+
+  it('computes a simple 3-point window', () => {
+    const result = computeMovingAverage([1, 2, 3, 4, 5], 3);
+    expect(result).toHaveLength(5);
+    expect(result[0]).toBeCloseTo(2);
+    expect(result[1]).toBeCloseTo(2);
+    expect(result[2]).toBeCloseTo(3);
+    expect(result[3]).toBeCloseTo(4);
+    expect(result[4]).toBeCloseTo(4.5);
+  });
+
+  it('skips nulls in the average', () => {
+    const result = computeMovingAverage([10, null, 20], 3);
+    expect(result[0]).toBeCloseTo(15);
+    expect(result[1]).toBeCloseTo(15);
+    expect(result[2]).toBeCloseTo(20);
+  });
+
+  it('returns all nulls when all values are null', () => {
+    const result = computeMovingAverage([null, null, null], 3);
+    expect(result).toEqual([null, null, null]);
+  });
+
+  it('handles a window size of 1', () => {
+    const result = computeMovingAverage([5, 10, 15], 1);
+    expect(result).toEqual([5, 10, 15]);
+  });
+
+  it('handles a window larger than the data', () => {
+    const result = computeMovingAverage([2, 4, 6], 10);
+    expect(result[0]).toBeCloseTo(4);
+    expect(result[1]).toBeCloseTo(4);
+    expect(result[2]).toBeCloseTo(4);
+  });
+});
+
+describe('computeLinearFit', () => {
+  it('returns null for fewer than 2 points', () => {
+    expect(computeLinearFit([5])).toBeNull();
+    expect(computeLinearFit([])).toBeNull();
+  });
+
+  it('returns null for all nulls', () => {
+    expect(computeLinearFit([null, null, null])).toBeNull();
+  });
+
+  it('fits a perfectly linear series', () => {
+    const fit = computeLinearFit([0, 1, 2, 3, 4]);
+    expect(fit).not.toBeNull();
+    expect(fit!.slope).toBeCloseTo(1);
+    expect(fit!.intercept).toBeCloseTo(0);
+  });
+
+  it('fits a flat series', () => {
+    const fit = computeLinearFit([5, 5, 5, 5]);
+    expect(fit).not.toBeNull();
+    expect(fit!.slope).toBeCloseTo(0);
+    expect(fit!.intercept).toBeCloseTo(5);
+  });
+
+  it('skips nulls when fitting', () => {
+    const fit = computeLinearFit([0, null, 2, null, 4]);
+    expect(fit).not.toBeNull();
+    expect(fit!.slope).toBeCloseTo(1);
+    expect(fit!.intercept).toBeCloseTo(0);
+  });
+});
+
+describe('computeMean', () => {
+  it('returns null for empty array', () => {
+    expect(computeMean([])).toBeNull();
+  });
+
+  it('returns null for all nulls', () => {
+    expect(computeMean([null, null])).toBeNull();
+  });
+
+  it('computes mean skipping nulls', () => {
+    expect(computeMean([10, null, 20, 30])).toBeCloseTo(20);
+  });
+
+  it('computes mean of single value', () => {
+    expect(computeMean([42])).toBe(42);
   });
 });

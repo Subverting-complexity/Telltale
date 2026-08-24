@@ -133,3 +133,54 @@ export function formatSizeGb(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${mb.toFixed(0)} MB`;
 }
+
+export function computeMovingAverage(values: (number | null)[], windowSize: number): (number | null)[] {
+  if (windowSize < 1) return values.map(() => null);
+  const result: (number | null)[] = new Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    const start = Math.max(0, i - Math.floor(windowSize / 2));
+    const end = Math.min(values.length, start + windowSize);
+    let sum = 0;
+    let count = 0;
+    for (let j = start; j < end; j++) {
+      if (values[j] !== null) {
+        sum += values[j]!;
+        count++;
+      }
+    }
+    result[i] = count > 0 ? sum / count : null;
+  }
+  return result;
+}
+
+export function computeLinearFit(values: (number | null)[]): { slope: number; intercept: number } | null {
+  let n = 0, sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] !== null) {
+      const y = values[i]!;
+      n++;
+      sumX += i;
+      sumY += y;
+      sumXY += i * y;
+      sumXX += i * i;
+    }
+  }
+  if (n < 2) return null;
+  const denom = n * sumXX - sumX * sumX;
+  if (denom === 0) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  return { slope, intercept };
+}
+
+export function computeMean(values: (number | null)[]): number | null {
+  let sum = 0;
+  let count = 0;
+  for (const v of values) {
+    if (v !== null) {
+      sum += v;
+      count++;
+    }
+  }
+  return count > 0 ? sum / count : null;
+}

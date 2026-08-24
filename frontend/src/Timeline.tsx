@@ -3,7 +3,7 @@ import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import type { TimelinePoint, ProcessPoint, ThresholdConfig } from './types';
 import { DataTable, timelineColumns, processColumns } from './DataTable';
-import { formatSize, formatRate } from './utils';
+import { formatSize, formatRate, computeMovingAverage, computeMean, computeLinearFit } from './utils';
 
 interface TimelineProps {
   data: TimelinePoint[];
@@ -15,6 +15,12 @@ interface ProcessTimelineProps {
   data: ProcessPoint[];
   title: string;
   thresholds?: ThresholdConfig | null;
+}
+
+export interface OverlayConfig {
+  movingAverage: boolean;
+  mean: boolean;
+  trend: boolean;
 }
 
 const CHART_COLORS = {
@@ -36,6 +42,9 @@ function getThemeColors() {
     bg: isDark ? '#111827' : '#ffffff',
     thresholdLine: isDark ? 'rgba(156,163,175,0.4)' : 'rgba(107,114,128,0.3)',
     thresholdText: isDark ? '#9ca3af' : '#9ca3af',
+    meanLine: isDark ? 'rgba(251,191,36,0.7)' : 'rgba(217,119,6,0.6)',
+    meanText: isDark ? '#fbbf24' : '#d97706',
+    trendLine: isDark ? 'rgba(244,114,182,0.6)' : 'rgba(219,39,119,0.5)',
   };
 }
 
@@ -73,8 +82,94 @@ function drawThresholdLines(u: uPlot, lines: ThresholdLine[]) {
   ctx.restore();
 }
 
+function drawMeanLine(u: uPlot, mean: number, formatLabel: (v: number) => string) {
+  const { ctx } = u;
+  const theme = getThemeColors();
+
+  const y = u.valToPos(mean, 'y', true);
+  if (y < u.bbox.top / devicePixelRatio || y > (u.bbox.top + u.bbox.height) / devicePixelRatio) return;
+
+  ctx.save();
+  ctx.setLineDash([8, 4]);
+  ctx.strokeStyle = theme.meanLine;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(u.bbox.left / devicePixelRatio, y);
+  ctx.lineTo((u.bbox.left + u.bbox.width) / devicePixelRatio, y);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = theme.meanText;
+  ctx.textAlign = 'left';
+  ctx.fillText(`avg ${formatLabel(mean)}`, u.bbox.left / devicePixelRatio + 4, y - 4);
+  ctx.restore();
+}
+
+function drawTrendLine(u: uPlot, values: (number | null)[], timestamps: number[]) {
+  const fit = computeLinearFit(values);
+  if (!fit) return;
+
+  const { ctx } = u;
+  const theme = getThemeColors();
+
+  const firstIdx = values.findIndex(v => v !== null);
+  const lastIdx = values.length - 1 - [...values].reverse().findIndex(v => v !== null);
+  if (firstIdx < 0 || lastIdx < 0 || firstIdx === lastIdx) return;
+
+  const y0 = fit.intercept + fit.slope * firstIdx;
+  const y1 = fit.intercept + fit.slope * lastIdx;
+
+  const px0 = u.valToPos(timestamps[firstIdx], 'x', true);
+  const py0 = u.valToPos(y0, 'y', true);
+  const px1 = u.valToPos(timestamps[lastIdx], 'x', true);
+  const py1 = u.valToPos(y1, 'y', true);
+
+  ctx.save();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = theme.trendLine;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(px0, py0);
+  ctx.lineTo(px1, py1);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function OverlayToggle({ overlays, onChange }: { overlays: OverlayConfig; onChange: (o: OverlayConfig) => void }) {
+  return (
+    <div className="overlay-toggles" role="group" aria-label="Chart overlays">
+      <button
+        className={`overlay-btn ${overlays.movingAverage ? 'active' : ''}`}
+        onClick={() => onChange({ ...overlays, movingAverage: !overlays.movingAverage })}
+        aria-pressed={overlays.movingAverage}
+        title="Moving average"
+      >
+        Avg
+      </button>
+      <button
+        className={`overlay-btn ${overlays.mean ? 'active' : ''}`}
+        onClick={() => onChange({ ...overlays, mean: !overlays.mean })}
+        aria-pressed={overlays.mean}
+        title="Mean for visible range"
+      >
+        Mean
+      </button>
+      <button
+        className={`overlay-btn ${overlays.trend ? 'active' : ''}`}
+        onClick={() => onChange({ ...overlays, trend: !overlays.trend })}
+        aria-pressed={overlays.trend}
+        title="Linear trend"
+      >
+        Trend
+      </button>
+    </div>
+  );
+}
+
 export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
   const [showTable, setShowTable] = useState(false);
+  const [overlays, setOverlays] = useState<OverlayConfig>({ movingAverage: false, mean: false, trend: false });
 
   if (data.length === 0) {
     return <p className="no-data-msg">No timeline data for this range.</p>;
@@ -92,6 +187,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
         >
           {showTable ? 'Show Chart' : 'Show Table'}
         </button>
+        {!showTable && <OverlayToggle overlays={overlays} onChange={setOverlays} />}
       </div>
 
       {showTable ? (
@@ -108,6 +204,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             yMin={0}
             yMax={100}
             formatY={v => `${Math.round(v)}%`}
+            overlays={overlays}
             thresholdLines={thresholds ? [
               { value: thresholds.system.cpuElevatedPct, label: `${thresholds.system.cpuElevatedPct}%` },
               { value: thresholds.system.cpuHighPct, label: `${thresholds.system.cpuHighPct}%` },
@@ -125,6 +222,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             yMax={100}
             computePercent
             formatY={v => `${Math.round(v)}%`}
+            overlays={overlays}
             thresholdLines={thresholds ? [
               { value: thresholds.system.memoryHighPct, label: `${thresholds.system.memoryHighPct}%` },
             ] : undefined}
@@ -137,6 +235,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             unit="%"
             onRangeSelect={handleRangeSelect}
             formatY={v => `${v.toFixed(1)}%`}
+            overlays={overlays}
           />
           <ChartPanel
             title="Network"
@@ -151,6 +250,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
               return `${Math.round(v)} KB/s`;
             }}
             formatTooltip={v => formatRate(v)}
+            overlays={overlays}
           />
         </div>
       )}
@@ -160,6 +260,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
 
 export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProps) {
   const [showTable, setShowTable] = useState(false);
+  const [overlays, setOverlays] = useState<OverlayConfig>({ movingAverage: false, mean: false, trend: false });
 
   if (data.length === 0) {
     return <p className="no-data-msg">No data for this process in the selected range.</p>;
@@ -176,6 +277,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
         >
           {showTable ? 'Show Chart' : 'Show Table'}
         </button>
+        {!showTable && <OverlayToggle overlays={overlays} onChange={setOverlays} />}
       </div>
 
       {showTable ? (
@@ -188,6 +290,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
             seriesKey="cpuPct"
             color={CHART_COLORS.cpu}
             unit="%"
+            overlays={overlays}
             thresholdLines={thresholds ? [
               { value: thresholds.process.cpuNotablePct, label: `${thresholds.process.cpuNotablePct}%` },
               { value: thresholds.process.cpuElevatedPct, label: `${thresholds.process.cpuElevatedPct}%` },
@@ -202,6 +305,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
             unit="MB"
             formatY={v => formatSize(v)}
             formatTooltip={v => formatSize(v)}
+            overlays={overlays}
             thresholdLines={thresholds ? [
               { value: thresholds.process.memoryNotableMb, label: formatSize(thresholds.process.memoryNotableMb) },
               { value: thresholds.process.memoryHighMb, label: formatSize(thresholds.process.memoryHighMb) },
@@ -218,6 +322,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
               if (v >= 1024) return `${(v / 1024).toFixed(1)} MB`;
               return `${Math.round(v)} KB`;
             }}
+            overlays={overlays}
           />
         </div>
       )}
@@ -227,7 +332,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
 
 function ChartPanel<T extends { ts: number }>({
   title, data, seriesKey, totalKey, color, unit, invert, onRangeSelect,
-  yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines,
+  yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines, overlays,
 }: {
   title: string;
   data: T[];
@@ -243,6 +348,7 @@ function ChartPanel<T extends { ts: number }>({
   formatTooltip?: (v: number) => string;
   computePercent?: boolean;
   thresholdLines?: ThresholdLine[];
+  overlays?: OverlayConfig;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
@@ -258,7 +364,7 @@ function ChartPanel<T extends { ts: number }>({
     const theme = getThemeColors();
     const timestamps = data.map(d => d.ts / 1000);
 
-    const values = data.map(d => {
+    const values: (number | null)[] = data.map(d => {
       const v = d[seriesKey];
       if (v === null || v === undefined) return null;
       const num = Number(v);
@@ -276,6 +382,7 @@ function ChartPanel<T extends { ts: number }>({
     });
 
     const tooltipFormatter = formatTooltip ?? formatY ?? ((v: number) => `${v.toFixed(1)} ${unit}`);
+    const labelFormatter = formatY ?? ((v: number) => `${v.toFixed(1)} ${unit}`);
 
     const pointCount = data.length;
     const showPoints = pointCount > 0 && pointCount <= 200;
@@ -298,6 +405,22 @@ function ChartPanel<T extends { ts: number }>({
       },
     ];
 
+    const uPlotData: uPlot.AlignedData = [timestamps, values] as uPlot.AlignedData;
+
+    if (overlays?.movingAverage) {
+      const windowSize = Math.max(3, Math.round(pointCount / 15));
+      const maValues = computeMovingAverage(values, windowSize);
+      (uPlotData as (number | null)[][]).push(maValues);
+      series.push({
+        label: 'Moving avg',
+        stroke: color + '80',
+        width: 2,
+        value: (_u: uPlot, v: number | null) => v !== null ? tooltipFormatter(v) : '-',
+        spanGaps: true,
+        points: { show: false },
+      });
+    }
+
     const yAxisValues = formatY
       ? (_u: uPlot, vals: number[]) => vals.map(formatY)
       : (_u: uPlot, vals: number[]) =>
@@ -316,10 +439,25 @@ function ChartPanel<T extends { ts: number }>({
       }];
     }
 
+    const drawHooks: ((u: uPlot) => void)[] = [];
+
     if (thresholdLines && thresholdLines.length > 0) {
-      hooks.draw = [(u: uPlot) => {
-        drawThresholdLines(u, thresholdLines);
-      }];
+      drawHooks.push((u: uPlot) => drawThresholdLines(u, thresholdLines));
+    }
+
+    if (overlays?.mean) {
+      const mean = computeMean(values);
+      if (mean !== null) {
+        drawHooks.push((u: uPlot) => drawMeanLine(u, mean, labelFormatter));
+      }
+    }
+
+    if (overlays?.trend) {
+      drawHooks.push((u: uPlot) => drawTrendLine(u, values, timestamps));
+    }
+
+    if (drawHooks.length > 0) {
+      hooks.draw = drawHooks;
     }
 
     const opts: uPlot.Options = {
@@ -353,8 +491,8 @@ function ChartPanel<T extends { ts: number }>({
       padding: [8, 8, 0, 0],
     };
 
-    chartRef.current = new uPlot(opts, [timestamps, values], containerRef.current);
-  }, [data, seriesKey, totalKey, color, unit, title, invert, onRangeSelect, yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines]);
+    chartRef.current = new uPlot(opts, uPlotData, containerRef.current);
+  }, [data, seriesKey, totalKey, color, unit, title, invert, onRangeSelect, yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines, overlays]);
 
   useEffect(() => {
     buildChart();
