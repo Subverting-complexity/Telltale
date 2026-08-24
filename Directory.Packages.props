@@ -1,0 +1,48 @@
+<Project>
+
+  <!--
+    Central package management. Every NuGet version used anywhere in the
+    solution is declared here once, and the project files reference packages
+    without a Version attribute.
+
+    This exists because of CVE-2025-6965 (see docs/security-advisories.md).
+    Microsoft.Data.Sqlite was pinned separately in three project files, which
+    meant a security upgrade had to be applied in three places and a partial
+    upgrade would have left the shipping binary on a vulnerable native SQLite
+    build while the tests passed. One declaration makes that divergence
+    impossible rather than merely discouraged.
+  -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      Central package management still allows a project to opt out with
+      VersionOverride, which would reopen exactly the divergence this file
+      exists to close. Turning it off makes any override build error NU1013.
+    -->
+    <CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled>
+  </PropertyGroup>
+
+  <ItemGroup Label="Runtime">
+    <!--
+      Microsoft.Data.Sqlite pulls the native SQLite library transitively via
+      SQLitePCLRaw. Keep it at 10.0.11 or newer: that is the first version in
+      the 10.x line resolving SQLitePCLRaw.lib.e_sqlite3 to 2.1.12, which is
+      outside the range affected by CVE-2025-6965. SqliteVersionTests in both
+      test projects asserts the resulting engine at runtime.
+    -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0-preview.6.25358.103" />
+    <PackageVersion Include="System.Diagnostics.PerformanceCounter" Version="10.0.0-preview.6.25358.103" />
+    <PackageVersion Include="System.Management" Version="10.0.0-preview.6.25358.103" />
+  </ItemGroup>
+
+  <ItemGroup Label="Test">
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0-preview.6.25358.103" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+</Project>
