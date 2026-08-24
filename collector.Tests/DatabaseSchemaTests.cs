@@ -72,7 +72,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
         Db.GetOrCreateProcessInstance(1234, 100, "kept.exe", null, null, 1_000);
         Db.Dispose();
 
-        using var reopened = new Database(DbPath, new CapturingLogger());
+        using var reopened = new Database(DbPath, new RecordingLogger());
 
         Assert.Equal(1, Count("process_instance"));
         Assert.Equal(ExpectedTables, ObjectNames(DbPath, "table"));
@@ -82,8 +82,9 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
     /// schema.sql is the only contract between the collector and the viewer, and
     /// Database carries its own copy of the same statements. Nothing forces the two
     /// to agree, so this compares them structurally: same tables, same columns with
-    /// the same declared types and constraints, same indexes over the same columns.
-    /// Formatting differences are ignored, since the two are laid out differently.
+    /// the same declared types, same indexes over the same columns, and the same
+    /// UNIQUE and foreign key constraints. Formatting differences are ignored, since
+    /// the two files lay the same statements out differently.
     /// </summary>
     [Fact]
     public void SchemaBuiltByDatabase_MatchesTheSchemaSqlContract()
@@ -103,6 +104,19 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
             foreach (string index in ObjectNames(contractPath, "index"))
                 Assert.Equal(Describe(contractPath, $"PRAGMA index_info({index})"),
                              Describe(DbPath, $"PRAGMA index_info({index})"));
+
+            // table_info reports columns but says nothing about UNIQUE or foreign
+            // keys, and ObjectNames filters out the sqlite_autoindex_* that a UNIQUE
+            // constraint generates. Without these two the UNIQUE(pid, create_time)
+            // that process identity depends on could drift between the two schemas
+            // and this test would still pass.
+            foreach (string table in ObjectNames(contractPath, "table"))
+            {
+                Assert.Equal(Describe(contractPath, $"PRAGMA index_list({table})"),
+                             Describe(DbPath, $"PRAGMA index_list({table})"));
+                Assert.Equal(Describe(contractPath, $"PRAGMA foreign_key_list({table})"),
+                             Describe(DbPath, $"PRAGMA foreign_key_list({table})"));
+            }
         }
         finally
         {
@@ -134,7 +148,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
         string path = CreateLegacyDatabase();
         try
         {
-            var logger = new CapturingLogger();
+            var logger = new RecordingLogger();
             using (new Database(path, logger))
             {
                 // Converting means rewriting the whole file, so it does not happen
@@ -157,7 +171,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
         string path = CreateLegacyDatabase();
         try
         {
-            var logger = new CapturingLogger();
+            var logger = new RecordingLogger();
             using (new Database(path, logger, vacuumOnStartup: true))
             {
                 Assert.Equal(AutoVacuumIncremental, Convert.ToInt64(ScalarOn(path, "PRAGMA auto_vacuum")));
@@ -183,7 +197,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
                 INSERT INTO machine (ts, cpu_pct) VALUES (1000, 42.0);
                 """);
 
-            using (new Database(path, new CapturingLogger(), vacuumOnStartup: true)) { }
+            using (new Database(path, new RecordingLogger(), vacuumOnStartup: true)) { }
 
             // A full VACUUM rewrites every page, so the data surviving it matters as
             // much as the pragma taking effect.
@@ -296,18 +310,5 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
         {
             try { File.Delete(path + suffix); } catch { /* best effort cleanup */ }
         }
-    }
-
-    private sealed class CapturingLogger : ILogger
-    {
-        public List<(LogLevel Level, string Message)> Entries { get; } = [];
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
-            Exception? exception, Func<TState, Exception?, string> formatter) =>
-            Entries.Add((logLevel, formatter(state, exception)));
     }
 }
