@@ -195,7 +195,7 @@ export default function App() {
         <main className="app-main no-data" role="main">
           <h2>No data yet</h2>
           <p>Start the Telltale collector to begin recording process activity.</p>
-          <p>Run <code>Collector.exe</code> or add it to Task Scheduler to start automatically.</p>
+          <p>Run <code>TelltaleCapture.exe</code> or add it to Task Scheduler to start automatically.</p>
         </main>
       </div>
     );

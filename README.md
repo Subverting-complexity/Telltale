@@ -6,8 +6,8 @@ A local Windows performance recorder and viewer. Telltale runs in the background
 
 Telltale has two standalone executables:
 
-- **Collector.exe** - A background console app that samples all running processes via `NtQuerySystemInformation` P/Invoke. It records per-process CPU, memory, I/O, threads, and handles, along with machine-wide CPU, memory, disk, network, and GPU metrics into a local SQLite database.
-- **Viewer.exe** - A minimal API server that hosts a React SPA for browsing the collected data. Charts are rendered with uPlot.
+- **TelltaleCapture.exe** - A background console app that samples all running processes via `NtQuerySystemInformation` P/Invoke. It records per-process CPU, memory, I/O, threads, and handles, along with machine-wide CPU, memory, disk, network, and GPU metrics into a local SQLite database.
+- **TelltaleViewer.exe** - A minimal API server that hosts a React SPA for browsing the collected data. Charts are rendered with uPlot.
 
 Data is stored in `%LocalAppData%\Telltale\telltale.db`.
 
@@ -47,10 +47,10 @@ publish.bat
 
 The output is:
 
-- `publish/collector/Collector.exe` - background process recorder
-- `publish/viewer/Viewer.exe` - web viewer at `http://localhost:5111`
+- `publish/collector/TelltaleCapture.exe` - background process recorder
+- `publish/viewer/TelltaleViewer.exe` - web viewer at `http://localhost:5111`
 
-Start `Collector.exe` first, then open `Viewer.exe`.
+Start `TelltaleCapture.exe` first, then open `TelltaleViewer.exe`.
 
 ### Configuration
 
