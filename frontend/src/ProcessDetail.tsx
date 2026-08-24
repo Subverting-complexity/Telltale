@@ -86,7 +86,7 @@ export function ProcessDetail({
   if (loading) {
     return (
       <div className="process-detail">
-        <BackNav name={displayName} onBack={onBack} groupName={groupName} type={type} />
+        <Breadcrumbs name={displayName} onBack={onBack} groupName={groupName} type={type} />
         <p className="loading">Loading...</p>
       </div>
     );
@@ -95,7 +95,7 @@ export function ProcessDetail({
   if (type === 'group' && groupData) {
     return (
       <div className="process-detail">
-        <BackNav name={groupData.name} onBack={onBack} type={type} />
+        <Breadcrumbs name={groupData.name} onBack={onBack} type={type} />
 
         <h2>{groupData.name}</h2>
         <p className="detail-meta">
@@ -169,7 +169,7 @@ export function ProcessDetail({
     const info = instanceData.info;
     return (
       <div className="process-detail">
-        <BackNav name={`PID ${info.pid}`} onBack={onBack} groupName={groupName} type={type} />
+        <Breadcrumbs name={`PID ${info.pid}`} onBack={onBack} groupName={groupName} type={type} />
 
         <h2>{info.name} (PID {info.pid})</h2>
         <dl className="detail-info">
@@ -186,34 +186,29 @@ export function ProcessDetail({
 
   return (
     <div className="process-detail">
-      <BackNav name={displayName} onBack={onBack} groupName={groupName} type={type} />
+      <Breadcrumbs name={displayName} onBack={onBack} groupName={groupName} type={type} />
       <p className="no-data-msg">{error ?? 'No data found for this process in the selected range.'}</p>
     </div>
   );
 }
 
-function BackNav({ name, onBack, groupName, type }: {
+function Breadcrumbs({ name, onBack, groupName, type }: {
   name: string;
   onBack: () => void;
   groupName?: string;
   type: 'instance' | 'group';
 }) {
   return (
-    <div className="detail-nav">
-      <button className="back-btn" onClick={onBack}>
-        &larr; Back
-      </button>
-      <nav className="detail-breadcrumbs" aria-label="Navigation">
-        <button className="breadcrumb-link" onClick={onBack}>Dashboard</button>
-        {type === 'instance' && groupName && (
-          <>
-            <span className="breadcrumb-sep">&gt;</span>
-            <button className="breadcrumb-link" onClick={onBack}>{groupName}</button>
-          </>
-        )}
-        <span className="breadcrumb-sep">&gt;</span>
-        <span className="breadcrumb-current">{name}</span>
-      </nav>
-    </div>
+    <nav className="detail-breadcrumbs" aria-label="Navigation">
+      <button className="breadcrumb-link" onClick={onBack}>Dashboard</button>
+      {type === 'instance' && groupName && (
+        <>
+          <span className="breadcrumb-sep" aria-hidden="true">/</span>
+          <button className="breadcrumb-link" onClick={onBack}>{groupName}</button>
+        </>
+      )}
+      <span className="breadcrumb-sep" aria-hidden="true">/</span>
+      <span className="breadcrumb-current">{name}</span>
+    </nav>
   );
 }

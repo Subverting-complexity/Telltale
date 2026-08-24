@@ -106,6 +106,58 @@ export default function App() {
   useEffect(() => { applyTheme(theme); }, [theme]);
 
   useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      if (e.key === 'Escape' && selectedProcess) {
+        e.preventDefault();
+        if (selectedProcess.type === 'instance') {
+          setSelectedProcess({ type: 'group', name: selectedProcess.groupName });
+        } else {
+          setSelectedProcess(null);
+        }
+        return;
+      }
+
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        if (selectedProcess) return;
+        e.preventDefault();
+        const step = e.key === 'ArrowLeft' ? -1 : 1;
+        setView(v => {
+          let newView: ViewState;
+          switch (v.scale) {
+            case 'year':
+              newView = { ...v, year: v.year + step };
+              break;
+            case 'month': {
+              let m = (v.month ?? 1) + step;
+              let y = v.year;
+              if (m < 1) { m = 12; y--; }
+              else if (m > 12) { m = 1; y++; }
+              newView = { ...v, year: y, month: m };
+              break;
+            }
+            case 'week':
+            case 'day': {
+              const d = new Date(v.year, (v.month ?? 1) - 1, (v.day ?? 1));
+              d.setDate(d.getDate() + step * (v.scale === 'week' ? 7 : 1));
+              newView = { ...v, year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() };
+              break;
+            }
+          }
+          updateUrl(newView);
+          return newView;
+        });
+        setCustomRange(null);
+        setSelectedHourRange(null);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedProcess]);
+
+  useEffect(() => {
     getRange().then(setRange).catch(() => {});
     getHealth().then(setHealth).catch(() => {});
     getThresholds().then(setThresholds).catch(() => {});

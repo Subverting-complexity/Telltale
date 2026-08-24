@@ -277,6 +277,9 @@ function ChartPanel<T extends { ts: number }>({
 
     const tooltipFormatter = formatTooltip ?? formatY ?? ((v: number) => `${v.toFixed(1)} ${unit}`);
 
+    const pointCount = data.length;
+    const showPoints = pointCount > 0 && pointCount <= 200;
+
     const series: uPlot.Series[] = [
       {},
       {
@@ -286,6 +289,12 @@ function ChartPanel<T extends { ts: number }>({
         width: 1.5,
         value: (_u: uPlot, v: number | null) => v !== null ? tooltipFormatter(v) : '-',
         spanGaps: false,
+        points: {
+          show: showPoints,
+          size: pointCount <= 60 ? 6 : 4,
+          fill: color,
+          stroke: color,
+        },
       },
     ];
 

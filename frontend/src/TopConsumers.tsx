@@ -65,36 +65,27 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
   return (
     <section className="top-consumers" aria-label="Top resource consumers">
       <div className="top-consumers-header">
-        <h2>Top Consumers</h2>
-        <div className="top-consumers-toggles">
-          <button
-            className={`toggle-btn ${metric === 'cpu' ? 'active' : ''}`}
-            onClick={() => setMetric('cpu')}
-            aria-pressed={metric === 'cpu'}
-          >
-            CPU
-          </button>
-          <button
-            className={`toggle-btn ${metric === 'memory' ? 'active' : ''}`}
-            onClick={() => setMetric('memory')}
-            aria-pressed={metric === 'memory'}
-          >
-            Memory
-          </button>
-          <button
-            className={`toggle-btn ${metric === 'io' ? 'active' : ''}`}
-            onClick={() => setMetric('io')}
-            aria-pressed={metric === 'io'}
-          >
-            I/O
-          </button>
+        <div>
+          <h2>Top Consumers</h2>
+          <p className="top-consumers-subtitle">Processes ranked by {metricLabel}</p>
+        </div>
+        <div className="metric-toggle-group" role="radiogroup" aria-label="Metric">
+          {(['cpu', 'memory', 'io'] as const).map(m => (
+            <button
+              key={m}
+              className={`metric-toggle ${metric === m ? 'active' : ''}`}
+              onClick={() => setMetric(m)}
+              role="radio"
+              aria-checked={metric === m}
+            >
+              {m === 'cpu' ? 'CPU' : m === 'memory' ? 'Memory' : 'I/O'}
+            </button>
+          ))}
         </div>
       </div>
 
-      <p className="top-consumers-subtitle">Processes ranked by {metricLabel}</p>
-
       <div className="consumer-list" role="list">
-        {items.map(item => (
+        {items.map((item, idx) => (
           <button
             key={item.name}
             className="consumer-row"
@@ -102,11 +93,16 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
             role="listitem"
             aria-label={`${item.name}: ${item.label}`}
           >
+            <span className="consumer-rank">{idx + 1}</span>
             <span className="consumer-name">{item.name}</span>
             <div className="consumer-bar-track">
               <div
                 className="consumer-bar-fill"
-                style={{ width: `${Math.min(item.pct, 100)}%`, backgroundColor: item.color }}
+                style={{
+                  width: `${Math.min(item.pct, 100)}%`,
+                  background: `linear-gradient(90deg, ${item.color}, ${item.color}cc)`,
+                  boxShadow: `0 0 8px ${item.color}40`,
+                }}
               />
             </div>
             <span className="consumer-value">{item.label}</span>
