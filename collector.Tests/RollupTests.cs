@@ -1,5 +1,3 @@
-using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using Telltale.Collector;
 
 namespace Collector.Tests;
@@ -10,20 +8,15 @@ namespace Collector.Tests;
 /// complete. Regression cover for issue #26, where a partly promoted bucket was
 /// promoted again on the next cycle and wedged the pipeline permanently.
 /// </summary>
-public class RollupTests : IDisposable
+public class RollupTests : SqliteTestBase
 {
     private const long MinuteMs = 60_000L;
 
     /// <summary>An arbitrary timestamp sitting exactly on a ten minute boundary.</summary>
     private const long BucketStart = 1_700_000_000_000L / 600_000L * 600_000L;
 
-    private readonly string _dbPath;
-    private readonly Database _db;
-
-    public RollupTests()
+    public RollupTests() : base("rollup")
     {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"telltale_rollup_{Guid.NewGuid()}.db");
-        _db = new Database(_dbPath, new SilentLogger());
     }
 
     [Fact]
@@ -37,7 +30,7 @@ public class RollupTests : IDisposable
 
         // A cutoff a third of the way into the second minute. Only the first minute
         // is complete, so only the first minute may be promoted.
-        _db.RollupSamples(straddling + 20_001, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(straddling + 20_001, "machine", "machine_1m", 1, isMachine: true);
 
         Assert.Equal([earlier], Timestamps("machine_1m"));
         Assert.Equal(3, Count("machine"));
@@ -53,12 +46,12 @@ public class RollupTests : IDisposable
         // First cycle: the cutoff lands inside the bucket. Before the fix this
         // promoted the two rows older than the cutoff and deleted them, leaving the
         // third behind under a bucket timestamp that now existed.
-        _db.RollupSamples(bucket + 30_000, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + 30_000, "machine", "machine_1m", 1, isMachine: true);
 
         // Second cycle: the bucket is complete. Before the fix this tried to insert
         // the same bucket timestamp a second time, the primary key rejected it, and
         // the whole transaction including the delete rolled back.
-        _db.RollupSamples(bucket + MinuteMs + 30_000, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs + 30_000, "machine", "machine_1m", 1, isMachine: true);
 
         Assert.Equal([bucket], Timestamps("machine_1m"));
         Assert.Equal(3L, Scalar($"SELECT sample_count FROM machine_1m WHERE ts = {bucket}"));
@@ -72,8 +65,8 @@ public class RollupTests : IDisposable
         WriteMachine(bucket, bucket + 30_000);
         long cutoff = bucket + MinuteMs;
 
-        _db.RollupSamples(cutoff, "machine", "machine_1m", 1, isMachine: true);
-        _db.RollupSamples(cutoff, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(cutoff, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(cutoff, "machine", "machine_1m", 1, isMachine: true);
 
         Assert.Equal([bucket], Timestamps("machine_1m"));
         Assert.Equal(2L, Scalar($"SELECT sample_count FROM machine_1m WHERE ts = {bucket}"));
@@ -84,13 +77,13 @@ public class RollupTests : IDisposable
     {
         long bucket = BucketStart;
         WriteMachine(bucket, bucket + 30_000);
-        _db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
 
         // A row arriving late for a bucket that has already been promoted, which is
         // also the shape of a database left wedged by the previous behaviour.
         WriteMachine(bucket + 45_000);
 
-        _db.RollupSamples(bucket + (2 * MinuteMs), "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + (2 * MinuteMs), "machine", "machine_1m", 1, isMachine: true);
 
         Assert.Equal([bucket], Timestamps("machine_1m"));
         Assert.Equal(2L, Scalar($"SELECT sample_count FROM machine_1m WHERE ts = {bucket}"));
@@ -103,13 +96,13 @@ public class RollupTests : IDisposable
     public void Rollup_ProcessSamples_DoNotDuplicateAnAlreadyPromotedBucket()
     {
         long bucket = BucketStart;
-        long instanceId = _db.GetOrCreateProcessInstance(4321, 100, "test.exe", null, null, bucket);
+        long instanceId = Db.GetOrCreateProcessInstance(4321, 100, "test.exe", null, null, bucket);
 
         WriteSample(instanceId, bucket, bucket + 30_000);
-        _db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
 
         WriteSample(instanceId, bucket + 45_000);
-        _db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
 
         // Before issue #32 a repeated promotion inserted a second row for the same
         // minute here and silently double counted, because sample_1m had no key on
@@ -128,15 +121,15 @@ public class RollupTests : IDisposable
         long bucket = BucketStart;
         long[] instances =
         [
-            _db.GetOrCreateProcessInstance(1, 100, "one.exe", null, null, bucket),
-            _db.GetOrCreateProcessInstance(2, 100, "two.exe", null, null, bucket),
-            _db.GetOrCreateProcessInstance(3, 100, "three.exe", null, null, bucket),
+            Db.GetOrCreateProcessInstance(1, 100, "one.exe", null, null, bucket),
+            Db.GetOrCreateProcessInstance(2, 100, "two.exe", null, null, bucket),
+            Db.GetOrCreateProcessInstance(3, 100, "three.exe", null, null, bucket),
         ];
 
         foreach (long instanceId in instances)
             WriteSample(instanceId, bucket, bucket + 30_000);
 
-        _db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
 
         // The bucket exclusion reads the table being inserted into, so a bucket that
         // is new for one process must not read as taken for the next.
@@ -150,17 +143,17 @@ public class RollupTests : IDisposable
     public void Rollup_ProcessAppearingOnlyAfterItsBucketWasPromoted_IsStillPromoted()
     {
         long bucket = BucketStart;
-        long early = _db.GetOrCreateProcessInstance(1, 100, "early.exe", null, null, bucket);
+        long early = Db.GetOrCreateProcessInstance(1, 100, "early.exe", null, null, bucket);
         WriteSample(early, bucket);
-        _db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
 
         // A process first sampled in the second half of a minute that was already
         // promoted. The exclusion is keyed on (ts, instance_id), so this process is
         // promoted rather than discarded along with the whole bucket.
-        long late = _db.GetOrCreateProcessInstance(2, 100, "late.exe", null, null, bucket + 45_000);
+        long late = Db.GetOrCreateProcessInstance(2, 100, "late.exe", null, null, bucket + 45_000);
         WriteSample(late, bucket + 45_000);
 
-        _db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
 
         Assert.Equal(2, Count("sample_1m", $"ts = {bucket}"));
         Assert.Equal(1L, Scalar(
@@ -182,8 +175,8 @@ public class RollupTests : IDisposable
 
         // A cutoff four minutes into the second ten minute bucket. Only the first is
         // complete. Running twice proves the incomplete one is not half promoted.
-        _db.RollupSamples(second + (4 * MinuteMs), "machine_1m", "machine_10m", 10, isMachine: true);
-        _db.RollupSamples(second + (4 * MinuteMs), "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(second + (4 * MinuteMs), "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(second + (4 * MinuteMs), "machine_1m", "machine_10m", 10, isMachine: true);
 
         Assert.Equal([first], Timestamps("machine_10m"));
         Assert.Equal(10L, Scalar($"SELECT sample_count FROM machine_10m WHERE ts = {first}"));
@@ -209,20 +202,20 @@ public class RollupTests : IDisposable
     public void Rollup_RejectsABucketSizeBelowOneMinute()
     {
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => _db.RollupSamples(BucketStart, "machine", "machine_1m", 0, isMachine: true));
+            () => Db.RollupSamples(BucketStart, "machine", "machine_1m", 0, isMachine: true));
     }
 
     private void WriteMachine(params long[] timestamps)
     {
         foreach (long ts in timestamps)
-            _db.WriteMachineSample(ts,
+            Db.WriteMachineSample(ts,
                 new MachineSample(50.0, 8000, 12000, 0, 1.0, 2.0, 16000, 30.0, 1000, null));
     }
 
     private void WriteSample(long instanceId, params long[] timestamps)
     {
         foreach (long ts in timestamps)
-            _db.WriteSampleBatch(ts, [new SampleRow(instanceId, 5.0, 100, 200, 50, 10, 100)]);
+            Db.WriteSampleBatch(ts, [new SampleRow(instanceId, 5.0, 100, 200, 50, 10, 100)]);
     }
 
     /// <summary>
@@ -253,45 +246,4 @@ public class RollupTests : IDisposable
     private int Count(string table, string? where = null) =>
         (int)(long)Scalar($"SELECT COUNT(*) FROM {table}" + (where is null ? "" : $" WHERE {where}"))!;
 
-    private object? Scalar(string sql)
-    {
-        using var conn = Connect();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        return cmd.ExecuteScalar();
-    }
-
-    private void Execute(string sql)
-    {
-        using var conn = Connect();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.ExecuteNonQuery();
-    }
-
-    private SqliteConnection Connect()
-    {
-        var conn = new SqliteConnection($"Data Source={_dbPath}");
-        conn.Open();
-        return conn;
-    }
-
-    public void Dispose()
-    {
-        _db.Dispose();
-        SqliteConnection.ClearAllPools();
-        foreach (var suffix in new[] { "", "-wal", "-shm" })
-        {
-            try { File.Delete(_dbPath + suffix); } catch { /* best effort cleanup */ }
-        }
-        GC.SuppressFinalize(this);
-    }
-
-    private sealed class SilentLogger : ILogger
-    {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => false;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
-            Exception? exception, Func<TState, Exception?, string> formatter) { }
-    }
 }

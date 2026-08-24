@@ -88,6 +88,13 @@ that no untrusted input reaches the SQL *text*, not that no untrusted input
 reaches the database at all. The permissive CORS policy predates this work and
 is its own question.
 
+> **Update, 2026-08-24.** That question has since been answered. The permissive
+> policy was raised as its own issue (#39) and closed by removing `AddCors` and
+> `UseCors` from `viewer/Program.cs` and narrowing `AllowedHosts` to the loopback
+> hosts the viewer is actually reached on. The paragraph above is kept as it was
+> written, because it records what was known at the time this advisory was
+> assessed; it no longer describes the current code.
+
 None of this changed the decision. A patched version was available, and where a
 fix can simply be taken, arguing about reachability is the weaker option.
 

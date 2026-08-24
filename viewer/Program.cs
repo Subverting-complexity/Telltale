@@ -20,12 +20,14 @@ if (!isTestHost)
 try
 {
     var builder = WebApplication.CreateBuilder(args);
-    builder.Services.AddCors(options =>
-        options.AddDefaultPolicy(policy =>
-            policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
     var app = builder.Build();
-    app.UseCors();
+
+    // No CORS policy: nothing legitimately reaches this API cross-origin. The
+    // shipped build serves the frontend from this executable's own wwwroot, and
+    // during development Vite proxies /api to the viewer from its own server, so
+    // the browser only ever sees its own origin. A policy allowing any origin let
+    // any page the user visited read their capture history through their browser.
     app.UseDefaultFiles();
     app.UseStaticFiles();
 
