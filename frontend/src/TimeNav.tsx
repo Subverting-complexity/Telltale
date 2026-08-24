@@ -104,41 +104,45 @@ export function TimeNav({ view, onNavigate, onHourSelect, selectedHour, minTs, m
       </div>
 
       <div className="time-nav-controls">
-        <button className="nav-btn" onClick={prev} aria-label="Previous">&lsaquo;</button>
+        <div className="date-stepper">
+          <button className="nav-btn step-btn" onClick={prev} aria-label="Previous">&lsaquo;</button>
 
-        <ol className="breadcrumbs" aria-label="Current time position">
-          {breadcrumbs.map((b, i) => (
-            <li key={i}>
-              {i < breadcrumbs.length - 1
-                ? <button className="breadcrumb-link" onClick={b.onClick}>{b.label}</button>
-                : <span className="breadcrumb-current" aria-current="page">{b.label}</span>}
-            </li>
-          ))}
-        </ol>
+          <ol className="breadcrumbs" aria-label="Current time position">
+            {breadcrumbs.map((b, i) => (
+              <li key={i}>
+                {i < breadcrumbs.length - 1
+                  ? <button className="breadcrumb-link" onClick={b.onClick}>{b.label}</button>
+                  : <span className="breadcrumb-current" aria-current="page">{b.label}</span>}
+              </li>
+            ))}
+          </ol>
 
-        <button className="nav-btn" onClick={next} aria-label="Next">&rsaquo;</button>
+          <button className="nav-btn step-btn" onClick={next} aria-label="Next">&rsaquo;</button>
+        </div>
 
-        <button
-          className="nav-btn today-btn"
-          onClick={() => onNavigate({
-            scale: 'day',
-            year: now.getFullYear(),
-            month: now.getMonth() + 1,
-            day: now.getDate(),
-          })}
-        >
-          Today
-        </button>
+        <div className="time-nav-secondary">
+          <button
+            className="nav-btn today-btn"
+            onClick={() => onNavigate({
+              scale: 'day',
+              year: now.getFullYear(),
+              month: now.getMonth() + 1,
+              day: now.getDate(),
+            })}
+          >
+            Today
+          </button>
 
-        <JumpToTimestamp onJump={(ts) => {
-          const d = new Date(ts);
-          onNavigate({
-            scale: 'day',
-            year: d.getFullYear(),
-            month: d.getMonth() + 1,
-            day: d.getDate(),
-          });
-        }} />
+          <JumpToTimestamp onJump={(ts) => {
+            const d = new Date(ts);
+            onNavigate({
+              scale: 'day',
+              year: d.getFullYear(),
+              month: d.getMonth() + 1,
+              day: d.getDate(),
+            });
+          }} />
+        </div>
       </div>
 
       {view.scale === 'year' && (
@@ -262,7 +266,7 @@ function HourGrid({ year, month, day, selectedHour, onSelectHour, minTs, maxTs }
       <span className="nav-subgrid-label">Filter by hour</span>
       <div className="hour-grid" role="grid" aria-label={`Hours of ${day} ${MONTH_NAMES[month - 1]} ${year}`}>
         <button
-          className={`hour-cell ${selectedHour === null ? 'selected' : ''}`}
+          className={`hour-cell hour-cell-all ${selectedHour === null ? 'selected' : ''}`}
           onClick={() => onSelectHour(null)}
           aria-label="Show full day"
           aria-pressed={selectedHour === null}
