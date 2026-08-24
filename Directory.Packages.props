@@ -15,6 +15,12 @@
 
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      Central package management still allows a project to opt out with
+      VersionOverride, which would reopen exactly the divergence this file
+      exists to close. Turning it off makes any override build error NU1013.
+    -->
+    <CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled>
   </PropertyGroup>
 
   <ItemGroup Label="Runtime">

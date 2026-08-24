@@ -69,7 +69,7 @@ than none.
 **The database path is user-supplied.** `viewer/Program.cs` reads it from
 `TELLTALE_DB` through the standard configuration providers, so an environment
 variable or a command-line argument can point the viewer at any file, and
-`collector/Config.cs` takes a `databasePath` the same way. Opening a capture file
+`collector/Config.cs` takes a `databasePath` from `telltale.json`. Opening a capture file
 is therefore a supported action, not an anomaly. The realistic vector is not
 only "an attacker overwrote my database" but also "someone was persuaded to open
 a capture file they were sent", which needs no write access to their machine at
@@ -105,8 +105,9 @@ Microsoft.Data.Sqlite 10.0.11
 Worth being explicit about the size of that move: the package version changes by
 two patch releases, but the SQLite engine underneath goes from 3.46.1 to 3.53.3,
 which is seven feature releases. The behavioural risk lives in the engine jump,
-not in the package number. What was checked is recorded under "How to check it is
-still resolved" below.
+not in the package number. What was checked: the full backend suite passes on the
+new engine, and the collector's rollup statements and the viewer's tier queries
+were run against both 3.46.1 and 3.53.3 and returned identical results.
 
 Moving to the 10.x line also matches the `net10.0` target the projects already
 build against. `Microsoft.Data.Sqlite.Core` 10.0.11 depends only on
@@ -129,9 +130,11 @@ have shipped a vulnerable `TelltaleViewer.exe` while the viewer's own tests kept
 passing at the patched version.
 
 `Directory.Packages.props` now declares every package version once, and the
-project files reference packages without a version. The collector and the viewer
-cannot drift apart, which matters because they open the same database file with
-`schema.sql` as the only contract between them.
+project files reference packages without a version. `VersionOverride`, which would
+let a single project opt back out, is disabled, so an attempt to pin one project
+separately is a build error rather than a silent divergence. That matters because
+the collector and the viewer open the same database file with `schema.sql` as the
+only contract between them.
 
 ### How to check it is still resolved
 
