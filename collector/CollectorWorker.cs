@@ -9,22 +9,26 @@ public sealed class CollectorWorker : BackgroundService
     private readonly Database _db;
     private readonly IProcessSampler _sampler;
     private readonly MachineSampler _machineSampler;
+    private readonly ProcessIdentityResolver _identities;
 
     private readonly Dictionary<(int Pid, long CreateTime), PreviousSample> _previous = new();
     private readonly Stopwatch _elapsedTimer = new();
+    private readonly TickOverrunMonitor _overruns = new();
 
     public CollectorWorker(
         ILogger<CollectorWorker> logger,
         TelltaleConfig config,
         Database db,
         IProcessSampler sampler,
-        MachineSampler machineSampler)
+        MachineSampler machineSampler,
+        ProcessIdentityResolver identities)
     {
         _logger = logger;
         _config = config;
         _db = db;
         _sampler = sampler;
         _machineSampler = machineSampler;
+        _identities = identities;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -59,100 +63,93 @@ public sealed class CollectorWorker : BackgroundService
         var snapshots = _sampler.Sample();
         var machineSample = _machineSampler.Sample();
 
-        var rows = new List<SampleRow>(snapshots.Count);
-        var seenKeys = new HashSet<(int, long)>();
-
+        // The tick's distinct process instances, gathered before the loop so every
+        // one whose identity is not yet known can be looked up in a single batch
+        // rather than one query at a time.
+        var seenKeys = new HashSet<(int Pid, long CreateTime)>(snapshots.Count);
         foreach (var snap in snapshots)
+            seenKeys.Add((snap.Pid, snap.CreateTimeTicks));
+
+        _identities.Resolve(seenKeys);
+
+        var rows = new List<SampleRow>(snapshots.Count);
+        var handled = new HashSet<(int, long)>(seenKeys.Count);
+
+        try
         {
-            var key = (snap.Pid, snap.CreateTimeTicks);
-            if (!seenKeys.Add(key)) continue;
-
-            string? commandLine = null;
-            string? path = null;
-
-            if (_config.RecordCommandLines && snap.Pid > 4)
+            foreach (var snap in snapshots)
             {
-                try
+                var key = (snap.Pid, snap.CreateTimeTicks);
+                if (!handled.Add(key)) continue;
+
+                var identity = _identities.For(key);
+
+                long instanceId = _db.GetOrCreateProcessInstance(
+                    snap.Pid, snap.CreateTimeTicks, snap.Name, identity.Path, identity.CommandLine,
+                    timestamp);
+
+                double? cpuPct = null;
+                double? ioKb = null;
+
+                if (_previous.TryGetValue(key, out var prev))
                 {
-                    using var proc = Process.GetProcessById(snap.Pid);
-                    try
+                    long cpuDelta = (snap.KernelTime + snap.UserTime) - (prev.KernelTime + prev.UserTime);
+                    long ticksDelta = elapsedTicks - prev.ElapsedTicks;
+
+                    if (ticksDelta > 0 && cpuDelta >= 0)
                     {
-                        path = proc.MainModule?.FileName;
+                        double elapsedSec = (double)ticksDelta / Stopwatch.Frequency;
+                        cpuPct = (cpuDelta / 10_000_000.0) / elapsedSec * 100.0;
                     }
-                    catch { }
 
-                    try
-                    {
-                        commandLine = GetCommandLine(snap.Pid);
-                        commandLine = TelltaleConfig.RedactCommandLine(commandLine);
-                    }
-                    catch { }
+                    long totalIo = snap.IoReadBytes + snap.IoWriteBytes + snap.IoOtherBytes;
+                    long prevTotalIo = prev.IoReadBytes + prev.IoWriteBytes + prev.IoOtherBytes;
+                    long ioDelta = totalIo - prevTotalIo;
+                    if (ioDelta >= 0)
+                        ioKb = ioDelta / 1024.0;
                 }
-                catch { }
-            }
-            else if (snap.Pid > 4)
-            {
-                try
+
+                _previous[key] = new PreviousSample(
+                    snap.KernelTime, snap.UserTime, elapsedTicks,
+                    snap.IoReadBytes, snap.IoWriteBytes, snap.IoOtherBytes);
+
+                double privateMb = snap.PrivateBytes / (1024.0 * 1024.0);
+                double workingSetMb = snap.WorkingSetBytes / (1024.0 * 1024.0);
+
+                bool meetsThreshold = (cpuPct.HasValue && cpuPct.Value >= _config.Thresholds.CpuPct) ||
+                                      privateMb >= _config.Thresholds.PrivateMemoryMb;
+
+                if (meetsThreshold || !cpuPct.HasValue)
                 {
-                    using var proc = Process.GetProcessById(snap.Pid);
-                    path = proc.MainModule?.FileName;
+                    rows.Add(new SampleRow(instanceId, cpuPct, privateMb, workingSetMb, ioKb,
+                        snap.ThreadCount, snap.HandleCount));
                 }
-                catch { }
-            }
-
-            long instanceId = _db.GetOrCreateProcessInstance(
-                snap.Pid, snap.CreateTimeTicks, snap.Name, path, commandLine, timestamp);
-
-            double? cpuPct = null;
-            double? ioKb = null;
-
-            if (_previous.TryGetValue(key, out var prev))
-            {
-                long cpuDelta = (snap.KernelTime + snap.UserTime) - (prev.KernelTime + prev.UserTime);
-                long ticksDelta = elapsedTicks - prev.ElapsedTicks;
-
-                if (ticksDelta > 0 && cpuDelta >= 0)
-                {
-                    double elapsedSec = (double)ticksDelta / Stopwatch.Frequency;
-                    cpuPct = (cpuDelta / 10_000_000.0) / elapsedSec * 100.0;
-                }
-
-                long totalIo = snap.IoReadBytes + snap.IoWriteBytes + snap.IoOtherBytes;
-                long prevTotalIo = prev.IoReadBytes + prev.IoWriteBytes + prev.IoOtherBytes;
-                long ioDelta = totalIo - prevTotalIo;
-                if (ioDelta >= 0)
-                    ioKb = ioDelta / 1024.0;
-            }
-
-            _previous[key] = new PreviousSample(
-                snap.KernelTime, snap.UserTime, elapsedTicks,
-                snap.IoReadBytes, snap.IoWriteBytes, snap.IoOtherBytes);
-
-            double privateMb = snap.PrivateBytes / (1024.0 * 1024.0);
-            double workingSetMb = snap.WorkingSetBytes / (1024.0 * 1024.0);
-
-            bool meetsThreshold = (cpuPct.HasValue && cpuPct.Value >= _config.Thresholds.CpuPct) ||
-                                  privateMb >= _config.Thresholds.PrivateMemoryMb;
-
-            if (meetsThreshold || !cpuPct.HasValue)
-            {
-                rows.Add(new SampleRow(instanceId, cpuPct, privateMb, workingSetMb, ioKb,
-                    snap.ThreadCount, snap.HandleCount));
             }
         }
-
-        CleanStalePrevious(seenKeys);
+        finally
+        {
+            // Pruning runs even when a row fails part way through. Without this a
+            // tick that throws leaves both maps holding processes that have already
+            // gone, and they only clear on the next tick that gets all the way down.
+            CleanStalePrevious(seenKeys);
+            _identities.Prune(seenKeys);
+        }
 
         if (rows.Count > 0)
             _db.WriteSampleBatch(timestamp, rows);
 
         _db.WriteMachineSample(timestamp, machineSample);
 
+        // Read before the health write so sample_cost_ms keeps meaning what it always
+        // meant, but stop the clock after it, so a tick pushed over the interval by
+        // its own health write is still counted as an overrun.
+        double sampleCostMs = sw.Elapsed.TotalMilliseconds;
+        RecordHealth(timestamp, sampleCostMs, snapshots.Count, rows.Count);
         sw.Stop();
-        RecordHealth(timestamp, sw.Elapsed.TotalMilliseconds, snapshots.Count, rows.Count);
+        RecordOverrun(sw.Elapsed);
     }
 
-    private void CleanStalePrevious(HashSet<(int, long)> seenKeys)
+    private void CleanStalePrevious(HashSet<(int Pid, long CreateTime)> seenKeys)
     {
         var staleKeys = _previous.Keys.Where(k => !seenKeys.Contains(k)).ToList();
         foreach (var k in staleKeys)
@@ -168,19 +165,38 @@ public sealed class CollectorWorker : BackgroundService
         _db.WriteCollectorHealth(timestamp, cpuPct, privateMb, sampleCostMs, processCount, storedCount);
     }
 
-    private static string? GetCommandLine(int pid)
+    /// <summary>
+    /// Says so when a tick takes longer than the interval it is meant to fit inside.
+    /// Without this the failure is silent: the process stays up, no error is raised,
+    /// and the only symptom is a viewer with nothing in it.
+    /// </summary>
+    private void RecordOverrun(TimeSpan tickDuration)
     {
-        try
+        var (outcome, overruns) = _overruns.Record(tickDuration, _config.IntervalSeconds);
+
+        switch (outcome)
         {
-            using var searcher = new System.Management.ManagementObjectSearcher(
-                $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {pid}");
-            foreach (var obj in searcher.Get())
-            {
-                return obj["CommandLine"]?.ToString();
-            }
+            case TickOutcome.Recovered:
+                _logger.LogInformation(
+                    "Sampling is keeping up again after {Overruns} tick(s) that ran long.",
+                    overruns);
+                break;
+
+            case TickOutcome.Overrun
+                when TickOverrunMonitor.LevelForConsecutiveOverruns(overruns) == LogLevel.Error:
+                _logger.LogError(
+                    "Sampling has run longer than its {Interval}s interval {Overruns} times in a "
+                    + "row, the last taking {Duration:F1}s. The collector cannot keep up, so the "
+                    + "recorded history will have gaps.",
+                    _config.IntervalSeconds, overruns, tickDuration.TotalSeconds);
+                break;
+
+            case TickOutcome.Overrun:
+                _logger.LogWarning(
+                    "Sampling tick took {Duration:F1}s, longer than the {Interval}s interval.",
+                    tickDuration.TotalSeconds, _config.IntervalSeconds);
+                break;
         }
-        catch { }
-        return null;
     }
 
     private record PreviousSample(

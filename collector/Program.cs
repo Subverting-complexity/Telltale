@@ -48,6 +48,13 @@ try
     });
     builder.Services.AddSingleton(sp =>
         new MachineSampler(sp.GetRequiredService<ILogger<MachineSampler>>()));
+    builder.Services.AddSingleton<IProcessIdentitySource>(sp =>
+        new WmiProcessIdentitySource(
+            sp.GetRequiredService<ILogger<WmiProcessIdentitySource>>(), config));
+    // Singleton because its whole purpose is remembering, across ticks, which
+    // process instances have already been looked up.
+    builder.Services.AddSingleton(sp =>
+        new ProcessIdentityResolver(sp.GetRequiredService<IProcessIdentitySource>(), config));
     builder.Services.AddHostedService<CollectorWorker>();
     builder.Services.AddHostedService<RollupWorker>();
 

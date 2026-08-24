@@ -120,8 +120,15 @@ TypeScript + Vite frontend, over a local SQLite database.
 
 ## Security Specifics
 
-- Never log or persist full command lines or process arguments — they can
-  contain credentials. Process name and PID only.
+- Never log a full command line or process arguments. They can contain
+  credentials.
+- Command lines are persisted only when the user has turned on
+  `recordCommandLines`, which is off by default, and only after
+  `TelltaleConfig.RedactCommandLine` has masked the credential patterns it
+  knows about. That redaction is best effort and will miss a credential passed
+  positionally or hidden in a URL or connection string. A change that stores
+  more of the command line, that bypasses the redaction, or that records
+  command lines by default is a blocking finding.
 - All viewer SQL must be parameterised. String-concatenated SQL is a
   blocking finding.
 - The viewer binds locally. Any change that binds to a non-loopback address,

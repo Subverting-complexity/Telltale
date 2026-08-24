@@ -15,6 +15,30 @@ public class ConfigTests
     }
 
     [Fact]
+    public void DefaultConfig_DoesNotRecordCommandLines()
+    {
+        // Storing a command line is something the user opts into. One can carry a
+        // password, a token or a connection string, and the redaction applied when
+        // recording is on masks only the patterns it knows about.
+        Assert.False(new TelltaleConfig().RecordCommandLines);
+    }
+
+    [Fact]
+    public void ShippedConfigFile_DoesNotRecordCommandLines()
+    {
+        // The property initialiser above is only reached when no telltale.json is
+        // found, and on a published build one always is: publish.bat copies the
+        // repository's own file next to the executable, and TelltaleConfig.Load reads
+        // it in preference to the code default. So the shipped file is what actually
+        // decides, and it has to be pinned separately or the two silently drift apart.
+        Assert.True(
+            File.Exists(Path.Combine(AppContext.BaseDirectory, "telltale.json")),
+            "telltale.json was not copied next to the tests, so this asserts nothing.");
+
+        Assert.False(TelltaleConfig.Load().RecordCommandLines);
+    }
+
+    [Fact]
     public void InvalidInterval_FailsValidation()
     {
         var config = new TelltaleConfig { IntervalSeconds = 1 };

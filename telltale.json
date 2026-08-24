@@ -1,7 +1,7 @@
 {
   "intervalSeconds": 5,
   "databasePath": null,
-  "recordCommandLines": true,
+  "recordCommandLines": false,
   "maxDatabaseSizeMb": 500,
   "rawRetentionHours": 24,
   "rollup1mRetentionDays": 7,
