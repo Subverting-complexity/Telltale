@@ -109,15 +109,25 @@ try
 
         // Raw-only ranges stay unaggregated, as they were before tier selection
         // learned to span tiers.
+        //
+        // A mixed bucket is at least as wide as the coarsest tier's interval, but
+        // the bucket grid is anchored to the epoch while the tier changes over at
+        // whatever instant the raw table happens to start. The one bucket holding
+        // that instant therefore straddles both tiers, so it is weighted like any
+        // other aggregate rather than trusted to be single-tier.
         if (!plan.IsSingleRawTier && plan.Bucket > 0)
         {
             cmd.CommandText = $"""
                 SELECT (ts / @bucket) * @bucket as ts,
-                       AVG(cpu_pct) as cpu_pct, AVG(memory_avail_mb) as memory_avail_mb,
+                       {TierSql.WeightedAvg("cpu_pct", "cpu_pct")},
+                       {TierSql.WeightedAvg("memory_avail_mb", "memory_avail_mb")},
                        MAX(commit_mb) as commit_mb, SUM(hard_faults) as hard_faults,
-                       AVG(disk_read_ms) as disk_read_ms, AVG(disk_write_ms) as disk_write_ms,
-                       memory_total_mb, AVG(disk_busy_pct) as disk_busy_pct,
-                       AVG(net_kbps) as net_kbps, AVG(gpu_busy_pct) as gpu_busy_pct
+                       {TierSql.WeightedAvg("disk_read_ms", "disk_read_ms")},
+                       {TierSql.WeightedAvg("disk_write_ms", "disk_write_ms")},
+                       memory_total_mb,
+                       {TierSql.WeightedAvg("disk_busy_pct", "disk_busy_pct")},
+                       {TierSql.WeightedAvg("net_kbps", "net_kbps")},
+                       {TierSql.WeightedAvg("gpu_busy_pct", "gpu_busy_pct")}
                 FROM {source.Sql} WHERE ts >= @from AND ts <= @to
                 GROUP BY ts / @bucket ORDER BY ts
                 """;
@@ -171,26 +181,32 @@ try
 
         if (grouped)
         {
+            // The group is totalled across its instances at each instant, then those
+            // totals are averaged over time. Scaling by weight happens on the inner
+            // total, so an instance present for only part of a rollup bucket
+            // contributes the share of the bucket it was actually there for.
+            string weightedCpu = TierSql.AvgOfWeightedTotalsExpr("sub.ts_cpu_weighted", "sub.ts_weight");
             string sortExpr = sort switch
             {
                 "memory" => "MAX(sub.ts_mem)",
                 "io" => "SUM(sub.ts_io)",
                 "name" => "sub.name",
-                _ => "AVG(sub.ts_cpu)"
+                _ => weightedCpu
             };
             cmd.CommandText = $"""
                 SELECT sub.name,
-                       AVG(sub.ts_cpu) as avg_cpu_pct,
+                       {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "avg_cpu_pct")},
                        MAX(sub.ts_mem) as peak_private_mb,
                        SUM(sub.ts_io) as total_io_kb,
                        MAX(sub.inst_cnt) as instance_count,
                        (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = sub.name AND pi2.path IS NOT NULL LIMIT 1) as path
                 FROM (
                     SELECT pi.name,
-                           SUM(s.cpu_pct) as ts_cpu,
+                           {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
                            SUM(s.private_mb) as ts_mem,
                            SUM(s.io_kb) as ts_io,
-                           COUNT(DISTINCT s.instance_id) as inst_cnt
+                           COUNT(DISTINCT s.instance_id) as inst_cnt,
+                           {TierSql.InstantWeight("s.weight")} as ts_weight
                     FROM {source.Sql} s
                     JOIN process_instance pi ON pi.id = s.instance_id
                     WHERE s.ts >= @from AND s.ts <= @to
@@ -209,11 +225,11 @@ try
                 "memory" => $"MAX(s.private_mb)",
                 "io" => $"SUM(s.io_kb)",
                 "name" => "pi.name",
-                _ => $"AVG(s.cpu_pct)"
+                _ => TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight")
             };
             cmd.CommandText = $"""
                 SELECT pi.id, pi.pid, pi.name, pi.path,
-                       AVG(s.cpu_pct) as avg_cpu_pct,
+                       {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu_pct", "s.weight")},
                        MAX(s.private_mb) as peak_private_mb,
                        SUM(s.io_kb) as total_io_kb
                 FROM {source.Sql} s
@@ -281,7 +297,8 @@ try
         {
             cmd.CommandText = $"""
                 SELECT (s.ts / @bucket) * @bucket as ts,
-                       AVG(s.cpu_pct) as cpu_pct, MAX(s.private_mb) as private_mb,
+                       {TierSql.WeightedAvg("s.cpu_pct", "cpu_pct", "s.weight")},
+                       MAX(s.private_mb) as private_mb,
                        MAX(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb
                 FROM {source.Sql} s
                 WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
@@ -355,16 +372,23 @@ try
         // the bucket, the same shape /api/processes uses. Summing rows directly
         // over a bucket would scale with how many rows the bucket happens to
         // hold, which differs between tiers and would step at the boundary.
+        // The bucket holding the tier changeover draws from both tiers, so the
+        // totals are weighted by the span each instant covers.
         cmd.CommandText = $"""
             SELECT (sub.ts / @bucket) * @bucket as ts,
-                   AVG(sub.ts_cpu) as cpu_pct, AVG(sub.ts_mem) as private_mb,
-                   AVG(sub.ts_ws) as working_set_mb, SUM(sub.ts_io) as io_kb,
+                   {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "cpu_pct")},
+                   {TierSql.AvgOfWeightedTotals("sub.ts_mem_weighted", "sub.ts_weight", "private_mb")},
+                   {TierSql.AvgOfWeightedTotals("sub.ts_ws_weighted", "sub.ts_weight", "working_set_mb")},
+                   SUM(sub.ts_io) as io_kb,
                    MAX(sub.inst_cnt) as instance_count
             FROM (
                 SELECT s.ts,
-                       SUM(s.cpu_pct) as ts_cpu, SUM(s.private_mb) as ts_mem,
-                       SUM(s.working_set_mb) as ts_ws, SUM(s.io_kb) as ts_io,
-                       COUNT(DISTINCT s.instance_id) as inst_cnt
+                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
+                       {TierSql.WeightedTotal("s.private_mb", "ts_mem_weighted", "s.weight")},
+                       {TierSql.WeightedTotal("s.working_set_mb", "ts_ws_weighted", "s.weight")},
+                       SUM(s.io_kb) as ts_io,
+                       COUNT(DISTINCT s.instance_id) as inst_cnt,
+                       {TierSql.InstantWeight("s.weight")} as ts_weight
                 FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
@@ -414,13 +438,17 @@ try
 
             var plan = PlanTiers(conn, from, now, isMachine: false);
             TierSource source = TierSql.Source(plan, isMachine: false);
+            // A threshold has to be compared against a time-weighted mean, or whether
+            // an alert fires depends on how much of the window came from the raw
+            // tier rather than on how the process actually behaved.
+            string alertAvgCpu = TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight");
             cmd.CommandText = $"""
                 SELECT pi.name,
-                       AVG(s.cpu_pct) as avg_cpu,
-                       MAX(s.cpu_pct) as peak_cpu,
+                       {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu", "s.weight")},
+                       MAX(s.cpu_pct_peak) as peak_cpu,
                        MAX(s.private_mb) as peak_memory_mb,
                        SUM(s.io_kb) as total_io_kb,
-                       COUNT(*) as sample_count,
+                       SUM(s.weight) as sample_count,
                        COUNT(DISTINCT s.instance_id) as instance_count,
                        MIN(s.ts) as first_ts,
                        MAX(s.ts) as last_ts
@@ -429,8 +457,8 @@ try
                 WHERE s.ts >= @from AND s.ts <= @to
                   AND LOWER(pi.name) != 'idle'
                 GROUP BY pi.name
-                HAVING AVG(s.cpu_pct) > {ProcessCpuNotablePct} OR MAX(s.private_mb) > {ProcessMemoryNotableMb}
-                ORDER BY AVG(s.cpu_pct) DESC
+                HAVING {alertAvgCpu} > {ProcessCpuNotablePct} OR MAX(s.private_mb) > {ProcessMemoryNotableMb}
+                ORDER BY {alertAvgCpu} DESC
                 LIMIT 50
                 """;
 
@@ -463,7 +491,9 @@ try
                     peakCpuPct = Math.Round(peakCpu, 2),
                     peakMemoryMb = Math.Round(peakMemMb, 1),
                     totalIoKb = Math.Round(totalIoKb, 0),
-                    sampleCount = reader.GetInt32(5),
+                    // Raw samples represented, not rows read: a rollup row stands for
+                    // however many raw samples went into it.
+                    sampleCount = reader.GetInt64(5),
                     instanceCount = reader.GetInt32(6),
                     firstTs = reader.GetInt64(7),
                     lastTs = reader.GetInt64(8),
@@ -634,13 +664,28 @@ try
                 _ => "cpu_pct"
             };
 
+            // Only CPU and disk busy store a rollup maximum. For the other two the
+            // best available peak is still the averaged column, which understates a
+            // peak inside a rollup row. That understatement is pre-existing; what
+            // matters here is not mixing a raw peak with a rollup average.
+            string peakCol = metric switch
+            {
+                "disk" => "disk_busy_pct_peak",
+                "cpu" => "cpu_pct_peak",
+                _ => metricCol
+            };
+
             using var cmd = conn.CreateCommand();
+            // An hour cell can straddle the retention boundary, so it can hold rows
+            // from two tiers even though each is internally uniform.
             cmd.CommandText = $"""
                 SELECT (ts - @from) / 86400000 as day_offset,
                        ((ts % 86400000) / 3600000) as hour,
-                       AVG({metricCol}) as avg_val,
-                       MAX({metricCol}) as peak_val,
-                       COUNT(*) as cnt
+                       {TierSql.WeightedAvg(metricCol, "avg_val")},
+                       MAX({peakCol}) as peak_val,
+                       -- Raw samples represented, not rows read, the same change
+                       -- made to sampleCount on /api/alerts.
+                       SUM(weight) as cnt
                 FROM {source.Sql}
                 WHERE ts >= @from AND ts <= @to
                 GROUP BY day_offset, hour
