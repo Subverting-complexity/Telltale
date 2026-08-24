@@ -53,6 +53,24 @@ public class WideRawRangeTimelineTests : IClassFixture<WideRawRangeTestFactory>
     }
 
     [Fact]
+    public async Task ARangeSpanningTheWholeOfLong_IsStillBounded()
+    {
+        // The widest window a caller can express. Both the exemption bound and
+        // the bucket computation subtract these, and a 64 bit subtraction across
+        // them overflows, so this is the request that reads as narrowest unless
+        // both are widened. Nothing in the UI produces it, but the endpoint takes
+        // whatever from and to it is given.
+        JsonElement root = await GetTimeline(long.MinValue, long.MaxValue);
+
+        int points = root.GetProperty("points").GetArrayLength();
+
+        Assert.InRange(points, 1, 2 * TierSelection.MaxPoints);
+        Assert.True(points < WideRawRangeTestFactory.SeededRowCount / 5,
+            $"expected the range to be bucketed, got {points} points from "
+            + $"{WideRawRangeTestFactory.SeededRowCount} seeded rows");
+    }
+
+    [Fact]
     public async Task ADayInsideAWideRawTable_KeepsItsNativeResolution()
     {
         // The exemption is measured from the rows read, not the range asked for,

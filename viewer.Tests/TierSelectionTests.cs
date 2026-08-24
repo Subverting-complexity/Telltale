@@ -211,6 +211,11 @@ public class TierSelectionTests
 
         Assert.True(plan.IsSingleRawTier);
         Assert.False(plan.ServesFullResolution);
+
+        // Both halves are needed. The timeline handler aggregates only when a
+        // bucket exists, so losing the exemption while the bucket computation
+        // overflowed to zero would still hand back every row.
+        Assert.True(plan.Bucket > 0);
     }
 
     [Fact]

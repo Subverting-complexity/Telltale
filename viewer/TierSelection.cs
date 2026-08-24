@@ -164,12 +164,18 @@ public static class TierSelection
 
     static long ComputeBucket(long from, long to, List<TierSlice> slices)
     {
-        long rangeMs = to - from;
+        // Widened for the same reason as TierPlan.ServesFullResolution: from and
+        // to reach here unvalidated, and a range spanning most of long overflows
+        // a 64 bit subtraction into a negative number. That reads as a range too
+        // narrow to bucket, which would leave the widest request expressible as
+        // the one that comes back unaggregated. The widest bucket this can
+        // produce is about 9.2e15, so the result still fits a long.
+        Int128 rangeMs = (Int128)to - from;
         long coarsest = slices.Max(s => NativeIntervalMs(s.Table));
         long bucket = 0;
 
         if (rangeMs > 0 && rangeMs / coarsest > MaxPoints)
-            bucket = (rangeMs / MaxPoints / coarsest) * coarsest;
+            bucket = (long)(rangeMs / MaxPoints / coarsest) * coarsest;
 
         // Mixed tiers must share one bucket size, otherwise the series would
         // change resolution partway along the chart.
