@@ -134,6 +134,27 @@ public class TierSelectionTests
         Assert.Equal("machine_1m,machine", plan.Resolution);
     }
 
+    [Fact]
+    public void PlanWithNoSlicesIsRejected()
+    {
+        Assert.Throws<ArgumentException>(() => new TierPlan(Array.Empty<TierSlice>(), 0));
+    }
+
+    [Fact]
+    public void ResolutionDoesNotRepeatATierServingTwoSlices()
+    {
+        var plan = new TierPlan(
+            new[]
+            {
+                new TierSlice("machine_1m", 0, 99),
+                new TierSlice("machine", 100, 199),
+                new TierSlice("machine_1m", 200, 299),
+            },
+            60_000);
+
+        Assert.Equal("machine_1m,machine", plan.Resolution);
+    }
+
     [Theory]
     [InlineData("machine", 5_000)]
     [InlineData("sample", 5_000)]

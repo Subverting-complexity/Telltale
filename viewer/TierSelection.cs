@@ -6,14 +6,30 @@ public readonly record struct TierCoverage(long MinTs, long MaxTs);
 /// <summary>One tier and the portion of the requested window it serves.</summary>
 public sealed record TierSlice(string Table, long From, long To);
 
-public sealed record TierPlan(IReadOnlyList<TierSlice> Slices, long Bucket)
+public sealed record TierPlan
 {
+    public TierPlan(IReadOnlyList<TierSlice> slices, long bucket)
+    {
+        if (slices.Count == 0)
+            throw new ArgumentException("A tier plan must name at least one slice.", nameof(slices));
+
+        Slices = slices;
+        Bucket = bucket;
+    }
+
+    public IReadOnlyList<TierSlice> Slices { get; }
+
+    public long Bucket { get; }
+
     public long CoarsestIntervalMs => Slices.Max(s => TierSelection.NativeIntervalMs(s.Table));
 
     public bool IsSingleRawTier => Slices.Count == 1 && TierSelection.IsRawTable(Slices[0].Table);
 
-    /// <summary>Tables read, oldest first, for the API's `resolution` field.</summary>
-    public string Resolution => string.Join(",", Slices.Select(s => s.Table));
+    /// <summary>
+    /// Tables read, oldest first, for the API's `resolution` field. A tier can
+    /// serve more than one slice, so names are de-duplicated.
+    /// </summary>
+    public string Resolution => string.Join(",", Slices.Select(s => s.Table).Distinct());
 }
 
 /// <summary>
@@ -50,6 +66,11 @@ public static class TierSelection
         var unclaimed = new List<(long From, long To)>();
         if (to >= from) unclaimed.Add((from, to));
 
+        // Coverage is a tier's outer extent, not a record of which instants it
+        // holds, so a finer tier also claims any hole inside its own extent.
+        // That is safe because the rollup worker promotes oldest-first and
+        // deletes as it goes, which only ever moves a tier's lower bound
+        // forward and never punches a hole in the middle of one.
         foreach (string tier in tiers)
         {
             if (unclaimed.Count == 0) break;

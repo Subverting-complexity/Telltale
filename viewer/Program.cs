@@ -103,7 +103,7 @@ try
     {
         using var conn = OpenDb();
         var plan = PlanTiers(conn, from, to, isMachine: true);
-        string source = TierSql.Source(plan, isMachine: true);
+        TierSource source = TierSql.Source(plan, isMachine: true);
 
         using var cmd = conn.CreateCommand();
 
@@ -118,7 +118,7 @@ try
                        AVG(disk_read_ms) as disk_read_ms, AVG(disk_write_ms) as disk_write_ms,
                        memory_total_mb, AVG(disk_busy_pct) as disk_busy_pct,
                        AVG(net_kbps) as net_kbps, AVG(gpu_busy_pct) as gpu_busy_pct
-                FROM {source} WHERE ts >= @from AND ts <= @to
+                FROM {source.Sql} WHERE ts >= @from AND ts <= @to
                 GROUP BY ts / @bucket ORDER BY ts
                 """;
             cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
@@ -128,10 +128,11 @@ try
             cmd.CommandText = $"""
                 SELECT ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
                        disk_read_ms, disk_write_ms, memory_total_mb, disk_busy_pct, net_kbps, gpu_busy_pct
-                FROM {source} WHERE ts >= @from AND ts <= @to ORDER BY ts
+                FROM {source.Sql} WHERE ts >= @from AND ts <= @to ORDER BY ts
                 """;
         }
 
+        AddTierBounds(cmd, source);
         cmd.Parameters.AddWithValue("@from", from);
         cmd.Parameters.AddWithValue("@to", to);
 
@@ -165,7 +166,7 @@ try
         int take = Math.Clamp(limit ?? 50, 1, 500);
 
         var plan = PlanTiers(conn, from, to, isMachine: false);
-        string source = TierSql.Source(plan, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
         using var cmd = conn.CreateCommand();
 
         if (grouped)
@@ -190,7 +191,7 @@ try
                            SUM(s.private_mb) as ts_mem,
                            SUM(s.io_kb) as ts_io,
                            COUNT(DISTINCT s.instance_id) as inst_cnt
-                    FROM {source} s
+                    FROM {source.Sql} s
                     JOIN process_instance pi ON pi.id = s.instance_id
                     WHERE s.ts >= @from AND s.ts <= @to
                     {(q != null ? "AND pi.name LIKE @q" : "")}
@@ -215,7 +216,7 @@ try
                        AVG(s.cpu_pct) as avg_cpu_pct,
                        MAX(s.private_mb) as peak_private_mb,
                        SUM(s.io_kb) as total_io_kb
-                FROM {source} s
+                FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
                 {(q != null ? "AND pi.name LIKE @q" : "")}
@@ -225,6 +226,7 @@ try
                 """;
         }
 
+        AddTierBounds(cmd, source);
         cmd.Parameters.AddWithValue("@from", from);
         cmd.Parameters.AddWithValue("@to", to);
         cmd.Parameters.AddWithValue("@limit", take);
@@ -272,7 +274,7 @@ try
     {
         using var conn = OpenDb();
         var plan = PlanTiers(conn, from, to, isMachine: false);
-        string source = TierSql.Source(plan, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
 
         using var cmd = conn.CreateCommand();
         if (plan.Bucket > 0)
@@ -281,7 +283,7 @@ try
                 SELECT (s.ts / @bucket) * @bucket as ts,
                        AVG(s.cpu_pct) as cpu_pct, MAX(s.private_mb) as private_mb,
                        MAX(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb
-                FROM {source} s
+                FROM {source.Sql} s
                 WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
                 GROUP BY s.ts / @bucket ORDER BY ts
                 """;
@@ -292,12 +294,13 @@ try
             cmd.CommandText = $"""
                 SELECT s.ts, s.cpu_pct as cpu_pct, s.private_mb as private_mb,
                        s.working_set_mb as working_set_mb, s.io_kb as io_kb
-                FROM {source} s
+                FROM {source.Sql} s
                 WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
                 ORDER BY s.ts
                 """;
         }
 
+        AddTierBounds(cmd, source);
         cmd.Parameters.AddWithValue("@id", id);
         cmd.Parameters.AddWithValue("@from", from);
         cmd.Parameters.AddWithValue("@to", to);
@@ -342,7 +345,7 @@ try
     {
         using var conn = OpenDb();
         var plan = PlanTiers(conn, from, to, isMachine: false);
-        string source = TierSql.Source(plan, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
 
         long effectiveBucket = plan.Bucket > 0 ? plan.Bucket : 5000;
 
@@ -352,12 +355,13 @@ try
                    SUM(s.cpu_pct) as cpu_pct, SUM(s.private_mb) as private_mb,
                    SUM(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb,
                    COUNT(DISTINCT s.instance_id) as instance_count
-            FROM {source} s
+            FROM {source.Sql} s
             JOIN process_instance pi ON pi.id = s.instance_id
             WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
             GROUP BY s.ts / @bucket ORDER BY ts
             """;
 
+        AddTierBounds(cmd, source);
         cmd.Parameters.AddWithValue("@bucket", effectiveBucket);
         cmd.Parameters.AddWithValue("@name", name);
         cmd.Parameters.AddWithValue("@from", from);
@@ -397,7 +401,7 @@ try
                 return Results.Json(new { period, alerts = Array.Empty<object>() }, jsonOptions);
 
             var plan = PlanTiers(conn, from, now, isMachine: false);
-            string source = TierSql.Source(plan, isMachine: false);
+            TierSource source = TierSql.Source(plan, isMachine: false);
             cmd.CommandText = $"""
                 SELECT pi.name,
                        AVG(s.cpu_pct) as avg_cpu,
@@ -408,7 +412,7 @@ try
                        COUNT(DISTINCT s.instance_id) as instance_count,
                        MIN(s.ts) as first_ts,
                        MAX(s.ts) as last_ts
-                FROM {source} s
+                FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
                   AND LOWER(pi.name) != 'idle'
@@ -418,6 +422,7 @@ try
                 LIMIT 50
                 """;
 
+            AddTierBounds(cmd, source);
             cmd.Parameters.AddWithValue("@from", from);
             cmd.Parameters.AddWithValue("@to", now);
 
@@ -607,7 +612,7 @@ try
                 return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
 
             var plan = PlanTiers(conn, from.Value, to.Value, isMachine: true);
-            string source = TierSql.Source(plan, isMachine: true);
+            TierSource source = TierSql.Source(plan, isMachine: true);
 
             string metricCol = metric switch
             {
@@ -624,11 +629,12 @@ try
                        AVG({metricCol}) as avg_val,
                        MAX({metricCol}) as peak_val,
                        COUNT(*) as cnt
-                FROM {source}
+                FROM {source.Sql}
                 WHERE ts >= @from AND ts <= @to
                 GROUP BY day_offset, hour
                 ORDER BY day_offset, hour
                 """;
+            AddTierBounds(cmd, source);
             cmd.Parameters.AddWithValue("@from", from.Value);
             cmd.Parameters.AddWithValue("@to", to.Value);
 
@@ -716,40 +722,13 @@ finally
 }
 
 static TierPlan PlanTiers(SqliteConnection conn, long from, long to, bool isMachine)
-    => TierSelection.Plan(from, to, isMachine, LoadCoverage(conn, isMachine));
+    => TierSelection.Plan(from, to, isMachine, TierCoverageReader.Read(conn, isMachine));
 
-/// <summary>
-/// Reads the time span each tier table actually holds. Tables absent from an
-/// older database are skipped rather than throwing.
-/// </summary>
-static Dictionary<string, TierCoverage> LoadCoverage(SqliteConnection conn, bool isMachine)
+/// <summary>Binds the slice bounds a tier source reads between.</summary>
+static void AddTierBounds(SqliteCommand cmd, TierSource source)
 {
-    var coverage = new Dictionary<string, TierCoverage>();
-    IReadOnlyList<string> tiers = TierSelection.TiersFor(isMachine);
-
-    var present = new List<string>();
-    using (var existsCmd = conn.CreateCommand())
-    {
-        string names = string.Join(", ", tiers.Select(t => $"'{t}'"));
-        existsCmd.CommandText = $"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({names})";
-        using var existsReader = existsCmd.ExecuteReader();
-        while (existsReader.Read()) present.Add(existsReader.GetString(0));
-    }
-
-    if (present.Count == 0) return coverage;
-
-    using var cmd = conn.CreateCommand();
-    cmd.CommandText = string.Join(" UNION ALL ",
-        present.Select(t => $"SELECT '{t}' AS tier, MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM {t}"));
-
-    using var reader = cmd.ExecuteReader();
-    while (reader.Read())
-    {
-        if (reader.IsDBNull(1) || reader.IsDBNull(2)) continue;
-        coverage[reader.GetString(0)] = new TierCoverage(reader.GetInt64(1), reader.GetInt64(2));
-    }
-
-    return coverage;
+    foreach (TierBound bound in source.Parameters)
+        cmd.Parameters.AddWithValue($"@{bound.Name}", bound.Value);
 }
 
 public partial class Program { }

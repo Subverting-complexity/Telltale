@@ -1,5 +1,14 @@
 namespace Telltale.Viewer;
 
+/// <summary>A slice bound bound to a SQL parameter rather than interpolated.</summary>
+public sealed record TierBound(string Name, long Value);
+
+/// <summary>
+/// The SQL fragment a query reads FROM, together with the parameters its slice
+/// bounds are bound to. Callers add <see cref="Parameters"/> to the command.
+/// </summary>
+public sealed record TierSource(string Sql, IReadOnlyList<TierBound> Parameters);
+
 /// <summary>
 /// Turns a <see cref="TierPlan"/> into the SQL fragment a query reads FROM.
 /// Rollup tiers store aggregated columns under different names, so each tier's
@@ -29,17 +38,31 @@ public static class TierSql
     /// <summary>
     /// A bare table name when one raw tier serves the whole window, otherwise a
     /// parenthesised UNION ALL over the selected tiers. Both are valid directly
-    /// after FROM and can be given an alias.
+    /// after FROM and can be given an alias. Slice bounds are parameterised, so
+    /// no request-derived value is ever concatenated into the statement.
     /// </summary>
-    public static string Source(TierPlan plan, bool isMachine)
+    public static TierSource Source(TierPlan plan, bool isMachine)
     {
-        if (plan.IsSingleRawTier) return plan.Slices[0].Table;
+        if (plan.IsSingleRawTier)
+            return new TierSource(plan.Slices[0].Table, Array.Empty<TierBound>());
 
-        var parts = plan.Slices.Select(slice =>
-            $"SELECT {Projection(slice.Table, isMachine)} FROM {slice.Table} " +
-            $"WHERE ts >= {slice.From} AND ts <= {slice.To}");
+        var parameters = new List<TierBound>(plan.Slices.Count * 2);
+        var parts = new List<string>(plan.Slices.Count);
 
-        return "(" + string.Join(" UNION ALL ", parts) + ")";
+        for (int i = 0; i < plan.Slices.Count; i++)
+        {
+            TierSlice slice = plan.Slices[i];
+            string fromName = $"tier{i}From";
+            string toName = $"tier{i}To";
+
+            parts.Add($"SELECT {Projection(slice.Table, isMachine)} FROM {slice.Table} " +
+                      $"WHERE ts >= @{fromName} AND ts <= @{toName}");
+
+            parameters.Add(new TierBound(fromName, slice.From));
+            parameters.Add(new TierBound(toName, slice.To));
+        }
+
+        return new TierSource("(" + string.Join(" UNION ALL ", parts) + ")", parameters);
     }
 
     static string Projection(string table, bool isMachine) => (isMachine, TierSelection.IsRawTable(table)) switch
