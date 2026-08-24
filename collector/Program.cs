@@ -37,7 +37,7 @@ try
     builder.Services.AddSingleton(sp =>
     {
         var logger = sp.GetRequiredService<ILogger<Database>>();
-        return new Database(config.ResolvedDatabasePath, logger);
+        return new Database(config.ResolvedDatabasePath, logger, config.VacuumOnStartup);
     });
     builder.Services.AddSingleton<IProcessSampler>(sp =>
     {
