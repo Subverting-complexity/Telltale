@@ -75,7 +75,7 @@ Any of these force a `Changes Requested` verdict regardless of other findings.
 
 ## Tech Stack Review Rules
 
-This is a .NET 10 backend (`Collector.exe`, `Viewer.exe`) with a React 19 +
+This is a .NET 10 backend (`TelltaleCapture.exe` from `collector/`, `TelltaleViewer.exe` from `viewer/`) with a React 19 +
 TypeScript + Vite frontend, over a local SQLite database.
 
 - **API contract parity.** Any response shape changed in `viewer/Program.cs`

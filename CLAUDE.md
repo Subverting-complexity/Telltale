@@ -1,8 +1,8 @@
 # Project Rules — Telltale
 
-Telltale is a local Windows performance recorder. `Collector.exe` samples
+Telltale is a local Windows performance recorder. `TelltaleCapture.exe` samples
 every running process in the background and writes to a local SQLite
-database; `Viewer.exe` is a minimal API that serves a React SPA for browsing
+database; `TelltaleViewer.exe` is a minimal API that serves a React SPA for browsing
 that data. Nothing leaves the machine.
 
 ## General Rules
