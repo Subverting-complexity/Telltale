@@ -91,6 +91,158 @@ public class TierSelectionTests
         Assert.Equal(0, plan.Bucket);
     }
 
+    // A machine whose raw table has been kept for a week, which RawRetentionHours
+    // allows and which makes a week-long request raw-only.
+    static Dictionary<string, TierCoverage> WeekOfRaw(long now) => new()
+    {
+        ["machine"] = new TierCoverage(now - 7 * Day, now),
+    };
+
+    [Fact]
+    public void DayOfRawSamples_IsServedAtFullResolution()
+    {
+        long now = 1_700_000_000_000L;
+        var plan = TierSelection.Plan(now - Day, now, isMachine: true, Tiered(now));
+
+        Assert.True(plan.ServesFullResolution);
+    }
+
+    [Fact]
+    public void DayTheClocksGoBack_IsStillServedAtFullResolution()
+    {
+        // That day is 25 hours long, so a bound written as a window width would
+        // quietly drop the day view to bucketed resolution once a year.
+        long now = 1_700_000_000_000L;
+        var coverage = new Dictionary<string, TierCoverage>
+        {
+            ["machine"] = new TierCoverage(now - 25 * Hour, now),
+        };
+
+        var plan = TierSelection.Plan(now - 25 * Hour, now, isMachine: true, coverage);
+
+        Assert.True(plan.ServesFullResolution);
+    }
+
+    [Fact]
+    public void WeekOfRawSamples_IsNotServedAtFullResolution()
+    {
+        long now = 1_700_000_000_000L;
+        var plan = TierSelection.Plan(now - 7 * Day, now, isMachine: true, WeekOfRaw(now));
+
+        Assert.True(plan.IsSingleRawTier);
+        Assert.False(plan.ServesFullResolution);
+    }
+
+    [Fact]
+    public void WeekOfRawSamples_IsBucketedDownToTheOrdinaryPointCap()
+    {
+        long now = 1_700_000_000_000L;
+        long from = now - 7 * Day;
+        var plan = TierSelection.Plan(from, now, isMachine: true, WeekOfRaw(now));
+
+        // Without the bound this window returns every 5 second row it holds,
+        // which is roughly 121,000 points in one response.
+        Assert.True(plan.Bucket > 0);
+
+        // The bucket is rounded down to a whole tier interval, so the range can
+        // carry up to twice the target before it divides evenly.
+        Assert.InRange((now - from) / plan.Bucket, 1, 2 * TierSelection.MaxPoints);
+    }
+
+    [Fact]
+    public void ARawOnlyWindowOverTheBoundAlwaysHasABucketToFallBackOn()
+    {
+        // The timeline handler only aggregates when a bucket exists, so a window
+        // that loses the exemption without gaining a bucket would still return
+        // every row. The two thresholds are far enough apart that it cannot.
+        long now = 1_700_000_000_000L;
+        long from = now - (TierSelection.MaxRawOnlyPoints + 1) * TierSelection.NativeIntervalMs("machine");
+        var coverage = new Dictionary<string, TierCoverage>
+        {
+            ["machine"] = new TierCoverage(from, now),
+        };
+
+        var plan = TierSelection.Plan(from, now, isMachine: true, coverage);
+
+        Assert.False(plan.ServesFullResolution);
+        Assert.True(plan.Bucket > 0);
+    }
+
+    [Fact]
+    public void AWindowExactlyOnTheBound_IsStillServedAtFullResolution()
+    {
+        long now = 1_700_000_000_000L;
+        long from = now - TierSelection.MaxRawOnlyPoints * TierSelection.NativeIntervalMs("machine");
+        var coverage = new Dictionary<string, TierCoverage>
+        {
+            ["machine"] = new TierCoverage(from, now),
+        };
+
+        var plan = TierSelection.Plan(from, now, isMachine: true, coverage);
+
+        Assert.True(plan.ServesFullResolution);
+    }
+
+    [Theory]
+    [InlineData(0)]                 // a single instant
+    [InlineData(-1)]                // inverted by one
+    [InlineData(-7 * Day)]          // inverted by a week
+    public void ADegenerateWindow_ClaimsFullResolutionOnlyWhenItIsASingleInstant(long span)
+    {
+        // No tier covers these, so the plan falls back to a slice holding the
+        // caller's own from and to, which nothing has validated.
+        long from = 1_700_000_000_000L;
+
+        var plan = TierSelection.Plan(from, from + span, isMachine: true,
+            new Dictionary<string, TierCoverage>());
+
+        Assert.True(plan.IsSingleRawTier);
+        Assert.Equal(span == 0, plan.ServesFullResolution);
+    }
+
+    [Fact]
+    public void TheWidestPossibleWindow_IsNotWavedThroughByAnOverflowedSpan()
+    {
+        // long.MaxValue - long.MinValue overflows a 64 bit subtraction to -1,
+        // which compares as comfortably inside the bound. This is the widest
+        // window expressible, so it must not be the one that reads as narrowest.
+        var plan = TierSelection.Plan(long.MinValue, long.MaxValue, isMachine: true,
+            new Dictionary<string, TierCoverage>());
+
+        Assert.True(plan.IsSingleRawTier);
+        Assert.False(plan.ServesFullResolution);
+
+        // Both halves are needed. The timeline handler aggregates only when a
+        // bucket exists, so losing the exemption while the bucket computation
+        // overflowed to zero would still hand back every row.
+        Assert.True(plan.Bucket > 0);
+    }
+
+    [Fact]
+    public void MixedTierRange_IsNeverServedAtFullResolution()
+    {
+        long now = 1_700_000_000_000L;
+        var plan = TierSelection.Plan(now - 2 * Day, now, isMachine: true, Tiered(now));
+
+        Assert.False(plan.ServesFullResolution);
+    }
+
+    [Fact]
+    public void FullResolutionIsMeasuredFromTheRowsRead_NotTheRangeAsked()
+    {
+        // Asking for a year when only the last six hours exist reads six hours of
+        // rows, so it keeps full resolution.
+        long now = 1_700_000_000_000L;
+        var coverage = new Dictionary<string, TierCoverage>
+        {
+            ["machine"] = new TierCoverage(now - 6 * Hour, now),
+        };
+
+        var plan = TierSelection.Plan(now - 365 * Day, now, isMachine: true, coverage);
+
+        Assert.True(plan.ServesFullResolution);
+    }
+
     [Fact]
     public void EmptyDatabase_FallsBackToRawTierAndReturnsUsablePlan()
     {

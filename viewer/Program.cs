@@ -108,14 +108,18 @@ try
         using var cmd = conn.CreateCommand();
 
         // Raw-only ranges stay unaggregated, as they were before tier selection
-        // learned to span tiers.
+        // learned to span tiers, but only up to TierSelection.MaxRawOnlyPoints.
+        // Tiers are now chosen by which ones hold data rather than by how old the
+        // range is, so a single raw tier can serve a far wider window than the old
+        // rule allowed, and without that bound a week-long raw-only range would
+        // return every 5 second row it holds.
         //
         // A mixed bucket is at least as wide as the coarsest tier's interval, but
         // the bucket grid is anchored to the epoch while the tier changes over at
         // whatever instant the raw table happens to start. The one bucket holding
         // that instant therefore straddles both tiers, so it is weighted like any
         // other aggregate rather than trusted to be single-tier.
-        if (!plan.IsSingleRawTier && plan.Bucket > 0)
+        if (!plan.ServesFullResolution && plan.Bucket > 0)
         {
             cmd.CommandText = $"""
                 SELECT (ts / @bucket) * @bucket as ts,

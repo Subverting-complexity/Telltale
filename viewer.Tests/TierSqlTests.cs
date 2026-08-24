@@ -146,7 +146,7 @@ public class TierSqlTests : IDisposable
         TierSource source = TierSql.Source(plan, isMachine: true);
 
         using var cmd = _conn.CreateCommand();
-        if (!plan.IsSingleRawTier && plan.Bucket > 0)
+        if (!plan.ServesFullResolution && plan.Bucket > 0)
         {
             cmd.CommandText = $"""
                 SELECT (ts / @bucket) * @bucket as ts,
@@ -181,6 +181,69 @@ public class TierSqlTests : IDisposable
         using var reader = cmd.ExecuteReader();
         while (reader.Read()) timestamps.Add(reader.GetInt64(0));
         return timestamps;
+    }
+
+    /// <summary>
+    /// Extends the raw table back to <paramref name="from"/> so one raw tier
+    /// serves a window wider than the raw-only point cap allows. Rows go in at
+    /// five minute spacing rather than the native five seconds: the cap is
+    /// measured from how wide the window is at the raw interval, not from how
+    /// many rows happen to be there, and seeding 28,000 rows to prove that would
+    /// only make the test slow.
+    /// </summary>
+    void WidenRawCoverageBackTo(long from)
+    {
+        using var tx = _conn.BeginTransaction();
+        for (long ts = from; ts < Boundary; ts += 5 * Minute)
+        {
+            Execute($"""
+                INSERT OR IGNORE INTO machine (ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
+                                               disk_read_ms, disk_write_ms, memory_total_mb,
+                                               disk_busy_pct, net_kbps, gpu_busy_pct)
+                VALUES ({ts}, {RawCpu}, 6000.0, 5000.0, 9, 3.0, 4.0, 16000.0, 30.0, 300.0, 7.0);
+                """, tx);
+        }
+        tx.Commit();
+    }
+
+    [Fact]
+    public void RawOnlyRangeWithinTheCap_ReturnsRowsAtTheirNativeInterval()
+    {
+        // Six hours of raw rows is well inside the cap, so the machine timeline
+        // keeps the 5 second detail the day view is there to show.
+        var timestamps = QueryTimeline(Boundary, Now);
+        var plan = Plan(Boundary, Now, isMachine: true);
+
+        // A bucket is computed for this window too, so the rows come back
+        // unaggregated because the exemption applies, not because there was
+        // nothing to aggregate by.
+        Assert.True(plan.Bucket > 0);
+        Assert.True(plan.ServesFullResolution);
+
+        var gaps = timestamps.Zip(timestamps.Skip(1), (a, b) => b - a).Distinct().ToList();
+        Assert.Equal(new[] { 5 * Second }, gaps);
+    }
+
+    [Fact]
+    public void RawOnlyRangeOverTheCap_IsBucketedInsteadOfReturningEveryRow()
+    {
+        long wideFrom = Now - 40 * Hour;
+        WidenRawCoverageBackTo(wideFrom);
+
+        var plan = Plan(wideFrom, Now, isMachine: true);
+        var timestamps = QueryTimeline(wideFrom, Now);
+
+        // One raw tier still serves the whole window, so this is the case the old
+        // condition let through unaggregated.
+        Assert.True(plan.IsSingleRawTier);
+        Assert.False(plan.ServesFullResolution);
+        Assert.True(plan.Bucket > 0);
+
+        // Every timestamp sits on the bucket grid, which is what bounds the
+        // response: at most one row comes back per bucket.
+        Assert.NotEmpty(timestamps);
+        Assert.All(timestamps, ts => Assert.Equal(0, ts % plan.Bucket));
+        Assert.True(timestamps.Count <= (Now - wideFrom) / plan.Bucket + 1);
     }
 
     [Fact]
