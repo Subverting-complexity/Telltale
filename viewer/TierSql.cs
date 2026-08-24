@@ -56,9 +56,19 @@ public static class TierSql
     ///
     /// <paramref name="weight"/> names the weighting column, which an inner query
     /// that has already grouped rows may have carried through under its own name.
+    ///
+    /// A row whose value is NULL is left out of both halves, matching AVG(). Only
+    /// dropping it from the numerator would count its weight against a value that
+    /// was never measured and pull the mean toward zero, and the collector stores
+    /// a sample precisely when CPU could not be computed, so those rows are common.
+    ///
+    /// Both arguments are interpolated, so callers must pass literals. No
+    /// request-derived value may reach either, the same constraint
+    /// <see cref="Source"/> keeps for slice bounds.
     /// </summary>
     public static string WeightedAvgExpr(string column, string weight = "weight") =>
-        $"SUM({column} * {weight}) / NULLIF(SUM({weight}), 0)";
+        $"SUM({column} * 1.0 * {weight}) / " +
+        $"NULLIF(SUM(CASE WHEN {column} IS NULL THEN 0 ELSE {weight} END), 0)";
 
     /// <summary>
     /// <see cref="WeightedAvgExpr"/> with an alias, for a select list. HAVING and
@@ -67,6 +77,26 @@ public static class TierSql
     /// </summary>
     public static string WeightedAvg(string column, string alias, string weight = "weight") =>
         $"{WeightedAvgExpr(column, weight)} AS {alias}";
+
+    /// <summary>
+    /// Inner half of a two-stage average, for the endpoints that total a group
+    /// across its instances at one instant before averaging over time. The total
+    /// is scaled by the row's weight here so the outer half only has to divide.
+    /// </summary>
+    public static string WeightedTotal(string column, string alias) =>
+        $"SUM({column} * 1.0 * weight) AS {alias}";
+
+    /// <summary>
+    /// Weight of one instant, for the same two-stage shape. Instances at one
+    /// timestamp in one tier cover the same span, but an instance that started or
+    /// exited mid-bucket carries a smaller count than its siblings, and the
+    /// instant is still worth the widest coverage any of them saw.
+    /// </summary>
+    public const string InstantWeight = "MAX(weight)";
+
+    /// <summary>Outer half of the two-stage average: totals already weighted, so just divide.</summary>
+    public static string AvgOfWeightedTotals(string total, string weight, string alias) =>
+        $"SUM({total}) / NULLIF(SUM({weight}), 0) AS {alias}";
 
     /// <summary>
     /// A parenthesised UNION ALL over the selected tiers, valid directly after

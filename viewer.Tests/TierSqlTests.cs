@@ -476,10 +476,12 @@ public class TierSqlTests : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = $"""
             SELECT sub.name,
-                   {TierSql.WeightedAvg("sub.ts_cpu", "avg_cpu_pct", "sub.ts_weight")},
+                   {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "avg_cpu_pct")},
                    AVG(sub.ts_cpu) as unweighted
             FROM (
-                SELECT pi.name, SUM(s.cpu_pct) as ts_cpu, MAX(s.weight) as ts_weight
+                SELECT pi.name, SUM(s.cpu_pct) as ts_cpu,
+                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted")},
+                       {TierSql.InstantWeight} as ts_weight
                 FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
