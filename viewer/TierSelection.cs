@@ -26,6 +26,21 @@ public sealed record TierPlan
     public bool IsSingleRawTier => Slices.Count == 1 && TierSelection.IsRawTable(Slices[0].Table);
 
     /// <summary>
+    /// True when one raw tier serves the whole window and that window is narrow
+    /// enough to hand back every row it holds. Callers that want the raw table's
+    /// native detail use this to decide whether to skip bucketing.
+    ///
+    /// Measured from the slice rather than the requested range, because the slice
+    /// is the span actually read: a request wider than the raw table's coverage
+    /// is clamped to that coverage, and the rows returned are what has to be
+    /// bounded.
+    /// </summary>
+    public bool ServesFullResolution =>
+        IsSingleRawTier
+        && (Slices[0].To - Slices[0].From) / TierSelection.NativeIntervalMs(Slices[0].Table)
+           <= TierSelection.MaxRawOnlyPoints;
+
+    /// <summary>
     /// Tables read, oldest first, for the API's `resolution` field. A tier can
     /// serve more than one slice, so names are de-duplicated.
     /// </summary>
@@ -42,6 +57,24 @@ public sealed record TierPlan
 public static class TierSelection
 {
     const long MaxPoints = 2000;
+
+    /// <summary>
+    /// The most points a raw-only window may be worth before it is bucketed like
+    /// any other range.
+    ///
+    /// Raw-only windows are exempt from <c>MaxPoints</c> so the machine timeline
+    /// keeps the 5 second detail the day view exists to show. Left unbounded,
+    /// that exemption scales with the raw retention setting: at the maximum
+    /// <c>RawRetentionHours</c> of 168 a week-long request is served entirely
+    /// from the raw table and would return roughly 121,000 points in one
+    /// response. This is the bound on the exemption, not a second cap.
+    ///
+    /// 20,000 covers a day of 5 second samples (17,280) with room for the 25
+    /// hour day the clocks going back produces (18,000), so the day view holds
+    /// its resolution all year. It is a point count rather than a window width
+    /// so it stays right if the raw sampling interval changes.
+    /// </summary>
+    public const long MaxRawOnlyPoints = 20_000;
 
     static readonly string[] MachineTiers = { "machine", "machine_1m", "machine_10m" };
     static readonly string[] SampleTiers = { "sample", "sample_1m", "sample_10m" };
