@@ -73,8 +73,9 @@ variable or a command-line argument can point the viewer at any file, and
 capture file is therefore a supported action, not an anomaly. The realistic
 vector is not only "an attacker overwrote my database" but also "someone was
 persuaded to open a capture file they were sent", which needs no write access to
-their machine at all. My working theory is that a crafted file is a genuine trigger, because a
-malicious database can define `machine` or `sample` as a view whose
+their machine at all. My working theory is that a crafted file is a genuine
+trigger, because a malicious database can define `machine` or `sample` as a view
+whose
 attacker-authored SQL is compiled when the viewer's own fixed query touches it.
 I have not tried to build such a file, so treat that as untested reasoning.
 
