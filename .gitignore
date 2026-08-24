@@ -18,3 +18,21 @@ publish/
 
 ## Local deploy
 deploy.bat
+
+# github-workflow plugin scratch files (per-session, never commit)
+.claude/plan.md
+.claude/projected-config.md
+.claude/preflight-passed.txt
+.claude/label-cache.json
+.claude/issue-fields-cache.json
+.claude/candidates.json
+.claude/claim-*.sha
+.claude/wf-config.json
+.claude/*.flag
+
+# graphify knowledge graph output
+graphify-out/
+
+# Claude Code local state (machine-specific, never commit)
+.claude/settings.local.json
+.claude/worktrees/
