@@ -36,10 +36,11 @@ public sealed class WmiProcessIdentitySource : IProcessIdentitySource
     {
         _logger = logger;
 
-        // A query that runs longer than the sampling interval has already cost the
-        // tick it was serving, and WMI's default is to wait forever. Without a bound
-        // here a hung WMI service reproduces the exact failure this class exists to
-        // remove: the collector stays up, records nothing, and says nothing.
+        // WMI's default is to wait forever, and a query that outlives the sampling
+        // interval has already cost the tick it was serving. This bounds the
+        // enumeration only. The connect inside searcher.Get() uses the default
+        // ConnectionOptions timeout, which is not bounded, so a WMI service hung at
+        // connect can still stall the sampling loop. That gap is #67.
         _queryTimeout = TimeSpan.FromSeconds(config.IntervalSeconds);
     }
 

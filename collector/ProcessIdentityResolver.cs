@@ -22,6 +22,14 @@ namespace Telltale.Collector;
 /// not one per process, because the paths are already cached by then.
 /// </para>
 /// <para>
+/// The retry corrects what is remembered here, not what has already been written.
+/// A process first seen on the tick a lookup failed has its row inserted with a
+/// null command line, and <c>Database.GetOrCreateProcessInstance</c> never revises
+/// a row it has already written, so the later answer has nowhere to go. Whether it
+/// should is #68. What this does prevent is one failed lookup being taken as the
+/// standing truth about every process running at the time.
+/// </para>
+/// <para>
 /// This type is not thread safe. It holds plain dictionaries and expects to be
 /// driven only from the sampling loop in <see cref="CollectorWorker"/>, which is
 /// serial.
