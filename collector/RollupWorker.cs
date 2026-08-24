@@ -1,10 +1,20 @@
-namespace Telltale.Collector;
+﻿namespace Telltale.Collector;
 
 public sealed class RollupWorker : BackgroundService
 {
     private readonly ILogger<RollupWorker> _logger;
     private readonly TelltaleConfig _config;
     private readonly Database _db;
+
+    /// <summary>
+    /// Consecutive failures at or above this count are logged as critical. A rollup
+    /// that fails once is usually transient. One that keeps failing means nothing is
+    /// being aggregated and the raw tables are no longer being trimmed, which is a
+    /// problem the user needs to see rather than a line repeated in the log.
+    /// </summary>
+    private const int ConsecutiveFailuresBeforeCritical = 3;
+
+    private int _consecutiveFailures;
 
     public RollupWorker(ILogger<RollupWorker> logger, TelltaleConfig config, Database db)
     {
@@ -25,10 +35,33 @@ public sealed class RollupWorker : BackgroundService
             try
             {
                 RunRollup();
+
+                if (_consecutiveFailures > 0)
+                {
+                    _logger.LogWarning(
+                        "Rollup recovered after {Failures} consecutive failed cycle(s).",
+                        _consecutiveFailures);
+                    _consecutiveFailures = 0;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error during rollup cycle.");
+                _consecutiveFailures++;
+
+                if (_consecutiveFailures >= ConsecutiveFailuresBeforeCritical)
+                {
+                    _logger.LogCritical(ex,
+                        "Rollup has failed {Failures} cycles in a row. No data is being "
+                        + "aggregated and the raw tables are not being trimmed, so the "
+                        + "database will keep growing until this is resolved.",
+                        _consecutiveFailures);
+                }
+                else
+                {
+                    _logger.LogError(ex,
+                        "Error during rollup cycle ({Failures} consecutive failure(s)).",
+                        _consecutiveFailures);
+                }
             }
         }
     }

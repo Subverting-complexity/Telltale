@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 
 namespace Telltale.Collector;
 
@@ -265,6 +265,13 @@ public sealed class Database : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Promotes rows older than <paramref name="cutoffMs"/> from a raw or finer
+    /// grained table into coarser buckets, then removes the rows it promoted.
+    /// The cutoff is rounded down to a bucket boundary, and any bucket the target
+    /// already holds is skipped, so running this repeatedly is safe: a bucket is
+    /// never produced twice and never counted twice.
+    /// </summary>
     public void RollupSamples(long cutoffMs, string sourceTable, string targetTable,
         int bucketMinutes, bool isMachine)
     {
@@ -273,6 +280,14 @@ public sealed class Database : IDisposable
         cmd.Transaction = tx;
 
         long bucketMs = bucketMinutes * 60_000L;
+
+        // Only ever promote whole buckets. The caller's cutoff is a wall clock
+        // instant and rarely lands on a bucket boundary, so without this the bucket
+        // containing the cutoff would be promoted while part of it is still newer
+        // than the cutoff, and its leftover rows would be promoted a second time on
+        // the next cycle under the same bucket timestamp.
+        long alignedCutoff = (cutoffMs / bucketMs) * bucketMs;
+
         bool isReRollup = sourceTable.Contains("_1m") || sourceTable.Contains("_10m");
 
         if (isMachine && !isReRollup)
@@ -293,6 +308,7 @@ public sealed class Database : IDisposable
                        AVG(net_kbps), AVG(gpu_busy_pct), COUNT(*)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND (ts / @bucket) * @bucket NOT IN (SELECT ts FROM {targetTable})
                 GROUP BY ts / @bucket
                 """;
         }
@@ -320,6 +336,7 @@ public sealed class Database : IDisposable
                        SUM(sample_count)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND (ts / @bucket) * @bucket NOT IN (SELECT ts FROM {targetTable})
                 GROUP BY ts / @bucket
                 """;
         }
@@ -334,6 +351,7 @@ public sealed class Database : IDisposable
                        MAX(working_set_mb), SUM(io_kb), COUNT(*)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND (ts / @bucket) * @bucket NOT IN (SELECT ts FROM {targetTable})
                 GROUP BY ts / @bucket, instance_id
                 """;
         }
@@ -349,17 +367,22 @@ public sealed class Database : IDisposable
                        MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND (ts / @bucket) * @bucket NOT IN (SELECT ts FROM {targetTable})
                 GROUP BY ts / @bucket, instance_id
                 """;
         }
 
         cmd.Parameters.AddWithValue("@bucket", bucketMs);
-        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.Parameters.AddWithValue("@cutoff", alignedCutoff);
         cmd.ExecuteNonQuery();
 
+        // Everything older than the aligned cutoff goes, including rows in a bucket
+        // the insert skipped because the target already held it. Those rows are
+        // already represented in the target, so keeping them would grow the raw
+        // table without bound and retry the same conflict on every later cycle.
         cmd.CommandText = $"DELETE FROM {sourceTable} WHERE ts < @cutoff";
         cmd.Parameters.Clear();
-        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.Parameters.AddWithValue("@cutoff", alignedCutoff);
         cmd.ExecuteNonQuery();
 
         tx.Commit();
