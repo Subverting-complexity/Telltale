@@ -1,3 +1,10 @@
+-- Frozen snapshot of schema.sql as it shipped at version 1.
+--
+-- Every database created before the migration path existed still has this
+-- shape, so this file is the fixture the migration tests start from. It must
+-- not be updated when schema.sql changes: doing so would make the tests
+-- migrate from a database shape that never existed.
+
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA auto_vacuum = INCREMENTAL;
@@ -5,7 +12,7 @@ PRAGMA auto_vacuum = INCREMENTAL;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version VALUES (2);
+INSERT INTO schema_version VALUES (1);
 
 CREATE TABLE process_instance (
     id           INTEGER PRIMARY KEY,
@@ -42,12 +49,7 @@ CREATE TABLE sample_1m (
     io_kb_total  REAL,
     sample_count INTEGER
 );
--- (ts, instance_id) is the natural key: the rollup writes one row per bucket
--- per process instance. Uniqueness is a named index rather than a table
--- constraint so that an existing database can reach the same shape, which
--- SQLite cannot do for a UNIQUE constraint without rebuilding the table.
--- It also covers lookups by ts alone, so no separate ts index is needed.
-CREATE UNIQUE INDEX ux_s1m_ts_inst ON sample_1m(ts, instance_id);
+CREATE INDEX ix_s1m_ts ON sample_1m(ts);
 CREATE INDEX ix_s1m_inst ON sample_1m(instance_id, ts);
 
 CREATE TABLE sample_10m (
@@ -60,7 +62,7 @@ CREATE TABLE sample_10m (
     io_kb_total  REAL,
     sample_count INTEGER
 );
-CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
+CREATE INDEX ix_s10m_ts ON sample_10m(ts);
 CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
 
 CREATE TABLE machine (
