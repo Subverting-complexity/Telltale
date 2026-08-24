@@ -1,6 +1,4 @@
 using System.Globalization;
-using Microsoft.Data.Sqlite;
-using Microsoft.Extensions.Logging;
 using Telltale.Collector;
 
 namespace Collector.Tests;
@@ -16,7 +14,7 @@ namespace Collector.Tests;
 /// bucket receives needs pinning to the last reading in that bucket
 /// specifically (issue #33).
 /// </summary>
-public class RollupAggregateTests : IDisposable
+public class RollupAggregateTests : SqliteTestBase
 {
     private const long MinuteMs = 60_000L;
     private const long TenMinutesMs = 600_000L;
@@ -24,13 +22,8 @@ public class RollupAggregateTests : IDisposable
     /// <summary>An arbitrary timestamp sitting exactly on a ten minute boundary.</summary>
     private const long BucketStart = 1_700_000_000_000L / TenMinutesMs * TenMinutesMs;
 
-    private readonly string _dbPath;
-    private readonly Database _db;
-
-    public RollupAggregateTests()
+    public RollupAggregateTests() : base("agg")
     {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"telltale_agg_{Guid.NewGuid()}.db");
-        _db = new Database(_dbPath, new SilentLogger());
     }
 
     // ---- memory_total_mb: the last reading in each bucket (issue #33) ----
@@ -46,7 +39,7 @@ public class RollupAggregateTests : IDisposable
         WriteMachine(second, memoryTotalMb: 32_000);
         WriteMachine(second + 30_000, memoryTotalMb: 32_002);
 
-        _db.RollupSamples(second + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(second + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
 
         // Each bucket takes its own last reading. A lookup that resolved once for
         // the whole statement rather than once per bucket would give both buckets
@@ -63,7 +56,7 @@ public class RollupAggregateTests : IDisposable
         WriteMachine(bucket, memoryTotalMb: 16_000);
         WriteMachine(bucket + 30_000, memoryTotalMb: null);
 
-        _db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
 
         // The rule is "the last reading in the bucket", not "the last reading that
         // happened to carry a value", so a NULL final reading stays NULL.
@@ -82,7 +75,7 @@ public class RollupAggregateTests : IDisposable
             WriteMachineRollup(second + (i * MinuteMs), memoryTotalMb: 32_000 + i);
         }
 
-        _db.RollupSamples(second + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(second + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
 
         Assert.Equal(16_009d, Scalar($"SELECT memory_total_mb FROM machine_10m WHERE ts = {first}"));
         Assert.Equal(32_009d, Scalar($"SELECT memory_total_mb FROM machine_10m WHERE ts = {second}"));
@@ -102,7 +95,7 @@ public class RollupAggregateTests : IDisposable
         // sample deliberately, so this row carries a real sample_count and no average.
         WriteMachineRollup(bucket + (2 * MinuteMs), cpuPctAvg: null, sampleCount: 12);
 
-        _db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
 
         // The average of what was actually measured. Counting the unmeasured
         // minute's twelve samples in the divisor alone would give 33.3.
@@ -121,7 +114,7 @@ public class RollupAggregateTests : IDisposable
         WriteMachineRollup(bucket, cpuPctAvg: null, sampleCount: 12);
         WriteMachineRollup(bucket + MinuteMs, cpuPctAvg: null, sampleCount: 12);
 
-        _db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
 
         // Dividing by a zero weight would report a busy machine as idle. NULL says
         // "not measured", which is what happened.
@@ -138,7 +131,7 @@ public class RollupAggregateTests : IDisposable
         WriteMachineRollup(bucket + MinuteMs, cpuPctAvg: 20, netKbpsAvg: 300, sampleCount: 12);
         WriteMachineRollup(bucket + (2 * MinuteMs), cpuPctAvg: null, netKbpsAvg: null, sampleCount: 12);
 
-        _db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
 
         Assert.Equal(600d, (double)Scalar($"SELECT net_kbps_avg FROM machine_10m WHERE ts = {bucket}")!, 6);
     }
@@ -147,13 +140,13 @@ public class RollupAggregateTests : IDisposable
     public void ReRollup_ProcessAverage_LeavesAnUnmeasuredMinuteOutOfTheDivisor()
     {
         long bucket = BucketStart;
-        long instanceId = _db.GetOrCreateProcessInstance(4321, 100, "test.exe", null, null, bucket);
+        long instanceId = Db.GetOrCreateProcessInstance(4321, 100, "test.exe", null, null, bucket);
 
         WriteSampleRollup(bucket, instanceId, cpuPctAvg: 40, sampleCount: 12);
         WriteSampleRollup(bucket + MinuteMs, instanceId, cpuPctAvg: 10, sampleCount: 12);
         WriteSampleRollup(bucket + (2 * MinuteMs), instanceId, cpuPctAvg: null, sampleCount: 12);
 
-        _db.RollupSamples(bucket + TenMinutesMs, "sample_1m", "sample_10m", 10, isMachine: false);
+        Db.RollupSamples(bucket + TenMinutesMs, "sample_1m", "sample_10m", 10, isMachine: false);
 
         // A short-lived process routinely produces a minute with nothing measurable,
         // so on the process side this is the common case rather than the rare one.
@@ -164,7 +157,7 @@ public class RollupAggregateTests : IDisposable
     // ---- helpers ----
 
     private void WriteMachine(long ts, double? memoryTotalMb) =>
-        _db.WriteMachineSample(ts,
+        Db.WriteMachineSample(ts,
             new MachineSample(50.0, 8000, 12000, 0, 1.0, 2.0, memoryTotalMb, 30.0, 1000, null));
 
     /// <summary>
@@ -192,45 +185,4 @@ public class RollupAggregateTests : IDisposable
     private static string Sql(double? value) =>
         value?.ToString(CultureInfo.InvariantCulture) ?? "NULL";
 
-    private object? Scalar(string sql)
-    {
-        using var conn = Connect();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        return cmd.ExecuteScalar();
-    }
-
-    private void Execute(string sql)
-    {
-        using var conn = Connect();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.ExecuteNonQuery();
-    }
-
-    private SqliteConnection Connect()
-    {
-        var conn = new SqliteConnection($"Data Source={_dbPath}");
-        conn.Open();
-        return conn;
-    }
-
-    public void Dispose()
-    {
-        _db.Dispose();
-        SqliteConnection.ClearAllPools();
-        foreach (var suffix in new[] { "", "-wal", "-shm" })
-        {
-            try { File.Delete(_dbPath + suffix); } catch { /* best effort cleanup */ }
-        }
-        GC.SuppressFinalize(this);
-    }
-
-    private sealed class SilentLogger : ILogger
-    {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => false;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
-            Exception? exception, Func<TState, Exception?, string> formatter) { }
-    }
 }
