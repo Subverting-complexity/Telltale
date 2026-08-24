@@ -4,27 +4,40 @@ namespace Telltale.Collector;
 
 public sealed class CollectorWorker : BackgroundService
 {
+    /// <summary>
+    /// Once this many ticks in a row have run longer than the sampling interval, the
+    /// message is logged as an error rather than a warning, and stays there until a
+    /// tick finishes in time. One slow tick is usually a busy moment. A run of them
+    /// means the collector cannot keep up and the recorded history will have gaps.
+    /// </summary>
+    public const int ConsecutiveOverrunsBeforeError = 3;
+
     private readonly ILogger<CollectorWorker> _logger;
     private readonly TelltaleConfig _config;
     private readonly Database _db;
     private readonly IProcessSampler _sampler;
     private readonly MachineSampler _machineSampler;
+    private readonly ProcessIdentityResolver _identities;
 
     private readonly Dictionary<(int Pid, long CreateTime), PreviousSample> _previous = new();
     private readonly Stopwatch _elapsedTimer = new();
+
+    private int _consecutiveOverruns;
 
     public CollectorWorker(
         ILogger<CollectorWorker> logger,
         TelltaleConfig config,
         Database db,
         IProcessSampler sampler,
-        MachineSampler machineSampler)
+        MachineSampler machineSampler,
+        ProcessIdentityResolver identities)
     {
         _logger = logger;
         _config = config;
         _db = db;
         _sampler = sampler;
         _machineSampler = machineSampler;
+        _identities = identities;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -59,49 +72,28 @@ public sealed class CollectorWorker : BackgroundService
         var snapshots = _sampler.Sample();
         var machineSample = _machineSampler.Sample();
 
+        // The tick's distinct process instances, gathered before the loop so every
+        // one whose identity is not yet known can be looked up in a single batch
+        // rather than one query at a time.
+        var seenKeys = new HashSet<(int Pid, long CreateTime)>(snapshots.Count);
+        foreach (var snap in snapshots)
+            seenKeys.Add((snap.Pid, snap.CreateTimeTicks));
+
+        _identities.Resolve(seenKeys);
+
         var rows = new List<SampleRow>(snapshots.Count);
-        var seenKeys = new HashSet<(int, long)>();
+        var handled = new HashSet<(int, long)>(seenKeys.Count);
 
         foreach (var snap in snapshots)
         {
             var key = (snap.Pid, snap.CreateTimeTicks);
-            if (!seenKeys.Add(key)) continue;
+            if (!handled.Add(key)) continue;
 
-            string? commandLine = null;
-            string? path = null;
-
-            if (_config.RecordCommandLines && snap.Pid > 4)
-            {
-                try
-                {
-                    using var proc = Process.GetProcessById(snap.Pid);
-                    try
-                    {
-                        path = proc.MainModule?.FileName;
-                    }
-                    catch { }
-
-                    try
-                    {
-                        commandLine = GetCommandLine(snap.Pid);
-                        commandLine = TelltaleConfig.RedactCommandLine(commandLine);
-                    }
-                    catch { }
-                }
-                catch { }
-            }
-            else if (snap.Pid > 4)
-            {
-                try
-                {
-                    using var proc = Process.GetProcessById(snap.Pid);
-                    path = proc.MainModule?.FileName;
-                }
-                catch { }
-            }
+            var identity = _identities.For(key);
 
             long instanceId = _db.GetOrCreateProcessInstance(
-                snap.Pid, snap.CreateTimeTicks, snap.Name, path, commandLine, timestamp);
+                snap.Pid, snap.CreateTimeTicks, snap.Name, identity.Path, identity.CommandLine,
+                timestamp);
 
             double? cpuPct = null;
             double? ioKb = null;
@@ -142,6 +134,7 @@ public sealed class CollectorWorker : BackgroundService
         }
 
         CleanStalePrevious(seenKeys);
+        _identities.Prune(seenKeys);
 
         if (rows.Count > 0)
             _db.WriteSampleBatch(timestamp, rows);
@@ -150,9 +143,10 @@ public sealed class CollectorWorker : BackgroundService
 
         sw.Stop();
         RecordHealth(timestamp, sw.Elapsed.TotalMilliseconds, snapshots.Count, rows.Count);
+        RecordOverrun(sw.Elapsed);
     }
 
-    private void CleanStalePrevious(HashSet<(int, long)> seenKeys)
+    private void CleanStalePrevious(HashSet<(int Pid, long CreateTime)> seenKeys)
     {
         var staleKeys = _previous.Keys.Where(k => !seenKeys.Contains(k)).ToList();
         foreach (var k in staleKeys)
@@ -168,20 +162,51 @@ public sealed class CollectorWorker : BackgroundService
         _db.WriteCollectorHealth(timestamp, cpuPct, privateMb, sampleCostMs, processCount, storedCount);
     }
 
-    private static string? GetCommandLine(int pid)
+    /// <summary>
+    /// Says so when a tick takes longer than the interval it is meant to fit inside.
+    /// Without this the failure is silent: the process stays up, no error is raised,
+    /// and the only symptom is a viewer with nothing in it.
+    /// </summary>
+    private void RecordOverrun(TimeSpan tickDuration)
     {
-        try
+        if (tickDuration.TotalSeconds <= _config.IntervalSeconds)
         {
-            using var searcher = new System.Management.ManagementObjectSearcher(
-                $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {pid}");
-            foreach (var obj in searcher.Get())
+            if (_consecutiveOverruns > 0)
             {
-                return obj["CommandLine"]?.ToString();
+                _logger.LogInformation(
+                    "Sampling is keeping up again after {Overruns} tick(s) that ran long.",
+                    _consecutiveOverruns);
+                _consecutiveOverruns = 0;
             }
+            return;
         }
-        catch { }
-        return null;
+
+        _consecutiveOverruns++;
+
+        if (LevelForConsecutiveOverruns(_consecutiveOverruns) == LogLevel.Error)
+        {
+            _logger.LogError(
+                "Sampling has run longer than its {Interval}s interval {Overruns} times in a "
+                + "row, the last taking {Duration:F1}s. The collector cannot keep up, so the "
+                + "recorded history will have gaps.",
+                _config.IntervalSeconds, _consecutiveOverruns, tickDuration.TotalSeconds);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Sampling tick took {Duration:F1}s, longer than the {Interval}s interval.",
+                tickDuration.TotalSeconds, _config.IntervalSeconds);
+        }
     }
+
+    /// <summary>
+    /// The level an overrunning tick should be logged at, given how many ticks have
+    /// now overrun in a row.
+    /// </summary>
+    public static LogLevel LevelForConsecutiveOverruns(int consecutiveOverruns) =>
+        consecutiveOverruns >= ConsecutiveOverrunsBeforeError
+            ? LogLevel.Error
+            : LogLevel.Warning;
 
     private record PreviousSample(
         long KernelTime, long UserTime, long ElapsedTicks,
