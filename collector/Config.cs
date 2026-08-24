@@ -14,6 +14,14 @@ public sealed partial class TelltaleConfig
     public int Rollup10mRetentionDays { get; set; } = 365;
     public int HealthRetentionDays { get; set; } = 7;
     public int RollupIntervalMinutes { get; set; } = 5;
+
+    /// <summary>
+    /// Whether to convert a database that predates the auto_vacuum ordering fix on
+    /// the next start. The conversion is a full VACUUM: it rewrites the whole file
+    /// and needs roughly twice its size in free disk while it runs, so it is off by
+    /// default and the collector only logs that it is available.
+    /// </summary>
+    public bool VacuumOnStartup { get; set; }
     public ThresholdConfig Thresholds { get; set; } = new();
 
     public string ResolvedDatabasePath =>

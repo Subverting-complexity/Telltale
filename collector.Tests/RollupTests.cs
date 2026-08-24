@@ -230,19 +230,6 @@ public class RollupTests : SqliteTestBase
         VALUES ({ts}, 50.0, 60.0, 8000, 16000, 12000, 0, 1.0, 2.0, 30.0, 40.0, 1000, NULL, 1)
         """);
 
-    private long[] Timestamps(string table)
-    {
-        using var conn = Connect();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT ts FROM {table} ORDER BY ts";
-        using var reader = cmd.ExecuteReader();
-
-        var results = new List<long>();
-        while (reader.Read())
-            results.Add(reader.GetInt64(0));
-        return [.. results];
-    }
-
     private int Count(string table, string? where = null) =>
         (int)(long)Scalar($"SELECT COUNT(*) FROM {table}" + (where is null ? "" : $" WHERE {where}"))!;
 

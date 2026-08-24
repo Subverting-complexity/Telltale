@@ -25,8 +25,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The current schema and the frozen version 1 snapshot. The migration
-         tests build a database each way and compare the two. -->
+    <!-- The current schema and the frozen version 1 snapshot. The migration tests
+         build a database each way and compare the two, and DatabaseSchemaTests
+         compares the schema Database builds against the current file, since
+         schema.sql is the only contract between the collector and the viewer. -->
     <None Include="..\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
     <None Update="schema-v1.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

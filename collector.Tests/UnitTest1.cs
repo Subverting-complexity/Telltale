@@ -91,6 +91,26 @@ public class ConfigTests
     }
 
     [Fact]
+    public void VacuumOnStartup_DefaultsToOff()
+    {
+        // Converting an existing database rewrites the whole file, so it has to be
+        // something the operator asks for rather than something they inherit.
+        Assert.False(new TelltaleConfig().VacuumOnStartup);
+    }
+
+    [Fact]
+    public void VacuumOnStartup_BindsFromTheConfigFile()
+    {
+        // The warning the collector logs tells the operator to set this in
+        // telltale.json, so the name in that file has to reach the property.
+        var config = System.Text.Json.JsonSerializer.Deserialize<TelltaleConfig>(
+            """{"vacuumOnStartup": true}""",
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        Assert.True(config!.VacuumOnStartup);
+    }
+
+    [Fact]
     public void RedactCommandLine_HandlesNull()
     {
         Assert.Null(TelltaleConfig.RedactCommandLine(null));
@@ -151,72 +171,5 @@ public class NativeSamplerTests
         var self = results.FirstOrDefault(p => p.Pid == Environment.ProcessId);
         Assert.NotNull(self);
         Assert.False(string.IsNullOrEmpty(self.Name));
-    }
-}
-
-public class DatabaseTests : IDisposable
-{
-    private readonly string _dbPath;
-    private readonly Database _db;
-
-    public DatabaseTests()
-    {
-        _dbPath = Path.Combine(Path.GetTempPath(), $"telltale_test_{Guid.NewGuid()}.db");
-        var logger = new TestLogger();
-        _db = new Database(_dbPath, logger);
-    }
-
-    [Fact]
-    public void CreateDatabase_SetsUpSchema()
-    {
-        Assert.True(File.Exists(_dbPath));
-    }
-
-    [Fact]
-    public void GetOrCreateProcessInstance_InsertsAndReturns()
-    {
-        long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        long id = _db.GetOrCreateProcessInstance(1234, 100, "test.exe", null, null, ts);
-        Assert.True(id > 0);
-
-        long id2 = _db.GetOrCreateProcessInstance(1234, 100, "test.exe", null, null, ts + 1000);
-        Assert.Equal(id, id2);
-    }
-
-    [Fact]
-    public void WriteSampleBatch_WritesRows()
-    {
-        long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        long id = _db.GetOrCreateProcessInstance(1, 100, "test.exe", null, null, ts);
-
-        var rows = new List<SampleRow>
-        {
-            new(id, 5.0, 100, 200, 50, 10, 100),
-        };
-        _db.WriteSampleBatch(ts, rows);
-    }
-
-    [Fact]
-    public void WriteMachineSample_WritesRow()
-    {
-        long ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        var sample = new MachineSample(50.0, 8000, 12000, 0, 1.0, 2.0, 16000, 30.0, 1000, null);
-        _db.WriteMachineSample(ts, sample);
-    }
-
-    public void Dispose()
-    {
-        _db.Dispose();
-        try { File.Delete(_dbPath); } catch { }
-        try { File.Delete(_dbPath + "-wal"); } catch { }
-        try { File.Delete(_dbPath + "-shm"); } catch { }
-    }
-
-    private class TestLogger : Microsoft.Extensions.Logging.ILogger
-    {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => false;
-        public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId,
-            TState state, Exception? exception, Func<TState, Exception?, string> formatter) { }
     }
 }

@@ -67,6 +67,7 @@ The collector reads `telltale.json` from its working directory. The default conf
   "rollup10mRetentionDays": 365,
   "healthRetentionDays": 7,
   "rollupIntervalMinutes": 5,
+  "vacuumOnStartup": false,
   "thresholds": {
     "cpuPct": 0.0,
     "privateMemoryMb": 0.0
@@ -75,6 +76,8 @@ The collector reads `telltale.json` from its working directory. The default conf
 ```
 
 Set `databasePath` to override the default location (`%LocalAppData%\Telltale\telltale.db`). Set `thresholds` to non-zero values to enable alerts in the viewer.
+
+Set `vacuumOnStartup` to `true` only if the collector warns that your database was created with auto_vacuum switched off. Databases made before that ordering was fixed cannot reclaim deleted space, and correcting it means rewriting the whole file, which takes a while and needs roughly twice the file's size in free disk while it runs. The collector converts the database once on the next start and then leaves it alone, so the setting can stay on afterwards at the cost of one pragma read per start.
 
 ## Project structure
 

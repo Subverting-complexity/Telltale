@@ -1,6 +1,10 @@
+-- auto_vacuum has to be chosen before anything writes the database header,
+-- and switching the journal mode to WAL writes it. Reversed, the auto_vacuum
+-- statement succeeds but changes nothing and the file never releases freed
+-- pages. collector/Database.cs applies the same order.
+PRAGMA auto_vacuum = INCREMENTAL;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
-PRAGMA auto_vacuum = INCREMENTAL;
 
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY

@@ -8,6 +8,7 @@
   "rollup10mRetentionDays": 365,
   "healthRetentionDays": 7,
   "rollupIntervalMinutes": 5,
+  "vacuumOnStartup": false,
   "thresholds": {
     "cpuPct": 0.0,
     "privateMemoryMb": 0.0
