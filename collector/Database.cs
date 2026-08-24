@@ -7,6 +7,12 @@ public sealed class Database : IDisposable
     private readonly SqliteConnection _conn;
     private readonly ILogger _logger;
 
+    /// <summary>
+    /// The schema version this database is at once it has been opened, which is
+    /// <see cref="SchemaMigrations.LatestVersion"/> unless a newer build wrote it.
+    /// </summary>
+    public int SchemaVersion { get; private set; }
+
     public Database(string dbPath, ILogger logger)
     {
         _logger = logger;
@@ -16,7 +22,20 @@ public sealed class Database : IDisposable
 
         _conn = new SqliteConnection($"Data Source={dbPath}");
         _conn.Open();
-        InitSchema();
+
+        try
+        {
+            InitSchema();
+        }
+        catch
+        {
+            // InitSchema now runs migrations against whatever an older build left
+            // behind, so it has a real chance of throwing. Without this the
+            // connection would stay open on an unreachable object and keep the
+            // database file and its write ahead log locked until finalization.
+            _conn.Dispose();
+            throw;
+        }
     }
 
     private void InitSchema()
@@ -33,124 +52,158 @@ public sealed class Database : IDisposable
 
         cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'";
         var exists = cmd.ExecuteScalar();
-        if (exists != null) return;
+        if (exists != null)
+        {
+            // The database already exists, and an earlier build may have created
+            // it. Step it forward to the shape this build expects instead of
+            // assuming it is already there.
+            SchemaVersion = SchemaMigrations.Apply(_conn, _logger);
+            return;
+        }
 
-        cmd.CommandText = """
-            CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
-            INSERT INTO schema_version VALUES (1);
+        // One transaction for the whole schema. Interrupted half way without it,
+        // the database would keep a schema_version row saying 2 over tables that
+        // were never created, and every later start would read that version, skip
+        // the migrations and fail with no way back.
+        using (var tx = _conn.BeginTransaction())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = CreateSchemaSql;
+            cmd.ExecuteNonQuery();
+            tx.Commit();
+        }
 
-            CREATE TABLE process_instance (
-                id           INTEGER PRIMARY KEY,
-                pid          INTEGER NOT NULL,
-                create_time  INTEGER NOT NULL,
-                name         TEXT    NOT NULL,
-                path         TEXT,
-                command_line TEXT,
-                first_seen   INTEGER NOT NULL,
-                last_seen    INTEGER NOT NULL,
-                UNIQUE(pid, create_time)
-            );
-
-            CREATE TABLE sample (
-                ts           INTEGER NOT NULL,
-                instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
-                cpu_pct      REAL,
-                private_mb   REAL,
-                working_set_mb REAL,
-                io_kb        REAL,
-                threads      INTEGER,
-                handles      INTEGER
-            );
-            CREATE INDEX ix_sample_ts ON sample(ts);
-            CREATE INDEX ix_sample_inst ON sample(instance_id, ts);
-
-            CREATE TABLE sample_1m (
-                ts           INTEGER NOT NULL,
-                instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
-                cpu_pct_avg  REAL,
-                cpu_pct_max  REAL,
-                private_mb_max REAL,
-                working_set_mb_max REAL,
-                io_kb_total  REAL,
-                sample_count INTEGER
-            );
-            CREATE INDEX ix_s1m_ts ON sample_1m(ts);
-            CREATE INDEX ix_s1m_inst ON sample_1m(instance_id, ts);
-
-            CREATE TABLE sample_10m (
-                ts           INTEGER NOT NULL,
-                instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
-                cpu_pct_avg  REAL,
-                cpu_pct_max  REAL,
-                private_mb_max REAL,
-                working_set_mb_max REAL,
-                io_kb_total  REAL,
-                sample_count INTEGER
-            );
-            CREATE INDEX ix_s10m_ts ON sample_10m(ts);
-            CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
-
-            CREATE TABLE machine (
-                ts              INTEGER PRIMARY KEY,
-                cpu_pct         REAL,
-                memory_avail_mb REAL,
-                commit_mb       REAL,
-                hard_faults     INTEGER,
-                disk_read_ms    REAL,
-                disk_write_ms   REAL,
-                memory_total_mb REAL,
-                disk_busy_pct   REAL,
-                net_kbps        REAL,
-                gpu_busy_pct    REAL
-            );
-
-            CREATE TABLE machine_1m (
-                ts                  INTEGER PRIMARY KEY,
-                cpu_pct_avg         REAL,
-                cpu_pct_max         REAL,
-                memory_avail_mb_avg REAL,
-                memory_total_mb     REAL,
-                commit_mb_max       REAL,
-                hard_faults_total   INTEGER,
-                disk_read_ms_avg    REAL,
-                disk_write_ms_avg   REAL,
-                disk_busy_pct_avg   REAL,
-                disk_busy_pct_max   REAL,
-                net_kbps_avg        REAL,
-                gpu_busy_pct_avg    REAL,
-                sample_count        INTEGER
-            );
-
-            CREATE TABLE machine_10m (
-                ts                  INTEGER PRIMARY KEY,
-                cpu_pct_avg         REAL,
-                cpu_pct_max         REAL,
-                memory_avail_mb_avg REAL,
-                memory_total_mb     REAL,
-                commit_mb_max       REAL,
-                hard_faults_total   INTEGER,
-                disk_read_ms_avg    REAL,
-                disk_write_ms_avg   REAL,
-                disk_busy_pct_avg   REAL,
-                disk_busy_pct_max   REAL,
-                net_kbps_avg        REAL,
-                gpu_busy_pct_avg    REAL,
-                sample_count        INTEGER
-            );
-
-            CREATE TABLE collector_health (
-                ts              INTEGER PRIMARY KEY,
-                cpu_pct         REAL,
-                private_mb      REAL,
-                sample_cost_ms  REAL,
-                process_count   INTEGER,
-                stored_count    INTEGER
-            );
-            """;
-        cmd.ExecuteNonQuery();
-
-        _logger.LogInformation("Database schema created (version 1).");
+        cmd.Transaction = null;
+        SchemaVersion = SchemaMigrations.LatestVersion;
+        _logger.LogInformation("Database schema created (version {Version}).", SchemaVersion);
     }
+
+    /// <summary>
+    /// The schema a brand new database is created with. This is a copy of
+    /// <c>schema.sql</c>, the file the viewer treats as the contract, minus the
+    /// pragmas at the top of it which <see cref="InitSchema"/> applies itself.
+    /// The two are kept identical, and a test creates a database each way and
+    /// compares the result so that they cannot quietly drift apart.
+    /// </summary>
+    private const string CreateSchemaSql = """
+        CREATE TABLE schema_version (
+            version INTEGER PRIMARY KEY
+        );
+        INSERT INTO schema_version VALUES (2);
+
+        CREATE TABLE process_instance (
+            id           INTEGER PRIMARY KEY,
+            pid          INTEGER NOT NULL,
+            create_time  INTEGER NOT NULL,
+            name         TEXT    NOT NULL,
+            path         TEXT,
+            command_line TEXT,
+            first_seen   INTEGER NOT NULL,
+            last_seen    INTEGER NOT NULL,
+            UNIQUE(pid, create_time)
+        );
+
+        CREATE TABLE sample (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct      REAL,
+            private_mb   REAL,
+            working_set_mb REAL,
+            io_kb        REAL,
+            threads      INTEGER,
+            handles      INTEGER
+        );
+        CREATE INDEX ix_sample_ts ON sample(ts);
+        CREATE INDEX ix_sample_inst ON sample(instance_id, ts);
+
+        CREATE TABLE sample_1m (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER
+        );
+        -- (ts, instance_id) is the natural key: the rollup writes one row per bucket
+        -- per process instance. Uniqueness is a named index rather than a table
+        -- constraint so that an existing database can reach the same shape, which
+        -- SQLite cannot do for a UNIQUE constraint without rebuilding the table.
+        -- It also covers lookups by ts alone, so no separate ts index is needed.
+        CREATE UNIQUE INDEX ux_s1m_ts_inst ON sample_1m(ts, instance_id);
+        CREATE INDEX ix_s1m_inst ON sample_1m(instance_id, ts);
+
+        CREATE TABLE sample_10m (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER
+        );
+        CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
+        CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
+
+        CREATE TABLE machine (
+            ts              INTEGER PRIMARY KEY,
+            cpu_pct         REAL,
+            memory_avail_mb REAL,
+            commit_mb       REAL,
+            hard_faults     INTEGER,
+            disk_read_ms    REAL,
+            disk_write_ms   REAL,
+            memory_total_mb REAL,
+            disk_busy_pct   REAL,
+            net_kbps        REAL,
+            gpu_busy_pct    REAL
+        );
+
+        CREATE TABLE machine_1m (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER
+        );
+
+        CREATE TABLE machine_10m (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER
+        );
+
+        CREATE TABLE collector_health (
+            ts              INTEGER PRIMARY KEY,
+            cpu_pct         REAL,
+            private_mb      REAL,
+            sample_cost_ms  REAL,
+            process_count   INTEGER,
+            stored_count    INTEGER
+        );
+        """;
 
     public long GetOrCreateProcessInstance(int pid, long createTime, string name, string? path,
         string? commandLine, long timestamp)

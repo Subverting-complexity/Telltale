@@ -24,4 +24,11 @@
     <ProjectReference Include="..\collector\Collector.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The current schema and the frozen version 1 snapshot. The migration
+         tests build a database each way and compare the two. -->
+    <None Include="..\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="schema-v1.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

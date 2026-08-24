@@ -111,8 +111,12 @@ public class RollupTests : IDisposable
         WriteSample(instanceId, bucket + 45_000);
         _db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
 
-        // sample_1m has no key on ts, so a repeated promotion would insert a second
-        // row for the same minute and silently double count rather than failing.
+        // Before issue #32 a repeated promotion inserted a second row for the same
+        // minute here and silently double counted, because sample_1m had no key on
+        // (ts, instance_id). That pair is unique now, so the same mistake would
+        // fail outright. This still asserts on the row count rather than on the
+        // failure, because the guard being tested is the one in the rollup that
+        // stops the second promotion happening at all.
         Assert.Equal(1, Count("sample_1m", $"ts = {bucket} AND instance_id = {instanceId}"));
         Assert.Equal(2L, Scalar($"SELECT sample_count FROM sample_1m WHERE ts = {bucket}"));
         Assert.Equal(0, Count("sample"));
