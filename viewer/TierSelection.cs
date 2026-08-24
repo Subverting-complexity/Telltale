@@ -35,10 +35,25 @@ public sealed record TierPlan
     /// is clamped to that coverage, and the rows returned are what has to be
     /// bounded.
     /// </summary>
-    public bool ServesFullResolution =>
-        IsSingleRawTier
-        && (Slices[0].To - Slices[0].From) / TierSelection.NativeIntervalMs(Slices[0].Table)
-           <= TierSelection.MaxRawOnlyPoints;
+    public bool ServesFullResolution
+    {
+        get
+        {
+            if (!IsSingleRawTier) return false;
+
+            // When no tier covers the window at all, Plan falls back to a slice
+            // carrying the caller's own from and to, which are unvalidated. An
+            // inverted range gives a negative span, and a range spanning most of
+            // long overflows a 64 bit subtraction into one, which would read as
+            // narrow enough and wave the widest possible window through. Widening
+            // the subtraction keeps both cases honest.
+            TierSlice slice = Slices[0];
+            if (slice.To < slice.From) return false;
+
+            return (Int128)slice.To - slice.From
+                <= (Int128)TierSelection.MaxRawOnlyPoints * TierSelection.NativeIntervalMs(slice.Table);
+        }
+    }
 
     /// <summary>
     /// Tables read, oldest first, for the API's `resolution` field. A tier can
@@ -56,7 +71,11 @@ public sealed record TierPlan
 /// </summary>
 public static class TierSelection
 {
-    const long MaxPoints = 2000;
+    /// <summary>
+    /// How many points a bucketed range aims for. The bucket is rounded down to a
+    /// whole tier interval, so a range can come back with up to twice this.
+    /// </summary>
+    public const long MaxPoints = 2000;
 
     /// <summary>
     /// The most points a raw-only window may be worth before it is bucketed like
@@ -71,8 +90,17 @@ public static class TierSelection
     ///
     /// 20,000 covers a day of 5 second samples (17,280) with room for the 25
     /// hour day the clocks going back produces (18,000), so the day view holds
-    /// its resolution all year. It is a point count rather than a window width
-    /// so it stays right if the raw sampling interval changes.
+    /// its resolution all year.
+    ///
+    /// It is counted at <see cref="NativeIntervalMs"/>, which is a fixed 5,000ms
+    /// for the raw tables, so in practice this is a bound on how wide the window
+    /// may be: about 27.8 hours. The collector's <c>IntervalSeconds</c> is
+    /// configurable from 2 to 60, and the viewer has no way to read it without
+    /// crossing the boundary that keeps the two executables independent, so at a
+    /// finer setting the same window carries proportionally more rows. At the
+    /// finest setting of 2 seconds the widest exempt window holds about 50,000.
+    /// That is still bounded and still independent of retention, which is what
+    /// this constant is for, but it is not literally a count of rows returned.
     /// </summary>
     public const long MaxRawOnlyPoints = 20_000;
 
