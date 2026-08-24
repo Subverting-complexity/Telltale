@@ -75,9 +75,8 @@ vector is not only "an attacker overwrote my database" but also "someone was
 persuaded to open a capture file they were sent", which needs no write access to
 their machine at all. My working theory is that a crafted file is a genuine
 trigger, because a malicious database can define `machine` or `sample` as a view
-whose
-attacker-authored SQL is compiled when the viewer's own fixed query touches it.
-I have not tried to build such a file, so treat that as untested reasoning.
+whose attacker-authored SQL is compiled when the viewer's own fixed query touches
+it. I have not tried to build such a file, so treat that as untested reasoning.
 
 **Requests can reach the API from a browser.** `viewer/Program.cs` configures
 CORS with `AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()` and
