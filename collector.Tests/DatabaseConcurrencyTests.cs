@@ -12,14 +12,11 @@ namespace Collector.Tests;
 /// two overlapping writes could throw, read back garbage, or apply half of a batch.
 /// These tests fail loudly on the old code and are quiet on the new.
 /// </summary>
-public class DatabaseConcurrencyTests : IDisposable
+public class DatabaseConcurrencyTests() : SqliteTestBase("concurrency")
 {
     private const long Ts = 1_700_000_000_000L;
     private const long MinuteMs = 60_000L;
 
-    private readonly TempDatabase _temp = new("concurrency");
-
-    private Database Db => _temp.Db;
 
     [Fact]
     public async Task SamplingWhileARollupRuns_CompletesWithoutErrorAndKeepsEveryRow()
@@ -57,7 +54,7 @@ public class DatabaseConcurrencyTests : IDisposable
 
         // Nothing the sampler wrote falls inside the rollup's cutoff, so every live
         // write must still be there. A lost or half applied batch shows up here.
-        Assert.Equal(liveWrites, _temp.Count("sample", $"ts >= {liveStart}"));
+        Assert.Equal(liveWrites, Count("sample", $"ts >= {liveStart}"));
     }
 
     [Fact]
@@ -76,9 +73,9 @@ public class DatabaseConcurrencyTests : IDisposable
                 Db.WriteSampleBatch(Ts + i, [new SampleRow(ids[t], t, 10, 20, 1, 1, 1)]);
         });
 
-        Assert.Equal(threads * perThread, _temp.Count("sample"));
+        Assert.Equal(threads * perThread, Count("sample"));
         for (int t = 0; t < threads; t++)
-            Assert.Equal(perThread, _temp.Count("sample", $"instance_id = {ids[t]}"));
+            Assert.Equal(perThread, Count("sample", $"instance_id = {ids[t]}"));
     }
 
     [Fact]
@@ -92,7 +89,7 @@ public class DatabaseConcurrencyTests : IDisposable
         Parallel.For(0, threads, t => ids[t] = Db.GetOrCreateProcessInstance(
             4321, 100, "shared.exe", null, null, Ts + t));
 
-        Assert.Equal(1, _temp.Count("process_instance"));
+        Assert.Equal(1, Count("process_instance"));
         Assert.Single(ids.Distinct());
     }
 
@@ -122,12 +119,7 @@ public class DatabaseConcurrencyTests : IDisposable
 
         // Retention only ever deletes below Ts and the sampler only writes above it,
         // so the two must not have interfered with each other at all.
-        Assert.Equal(400, _temp.Count("sample"));
+        Assert.Equal(400, Count("sample"));
     }
 
-    public void Dispose()
-    {
-        _temp.Dispose();
-        GC.SuppressFinalize(this);
-    }
 }

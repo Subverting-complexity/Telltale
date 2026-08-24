@@ -15,7 +15,7 @@ namespace Collector.Tests;
 /// success, incremental vacuum quietly became a no-op, and the file never gave
 /// pages back.
 /// </summary>
-public class DatabaseSchemaTests
+public class DatabaseSchemaTests() : SqliteTestBase("schema")
 {
     private const long AutoVacuumNone = 0;
     private const long AutoVacuumIncremental = 2;
@@ -28,62 +28,54 @@ public class DatabaseSchemaTests
 
     private static readonly string[] ExpectedIndexes =
     [
-        "ix_s10m_inst", "ix_s10m_ts", "ix_s1m_inst", "ix_s1m_ts",
-        "ix_sample_inst", "ix_sample_ts",
+        "ix_s10m_inst", "ix_s1m_inst", "ix_sample_inst", "ix_sample_ts",
+        "ux_s10m_ts_inst", "ux_s1m_ts_inst",
     ];
 
     [Fact]
     public void FreshDatabase_TurnsOnIncrementalAutoVacuum()
     {
-        using var temp = new TempDatabase("schema");
-
         // The whole point of the ordering fix. Reversed, this reports 0.
-        Assert.Equal(AutoVacuumIncremental, Convert.ToInt64(temp.Scalar("PRAGMA auto_vacuum")));
+        Assert.Equal(AutoVacuumIncremental, Convert.ToInt64(Scalar("PRAGMA auto_vacuum")));
     }
 
     [Fact]
     public void FreshDatabase_IsInWalMode()
     {
-        using var temp = new TempDatabase("schema");
-
         // Setting auto_vacuum first must not cost us WAL.
-        Assert.Equal("wal", ((string)temp.Scalar("PRAGMA journal_mode")!).ToLowerInvariant());
+        Assert.Equal("wal", ((string)Scalar("PRAGMA journal_mode")!).ToLowerInvariant());
     }
 
     [Fact]
     public void FreshDatabase_CreatesEveryExpectedTable()
     {
-        using var temp = new TempDatabase("schema");
-
-        Assert.Equal(ExpectedTables, ObjectNames(temp.Path, "table"));
+        Assert.Equal(ExpectedTables, ObjectNames(DbPath, "table"));
     }
 
     [Fact]
     public void FreshDatabase_CreatesEveryExpectedIndex()
     {
-        using var temp = new TempDatabase("schema");
-
-        Assert.Equal(ExpectedIndexes, ObjectNames(temp.Path, "index"));
+        Assert.Equal(ExpectedIndexes, ObjectNames(DbPath, "index"));
     }
 
     [Fact]
-    public void FreshDatabase_RecordsSchemaVersionOne()
+    public void FreshDatabase_RecordsTheLatestSchemaVersion()
     {
-        using var temp = new TempDatabase("schema");
-
-        Assert.Equal(1L, Convert.ToInt64(temp.Scalar("SELECT version FROM schema_version")));
+        Assert.Equal(SchemaMigrations.LatestVersion,
+            Convert.ToInt32(Scalar("SELECT version FROM schema_version")));
+        Assert.Equal(SchemaMigrations.LatestVersion, Db.SchemaVersion);
     }
 
     [Fact]
     public void ReopeningADatabase_KeepsTheSchemaAndTheDataAlreadyInIt()
     {
-        using var temp = new TempDatabase("schema");
-        temp.Db.GetOrCreateProcessInstance(1234, 100, "kept.exe", null, null, 1_000);
+        Db.GetOrCreateProcessInstance(1234, 100, "kept.exe", null, null, 1_000);
+        Db.Dispose();
 
-        using var reopened = temp.Reopen();
+        using var reopened = new Database(DbPath, new CapturingLogger());
 
-        Assert.Equal(1, temp.Count("process_instance"));
-        Assert.Equal(ExpectedTables, ObjectNames(temp.Path, "table"));
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Equal(ExpectedTables, ObjectNames(DbPath, "table"));
     }
 
     /// <summary>
@@ -96,23 +88,21 @@ public class DatabaseSchemaTests
     [Fact]
     public void SchemaBuiltByDatabase_MatchesTheSchemaSqlContract()
     {
-        using var temp = new TempDatabase("schema");
-
         string contractPath = Path.Combine(Path.GetTempPath(), $"telltale_contract_{Guid.NewGuid()}.db");
         try
         {
             RunScript(contractPath, File.ReadAllText(SchemaSqlPath()));
 
-            Assert.Equal(ObjectNames(contractPath, "table"), ObjectNames(temp.Path, "table"));
-            Assert.Equal(ObjectNames(contractPath, "index"), ObjectNames(temp.Path, "index"));
+            Assert.Equal(ObjectNames(contractPath, "table"), ObjectNames(DbPath, "table"));
+            Assert.Equal(ObjectNames(contractPath, "index"), ObjectNames(DbPath, "index"));
 
             foreach (string table in ObjectNames(contractPath, "table"))
                 Assert.Equal(Describe(contractPath, $"PRAGMA table_info({table})"),
-                             Describe(temp.Path, $"PRAGMA table_info({table})"));
+                             Describe(DbPath, $"PRAGMA table_info({table})"));
 
             foreach (string index in ObjectNames(contractPath, "index"))
                 Assert.Equal(Describe(contractPath, $"PRAGMA index_info({index})"),
-                             Describe(temp.Path, $"PRAGMA index_info({index})"));
+                             Describe(DbPath, $"PRAGMA index_info({index})"));
         }
         finally
         {

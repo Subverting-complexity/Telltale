@@ -53,6 +53,27 @@ public abstract class SqliteTestBase : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    protected int Count(string table, string? where = null) =>
+        (int)(long)Scalar($"SELECT COUNT(*) FROM {table}" + (where is null ? "" : $" WHERE {where}"))!;
+
+    /// <summary>Reads one numeric column of one row, for aggregate assertions.</summary>
+    protected double Real(string sql) => Convert.ToDouble(Scalar(sql));
+
+    protected long[] Timestamps(string table) => Column(table, "ts");
+
+    protected long[] Column(string table, string column)
+    {
+        using var conn = Connect();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT {column} FROM {table} ORDER BY ts";
+        using var reader = cmd.ExecuteReader();
+
+        var results = new List<long>();
+        while (reader.Read())
+            results.Add(reader.GetInt64(0));
+        return [.. results];
+    }
+
     public void Dispose()
     {
         Db.Dispose();
