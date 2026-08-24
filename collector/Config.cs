@@ -7,7 +7,13 @@ public sealed partial class TelltaleConfig
 {
     public int IntervalSeconds { get; set; } = 5;
     public string? DatabasePath { get; set; }
-    public bool RecordCommandLines { get; set; } = true;
+    /// <summary>
+    /// Whether a process's command line is recorded alongside its name. Off by
+    /// default: a command line can carry a password, a token or a connection string,
+    /// and the redaction applied when this is on masks a fixed set of patterns rather
+    /// than everything. Storing it is therefore something the user opts into.
+    /// </summary>
+    public bool RecordCommandLines { get; set; } = false;
     public int MaxDatabaseSizeMb { get; set; } = 500;
     public int RawRetentionHours { get; set; } = 24;
     public int Rollup1mRetentionDays { get; set; } = 7;

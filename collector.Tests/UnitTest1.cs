@@ -15,6 +15,15 @@ public class ConfigTests
     }
 
     [Fact]
+    public void DefaultConfig_DoesNotRecordCommandLines()
+    {
+        // Storing a command line is something the user opts into. One can carry a
+        // password, a token or a connection string, and the redaction applied when
+        // recording is on masks only the patterns it knows about.
+        Assert.False(new TelltaleConfig().RecordCommandLines);
+    }
+
+    [Fact]
     public void InvalidInterval_FailsValidation()
     {
         var config = new TelltaleConfig { IntervalSeconds = 1 };

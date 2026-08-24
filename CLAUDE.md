@@ -17,7 +17,16 @@ covered in the issue.
 
 This tool records what a person runs on their own machine. Treat that data
 as private by default: no telemetry, no crash reporting, no outbound calls,
-and never log or store full process command lines.
+and never log a full process command line.
+
+Command lines are not stored either unless the user turns on
+`recordCommandLines`, which is off by default. When it is on, the collector
+masks anything matching a fixed set of credential patterns before writing the
+value to `process_instance.command_line`. That masking is best effort. It
+catches the argument shapes it was written for and will miss a credential
+passed positionally, a token inside a URL, or a connection string. Do not widen
+what is recorded, or turn it on by default, without changing this paragraph and
+saying why.
 
 ## Autonomous Execution
 

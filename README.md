@@ -60,7 +60,7 @@ The collector reads `telltale.json` from its working directory. The default conf
 {
   "intervalSeconds": 5,
   "databasePath": null,
-  "recordCommandLines": true,
+  "recordCommandLines": false,
   "maxDatabaseSizeMb": 500,
   "rawRetentionHours": 24,
   "rollup1mRetentionDays": 7,
@@ -78,6 +78,10 @@ The collector reads `telltale.json` from its working directory. The default conf
 Set `databasePath` to override the default location (`%LocalAppData%\Telltale\telltale.db`). Set `thresholds` to non-zero values to enable alerts in the viewer.
 
 Set `vacuumOnStartup` to `true` only if the collector warns that your database was created with auto_vacuum switched off. Databases made before that ordering was fixed cannot reclaim deleted space, and correcting it means rewriting the whole file, which takes a while and needs roughly twice the file's size in free disk while it runs. The collector converts the database once on the next start and then leaves it alone, so the setting can stay on afterwards at the cost of one pragma read per start.
+
+Set `recordCommandLines` to `true` to record the command line each process was started with, which is what tells one `node.exe` from another. It is off by default because a command line can carry a password, a token or a connection string. With it on, the collector masks values matching a fixed set of credential patterns before storing them, and that will not catch every case, so leave it off unless you need it.
+
+Turning `recordCommandLines` off only affects processes recorded from that point on. A database built while it was on keeps the command lines it already captured, and the viewer keeps showing them. To clear them, run `UPDATE process_instance SET command_line = NULL;` against `telltale.db` while the collector is stopped.
 
 ## Project structure
 
