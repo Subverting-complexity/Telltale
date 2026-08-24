@@ -49,7 +49,8 @@ try
     builder.Services.AddSingleton(sp =>
         new MachineSampler(sp.GetRequiredService<ILogger<MachineSampler>>()));
     builder.Services.AddSingleton<IProcessIdentitySource>(sp =>
-        new WmiProcessIdentitySource(sp.GetRequiredService<ILogger<WmiProcessIdentitySource>>()));
+        new WmiProcessIdentitySource(
+            sp.GetRequiredService<ILogger<WmiProcessIdentitySource>>(), config));
     // Singleton because its whole purpose is remembering, across ticks, which
     // process instances have already been looked up.
     builder.Services.AddSingleton(sp =>

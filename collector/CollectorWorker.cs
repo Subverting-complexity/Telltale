@@ -4,14 +4,6 @@ namespace Telltale.Collector;
 
 public sealed class CollectorWorker : BackgroundService
 {
-    /// <summary>
-    /// Once this many ticks in a row have run longer than the sampling interval, the
-    /// message is logged as an error rather than a warning, and stays there until a
-    /// tick finishes in time. One slow tick is usually a busy moment. A run of them
-    /// means the collector cannot keep up and the recorded history will have gaps.
-    /// </summary>
-    public const int ConsecutiveOverrunsBeforeError = 3;
-
     private readonly ILogger<CollectorWorker> _logger;
     private readonly TelltaleConfig _config;
     private readonly Database _db;
@@ -21,8 +13,7 @@ public sealed class CollectorWorker : BackgroundService
 
     private readonly Dictionary<(int Pid, long CreateTime), PreviousSample> _previous = new();
     private readonly Stopwatch _elapsedTimer = new();
-
-    private int _consecutiveOverruns;
+    private readonly TickOverrunMonitor _overruns = new();
 
     public CollectorWorker(
         ILogger<CollectorWorker> logger,
@@ -84,65 +75,77 @@ public sealed class CollectorWorker : BackgroundService
         var rows = new List<SampleRow>(snapshots.Count);
         var handled = new HashSet<(int, long)>(seenKeys.Count);
 
-        foreach (var snap in snapshots)
+        try
         {
-            var key = (snap.Pid, snap.CreateTimeTicks);
-            if (!handled.Add(key)) continue;
-
-            var identity = _identities.For(key);
-
-            long instanceId = _db.GetOrCreateProcessInstance(
-                snap.Pid, snap.CreateTimeTicks, snap.Name, identity.Path, identity.CommandLine,
-                timestamp);
-
-            double? cpuPct = null;
-            double? ioKb = null;
-
-            if (_previous.TryGetValue(key, out var prev))
+            foreach (var snap in snapshots)
             {
-                long cpuDelta = (snap.KernelTime + snap.UserTime) - (prev.KernelTime + prev.UserTime);
-                long ticksDelta = elapsedTicks - prev.ElapsedTicks;
+                var key = (snap.Pid, snap.CreateTimeTicks);
+                if (!handled.Add(key)) continue;
 
-                if (ticksDelta > 0 && cpuDelta >= 0)
+                var identity = _identities.For(key);
+
+                long instanceId = _db.GetOrCreateProcessInstance(
+                    snap.Pid, snap.CreateTimeTicks, snap.Name, identity.Path, identity.CommandLine,
+                    timestamp);
+
+                double? cpuPct = null;
+                double? ioKb = null;
+
+                if (_previous.TryGetValue(key, out var prev))
                 {
-                    double elapsedSec = (double)ticksDelta / Stopwatch.Frequency;
-                    cpuPct = (cpuDelta / 10_000_000.0) / elapsedSec * 100.0;
+                    long cpuDelta = (snap.KernelTime + snap.UserTime) - (prev.KernelTime + prev.UserTime);
+                    long ticksDelta = elapsedTicks - prev.ElapsedTicks;
+
+                    if (ticksDelta > 0 && cpuDelta >= 0)
+                    {
+                        double elapsedSec = (double)ticksDelta / Stopwatch.Frequency;
+                        cpuPct = (cpuDelta / 10_000_000.0) / elapsedSec * 100.0;
+                    }
+
+                    long totalIo = snap.IoReadBytes + snap.IoWriteBytes + snap.IoOtherBytes;
+                    long prevTotalIo = prev.IoReadBytes + prev.IoWriteBytes + prev.IoOtherBytes;
+                    long ioDelta = totalIo - prevTotalIo;
+                    if (ioDelta >= 0)
+                        ioKb = ioDelta / 1024.0;
                 }
 
-                long totalIo = snap.IoReadBytes + snap.IoWriteBytes + snap.IoOtherBytes;
-                long prevTotalIo = prev.IoReadBytes + prev.IoWriteBytes + prev.IoOtherBytes;
-                long ioDelta = totalIo - prevTotalIo;
-                if (ioDelta >= 0)
-                    ioKb = ioDelta / 1024.0;
-            }
+                _previous[key] = new PreviousSample(
+                    snap.KernelTime, snap.UserTime, elapsedTicks,
+                    snap.IoReadBytes, snap.IoWriteBytes, snap.IoOtherBytes);
 
-            _previous[key] = new PreviousSample(
-                snap.KernelTime, snap.UserTime, elapsedTicks,
-                snap.IoReadBytes, snap.IoWriteBytes, snap.IoOtherBytes);
+                double privateMb = snap.PrivateBytes / (1024.0 * 1024.0);
+                double workingSetMb = snap.WorkingSetBytes / (1024.0 * 1024.0);
 
-            double privateMb = snap.PrivateBytes / (1024.0 * 1024.0);
-            double workingSetMb = snap.WorkingSetBytes / (1024.0 * 1024.0);
+                bool meetsThreshold = (cpuPct.HasValue && cpuPct.Value >= _config.Thresholds.CpuPct) ||
+                                      privateMb >= _config.Thresholds.PrivateMemoryMb;
 
-            bool meetsThreshold = (cpuPct.HasValue && cpuPct.Value >= _config.Thresholds.CpuPct) ||
-                                  privateMb >= _config.Thresholds.PrivateMemoryMb;
-
-            if (meetsThreshold || !cpuPct.HasValue)
-            {
-                rows.Add(new SampleRow(instanceId, cpuPct, privateMb, workingSetMb, ioKb,
-                    snap.ThreadCount, snap.HandleCount));
+                if (meetsThreshold || !cpuPct.HasValue)
+                {
+                    rows.Add(new SampleRow(instanceId, cpuPct, privateMb, workingSetMb, ioKb,
+                        snap.ThreadCount, snap.HandleCount));
+                }
             }
         }
-
-        CleanStalePrevious(seenKeys);
-        _identities.Prune(seenKeys);
+        finally
+        {
+            // Pruning runs even when a row fails part way through. Without this a
+            // tick that throws leaves both maps holding processes that have already
+            // gone, and they only clear on the next tick that gets all the way down.
+            CleanStalePrevious(seenKeys);
+            _identities.Prune(seenKeys);
+        }
 
         if (rows.Count > 0)
             _db.WriteSampleBatch(timestamp, rows);
 
         _db.WriteMachineSample(timestamp, machineSample);
 
+        // Read before the health write so sample_cost_ms keeps meaning what it always
+        // meant, but stop the clock after it, so a tick pushed over the interval by
+        // its own health write is still counted as an overrun.
+        double sampleCostMs = sw.Elapsed.TotalMilliseconds;
+        RecordHealth(timestamp, sampleCostMs, snapshots.Count, rows.Count);
         sw.Stop();
-        RecordHealth(timestamp, sw.Elapsed.TotalMilliseconds, snapshots.Count, rows.Count);
         RecordOverrun(sw.Elapsed);
     }
 
@@ -169,44 +172,32 @@ public sealed class CollectorWorker : BackgroundService
     /// </summary>
     private void RecordOverrun(TimeSpan tickDuration)
     {
-        if (tickDuration.TotalSeconds <= _config.IntervalSeconds)
+        var (outcome, overruns) = _overruns.Record(tickDuration, _config.IntervalSeconds);
+
+        switch (outcome)
         {
-            if (_consecutiveOverruns > 0)
-            {
+            case TickOutcome.Recovered:
                 _logger.LogInformation(
                     "Sampling is keeping up again after {Overruns} tick(s) that ran long.",
-                    _consecutiveOverruns);
-                _consecutiveOverruns = 0;
-            }
-            return;
-        }
+                    overruns);
+                break;
 
-        _consecutiveOverruns++;
+            case TickOutcome.Overrun
+                when TickOverrunMonitor.LevelForConsecutiveOverruns(overruns) == LogLevel.Error:
+                _logger.LogError(
+                    "Sampling has run longer than its {Interval}s interval {Overruns} times in a "
+                    + "row, the last taking {Duration:F1}s. The collector cannot keep up, so the "
+                    + "recorded history will have gaps.",
+                    _config.IntervalSeconds, overruns, tickDuration.TotalSeconds);
+                break;
 
-        if (LevelForConsecutiveOverruns(_consecutiveOverruns) == LogLevel.Error)
-        {
-            _logger.LogError(
-                "Sampling has run longer than its {Interval}s interval {Overruns} times in a "
-                + "row, the last taking {Duration:F1}s. The collector cannot keep up, so the "
-                + "recorded history will have gaps.",
-                _config.IntervalSeconds, _consecutiveOverruns, tickDuration.TotalSeconds);
-        }
-        else
-        {
-            _logger.LogWarning(
-                "Sampling tick took {Duration:F1}s, longer than the {Interval}s interval.",
-                tickDuration.TotalSeconds, _config.IntervalSeconds);
+            case TickOutcome.Overrun:
+                _logger.LogWarning(
+                    "Sampling tick took {Duration:F1}s, longer than the {Interval}s interval.",
+                    tickDuration.TotalSeconds, _config.IntervalSeconds);
+                break;
         }
     }
-
-    /// <summary>
-    /// The level an overrunning tick should be logged at, given how many ticks have
-    /// now overrun in a row.
-    /// </summary>
-    public static LogLevel LevelForConsecutiveOverruns(int consecutiveOverruns) =>
-        consecutiveOverruns >= ConsecutiveOverrunsBeforeError
-            ? LogLevel.Error
-            : LogLevel.Warning;
 
     private record PreviousSample(
         long KernelTime, long UserTime, long ElapsedTicks,

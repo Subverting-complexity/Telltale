@@ -23,11 +23,22 @@ public interface IProcessIdentitySource
     /// The full path of the executable behind <paramref name="pid"/>, or null when
     /// it cannot be read. Never throws.
     /// </summary>
+    /// <remarks>
+    /// A null here is an answer, not a failure. Protected processes and processes
+    /// that have already exited both give one, and both are routine.
+    /// </remarks>
     string? GetPath(int pid);
 
     /// <summary>
-    /// The command lines of every requested pid that could be read, in one call.
-    /// A pid missing from the result had no readable command line. Never throws.
+    /// The command lines of the requested pids, in one call. A pid present in the
+    /// result with a null value has no readable command line, which is an answer. A
+    /// pid missing from the result was not running by the time the lookup ran.
     /// </summary>
-    IReadOnlyDictionary<int, string?> GetCommandLines(IReadOnlyCollection<int> pids);
+    /// <returns>
+    /// Null when the lookup itself failed and answered nothing, which is different
+    /// from answering that a process has no command line. The caller must not treat
+    /// a failure as a set of empty answers, or one bad lookup would be remembered as
+    /// the truth about every process running at that moment. Never throws.
+    /// </returns>
+    IReadOnlyDictionary<int, string?>? GetCommandLines(IReadOnlyCollection<int> pids);
 }

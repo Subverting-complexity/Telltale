@@ -93,6 +93,60 @@ public class ProcessIdentityResolverTests
     }
 
     [Fact]
+    public void Resolve_RemembersNothingFromALookupThatFailed()
+    {
+        var source = new RecordingIdentitySource { CommandLineLookupFails = true };
+        source.CommandLines[100] = @"C:pp.exe --one";
+        var resolver = new ProcessIdentityResolver(source, Config(recordCommandLines: true));
+
+        resolver.Resolve([Key(100)]);
+        Assert.Null(resolver.For(Key(100)).CommandLine);
+
+        source.CommandLineLookupFails = false;
+        source.Clear();
+        resolver.Resolve([Key(100)]);
+
+        // A failed lookup answers nothing about any process. Remembering it as "this
+        // process has no command line" would take one bad moment as the truth about
+        // everything running during it, for as long as those processes keep running.
+        Assert.Equal(@"C:pp.exe --one", resolver.For(Key(100)).CommandLine);
+    }
+
+    [Fact]
+    public void Resolve_DoesNotRepeatThePathLookupWhileTheCommandLineLookupKeepsFailing()
+    {
+        var source = new RecordingIdentitySource { CommandLineLookupFails = true };
+        var resolver = new ProcessIdentityResolver(source, Config(recordCommandLines: true));
+
+        resolver.Resolve([Key(100), Key(200)]);
+        source.Clear();
+        resolver.Resolve([Key(100), Key(200)]);
+
+        // Retrying costs one command line lookup per tick, not one path lookup per
+        // process, because the paths are a separate answer and they succeeded.
+        Assert.Empty(source.PathRequests);
+        Assert.Single(source.CommandLineBatches);
+        Assert.Equal(@"C:\p100.exe", resolver.For(Key(100)).Path);
+    }
+
+    [Fact]
+    public void Resolve_KeepsAnAnsweredAbsenceRatherThanAskingAgainForever()
+    {
+        var source = new RecordingIdentitySource();
+        var resolver = new ProcessIdentityResolver(source, Config(recordCommandLines: true));
+
+        // The lookup succeeded and said this process has no readable command line. That
+        // is an answer, so asking again every tick would put back the per-tick cost for
+        // exactly the processes that will never have one.
+        resolver.Resolve([Key(100)]);
+        source.Clear();
+        resolver.Resolve([Key(100)]);
+
+        Assert.Empty(source.CommandLineBatches);
+        Assert.Null(resolver.For(Key(100)).CommandLine);
+    }
+
+    [Fact]
     public void Resolve_LeavesThePseudoProcessesAlone()
     {
         var source = new RecordingIdentitySource();
@@ -191,9 +245,15 @@ public class ProcessIdentityResolverTests
             return Paths.TryGetValue(pid, out var path) ? path : $@"C:\p{pid}.exe";
         }
 
-        public IReadOnlyDictionary<int, string?> GetCommandLines(IReadOnlyCollection<int> pids)
+        /// <summary>When set, the next lookup fails outright instead of answering.</summary>
+        public bool CommandLineLookupFails { get; set; }
+
+        public IReadOnlyDictionary<int, string?>? GetCommandLines(IReadOnlyCollection<int> pids)
         {
             CommandLineBatches.Add([.. pids]);
+
+            if (CommandLineLookupFails)
+                return null;
 
             var found = new Dictionary<int, string?>();
             foreach (var pid in pids)
