@@ -1,14 +1,13 @@
-using Microsoft.AspNetCore.Mvc.Testing;
 using System.Net;
 using System.Text.Json;
 
 namespace Viewer.Tests;
 
-public class ViewerApiTests : IClassFixture<WebApplicationFactory<Program>>
+public class ViewerApiTests : IClassFixture<TelltaleTestFactory>
 {
     private readonly HttpClient _client;
 
-    public ViewerApiTests(WebApplicationFactory<Program> factory)
+    public ViewerApiTests(TelltaleTestFactory factory)
     {
         _client = factory.CreateClient();
     }

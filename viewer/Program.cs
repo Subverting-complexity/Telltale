@@ -30,7 +30,7 @@ try
 
     var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-    string dbPath = Environment.GetEnvironmentVariable("TELLTALE_DB")
+    string dbPath = builder.Configuration["TELLTALE_DB"]
         ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Telltale", "telltale.db");
 
