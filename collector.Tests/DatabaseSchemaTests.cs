@@ -175,6 +175,15 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
             using (new Database(path, logger, vacuumOnStartup: true))
             {
                 Assert.Equal(AutoVacuumIncremental, Convert.ToInt64(ScalarOn(path, "PRAGMA auto_vacuum")));
+
+                // Checked while the database is still open, because that is the whole
+                // point: VACUUM pushes the rewrite through the write ahead log, so
+                // without the checkpoint the log stays roughly the size of the
+                // database until the first rollup cycle five minutes later.
+                var wal = new FileInfo(path + "-wal");
+                Assert.True(!wal.Exists || wal.Length == 0,
+                    $"The write ahead log still holds {wal.Length} bytes, so the "
+                    + "conversion did not check it back into the database.");
             }
 
             Assert.DoesNotContain(logger.Entries, e => e.Level == LogLevel.Warning);
@@ -267,12 +276,14 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
     }
 
     /// <summary>
-    /// Makes the rewrite fail. The write ahead log has to go first: in WAL mode a
-    /// VACUUM writes the rewritten pages into the log rather than the database file,
-    /// so a read-only database file on its own does not stop it. With no log to fall
-    /// back on the VACUUM has to write the file itself and fails immediately, which
-    /// is why this costs milliseconds rather than the thirty second wait an
+    /// Makes the rewrite fail, in milliseconds rather than the thirty second wait an
     /// exclusive lock on another connection would cost.
+    ///
+    /// The read-only attribute is what does the work: SQLite marks the connection
+    /// read-only when it cannot open the file for writing, and the VACUUM then fails
+    /// immediately. The log files are deleted first only as belt and braces. By this
+    /// point CreateLegacyDatabase has closed its connection and cleared the pool, so
+    /// SQLite has already removed them and the loop normally finds nothing.
     /// </summary>
     private static void MakeUnwritable(string path)
     {
