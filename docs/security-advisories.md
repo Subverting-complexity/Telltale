@@ -69,11 +69,11 @@ than none.
 **The database path is user-supplied.** `viewer/Program.cs` reads it from
 `TELLTALE_DB` through the standard configuration providers, so an environment
 variable or a command-line argument can point the viewer at any file, and
-`collector/Config.cs` takes a `databasePath` from `telltale.json`. Opening a capture file
-is therefore a supported action, not an anomaly. The realistic vector is not
-only "an attacker overwrote my database" but also "someone was persuaded to open
-a capture file they were sent", which needs no write access to their machine at
-all. My working theory is that a crafted file is a genuine trigger, because a
+`collector/Config.cs` takes a `databasePath` from `telltale.json`. Opening a
+capture file is therefore a supported action, not an anomaly. The realistic
+vector is not only "an attacker overwrote my database" but also "someone was
+persuaded to open a capture file they were sent", which needs no write access to
+their machine at all. My working theory is that a crafted file is a genuine trigger, because a
 malicious database can define `machine` or `sample` as a view whose
 attacker-authored SQL is compiled when the viewer's own fixed query touches it.
 I have not tried to build such a file, so treat that as untested reasoning.
@@ -106,8 +106,10 @@ Worth being explicit about the size of that move: the package version changes by
 two patch releases, but the SQLite engine underneath goes from 3.46.1 to 3.53.3,
 which is seven feature releases. The behavioural risk lives in the engine jump,
 not in the package number. What was checked: the full backend suite passes on the
-new engine, and the collector's rollup statements and the viewer's tier queries
-were run against both 3.46.1 and 3.53.3 and returned identical results.
+new engine, and the collector's rollup statements, the WAL and vacuum pragmas, and
+the viewer's `/api/timeline` tier query were run against both 3.46.1 and 3.53.3 and
+returned identical results. The process-side tier projection was not compared
+across engines.
 
 Moving to the 10.x line also matches the `net10.0` target the projects already
 build against. `Microsoft.Data.Sqlite.Core` 10.0.11 depends only on
