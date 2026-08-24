@@ -30,7 +30,10 @@ try
 
     var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-    string dbPath = Environment.GetEnvironmentVariable("TELLTALE_DB")
+    // Must be read after builder.Build(): that is when the test factory's
+    // configuration override is applied. Hoisting this above the Build call
+    // silently sends the tests back to the real user database.
+    string dbPath = builder.Configuration["TELLTALE_DB"]
         ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Telltale", "telltale.db");
 
