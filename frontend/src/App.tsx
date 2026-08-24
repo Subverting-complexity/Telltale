@@ -8,7 +8,8 @@ import type {
 import type { ProcessCategory } from './utils';
 type DashboardTab = 'overview' | 'alerts' | 'processes';
 import { StatusBar } from './StatusBar';
-import { TimeNav } from './TimeNav';
+import { TimeNav, pad2 } from './TimeNav';
+import type { HourSelection } from './TimeNav';
 import { Timeline } from './Timeline';
 import { ProcessTable } from './ProcessTable';
 import { ProcessDetail } from './ProcessDetail';
@@ -98,7 +99,7 @@ export default function App() {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
   const [refreshKey, setRefreshKey] = useState(0);
-  const [selectedHour, setSelectedHour] = useState<number | null>(null);
+  const [selectedHourRange, setSelectedHourRange] = useState<HourSelection | null>(null);
 
   const chartSectionRef = useRef<HTMLElement>(null);
 
@@ -115,7 +116,7 @@ export default function App() {
     updateUrl(newView);
     setSelectedProcess(null);
     setCustomRange(null);
-    setSelectedHour(null);
+    setSelectedHourRange(null);
   }, []);
 
   const refreshData = useCallback(() => {
@@ -149,14 +150,13 @@ export default function App() {
     setCustomRange({ from, to });
   }
 
-  function handleHourSelect(from: number, to: number) {
-    if (from === 0 && to === 0) {
+  function handleHourSelect(selection: HourSelection | null) {
+    if (selection === null) {
       setCustomRange(null);
-      setSelectedHour(null);
+      setSelectedHourRange(null);
     } else {
-      setCustomRange({ from, to });
-      const d = new Date(from);
-      setSelectedHour(d.getHours());
+      setCustomRange({ from: selection.from, to: selection.to });
+      setSelectedHourRange(selection);
     }
   }
 
@@ -277,7 +277,7 @@ export default function App() {
         view={view}
         onNavigate={navigate}
         onHourSelect={handleHourSelect}
-        selectedHour={selectedHour}
+        selectedHourRange={selectedHourRange}
         minTs={range?.min ?? null}
         maxTs={range?.max ?? null}
       />
@@ -294,11 +294,13 @@ export default function App() {
         {customRange && (
           <div className="custom-range-bar">
             <span>
-              {selectedHour !== null
-                ? `Showing hour: ${selectedHour}:00 - ${selectedHour + 1}:00`
+              {selectedHourRange
+                ? selectedHourRange.startHour === selectedHourRange.endHour
+                  ? `Showing hour: ${pad2(selectedHourRange.startHour)}:00 - ${pad2(selectedHourRange.startHour + 1)}:00`
+                  : `Showing hours: ${pad2(selectedHourRange.startHour)}:00 - ${pad2(selectedHourRange.endHour + 1)}:00`
                 : 'Custom range selected'}
             </span>
-            <button onClick={() => { setCustomRange(null); setSelectedHour(null); }}>
+            <button onClick={() => { setCustomRange(null); setSelectedHourRange(null); }}>
               Show full {view.scale}
             </button>
           </div>

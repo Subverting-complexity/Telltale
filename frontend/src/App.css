@@ -452,6 +452,37 @@ body {
   margin-bottom: 8px;
 }
 
+.hour-filter-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.hour-filter-header .nav-subgrid-label {
+  margin-bottom: 8px;
+}
+
+.hour-reset-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: color 0.15s;
+}
+
+.hour-reset-btn:hover {
+  color: var(--accent);
+}
+
+.hour-reset-btn.active {
+  color: var(--accent);
+}
+
 .year-grid,
 .month-grid {
   display: grid;
@@ -461,9 +492,16 @@ body {
 
 .hour-grid {
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1px;
   margin-top: 0;
+  padding: 3px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .year-grid {
@@ -488,26 +526,28 @@ body {
 }
 
 .hour-cell {
-  min-width: 38px;
-  padding: 6px 6px;
+  flex: 0 0 auto;
+  min-width: 28px;
+  padding: 5px 4px;
   border: 1px solid transparent;
-  border-radius: 7px;
-  background: var(--bg-secondary);
+  border-radius: 6px;
+  background: none;
   color: var(--text-secondary);
   cursor: pointer;
   text-align: center;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.hour-cell-all {
-  font-weight: 600;
-  color: var(--text-primary);
-  border-right: 1px solid var(--border);
-  border-radius: 7px 0 0 7px;
-  margin-right: 3px;
-  padding-right: 12px;
+.hour-cell.group-end {
+  margin-right: 6px;
+}
+
+.hour-range-hint {
+  margin: 6px 0 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
 }
 
 .month-cell.has-data,
@@ -518,7 +558,7 @@ body {
 
 .hour-cell.has-data {
   color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .month-cell.no-data,
@@ -542,10 +582,21 @@ body {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+  opacity: 1;
 }
 
-.hour-cell-all.selected {
-  border-right-color: var(--accent);
+.hour-cell.selected {
+  border-radius: 0;
+}
+
+.hour-cell.selected.range-start {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+
+.hour-cell.selected.range-end {
+  border-top-right-radius: 6px;
+  border-bottom-right-radius: 6px;
 }
 
 .month-cell:hover,
