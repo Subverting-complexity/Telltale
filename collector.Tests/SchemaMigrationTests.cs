@@ -167,6 +167,39 @@ public class SchemaMigrationTests : IDisposable
     }
 
     [Fact]
+    public void DatabaseWithNoRecordedVersion_HasEveryMigrationReplayedSafely()
+    {
+        string path = CreateLegacyDatabase();
+
+        using (var conn = Connect(path))
+        {
+            long instanceId = InsertInstance(conn, pid: 8);
+            InsertRollupRow(conn, "sample_1m", BucketStart, instanceId,
+                cpuAvg: 10, cpuMax: 20, privateMax: 30, workingSetMax: 40, ioTotal: 50, sampleCount: 3);
+            InsertRollupRow(conn, "sample_1m", BucketStart, instanceId,
+                cpuAvg: 20, cpuMax: 25, privateMax: 35, workingSetMax: 45, ioTotal: 55, sampleCount: 1);
+
+            // A schema_version table that exists but records nothing. ReadVersion
+            // reports 0 for it, which replays every migration, so this is the case
+            // that the guarded statements in each migration exist to survive.
+            Execute(conn, "DELETE FROM schema_version");
+            Assert.Equal(0, SchemaMigrations.ReadVersion(conn));
+        }
+
+        using (OpenCollectorDatabase(path)) { }
+
+        using var check = Connect(path);
+
+        // (10*3 + 20*1) / 4 = 12.5.
+        Assert.Equal(1L, Scalar(check, "SELECT COUNT(*) FROM sample_1m"));
+        Assert.Equal(12.5, ScalarDouble(check, "SELECT cpu_pct_avg FROM sample_1m"), 6);
+        Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(check));
+
+        using var fresh = Connect(OpenCollectorDatabase(NewDbPath()).Path);
+        Assert.Equal(Shape(fresh), Shape(check));
+    }
+
+    [Fact]
     public void MigratedDatabase_EndsAtTheSameShapeAsAFreshOne()
     {
         string legacyPath = CreateLegacyDatabase();

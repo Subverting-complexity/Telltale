@@ -22,7 +22,20 @@ public sealed class Database : IDisposable
 
         _conn = new SqliteConnection($"Data Source={dbPath}");
         _conn.Open();
-        InitSchema();
+
+        try
+        {
+            InitSchema();
+        }
+        catch
+        {
+            // InitSchema now runs migrations against whatever an older build left
+            // behind, so it has a real chance of throwing. Without this the
+            // connection would stay open on an unreachable object and keep the
+            // database file and its write ahead log locked until finalization.
+            _conn.Dispose();
+            throw;
+        }
     }
 
     private void InitSchema()
@@ -48,9 +61,19 @@ public sealed class Database : IDisposable
             return;
         }
 
-        cmd.CommandText = CreateSchemaSql;
-        cmd.ExecuteNonQuery();
+        // One transaction for the whole schema. Interrupted half way without it,
+        // the database would keep a schema_version row saying 2 over tables that
+        // were never created, and every later start would read that version, skip
+        // the migrations and fail with no way back.
+        using (var tx = _conn.BeginTransaction())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = CreateSchemaSql;
+            cmd.ExecuteNonQuery();
+            tx.Commit();
+        }
 
+        cmd.Transaction = null;
         SchemaVersion = SchemaMigrations.LatestVersion;
         _logger.LogInformation("Database schema created (version {Version}).", SchemaVersion);
     }

@@ -75,21 +75,40 @@ public static class SchemaMigrations
             // row that records it. A failure part way through rolls the whole
             // step back, so the database stays at the version it came in at
             // rather than at a shape no version describes.
-            using var tx = conn.BeginTransaction();
-            using var cmd = conn.CreateCommand();
-            cmd.Transaction = tx;
+            // A migration rewrites whole tables, and the rollup tables can hold
+            // months of rows, so this can take a noticeable time on a database
+            // that has been recording for a while. It runs before the collector
+            // takes its first sample, so time it and say so rather than leaving an
+            // unexplained pause at startup.
+            var started = System.Diagnostics.Stopwatch.StartNew();
 
-            cmd.CommandText = migration.Sql;
-            cmd.ExecuteNonQuery();
+            using (var tx = conn.BeginTransaction())
+            using (var cmd = conn.CreateCommand())
+            {
+                cmd.Transaction = tx;
 
-            cmd.CommandText = "INSERT OR IGNORE INTO schema_version (version) VALUES (@version)";
-            cmd.Parameters.AddWithValue("@version", migration.Version);
-            cmd.ExecuteNonQuery();
+                cmd.CommandText = migration.Sql;
+                cmd.ExecuteNonQuery();
 
-            tx.Commit();
+                cmd.CommandText = "INSERT OR IGNORE INTO schema_version (version) VALUES (@version)";
+                cmd.Parameters.AddWithValue("@version", migration.Version);
+                cmd.ExecuteNonQuery();
 
-            logger.LogInformation("Applied schema migration {Version}: {Description}.",
-                migration.Version, migration.Description);
+                tx.Commit();
+            }
+
+            logger.LogInformation("Applied schema migration {Version} in {ElapsedMs} ms: {Description}.",
+                migration.Version, started.ElapsedMilliseconds, migration.Description);
+        }
+
+        // The rewrite above sits in the write ahead log until something checkpoints
+        // it, which would otherwise be the first rollup cycle minutes later. Until
+        // then the sidecar holds a second copy of everything the migration touched,
+        // which can push a database well past the size cap it is meant to keep to.
+        using (var checkpoint = conn.CreateCommand())
+        {
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(TRUNCATE)";
+            checkpoint.ExecuteNonQuery();
         }
 
         // Read back rather than assuming LatestVersion, so that raising it without
@@ -145,6 +164,12 @@ public static class SchemaMigrations
         GROUP BY ts, instance_id
         HAVING COUNT(*) > 1;
 
+        -- The delete below probes this table once per row of sample_1m. SQLite
+        -- would most likely build an automatic index for that, but this is the
+        -- largest table in the database and the cost of being wrong is quadratic,
+        -- so the index is not left to chance.
+        CREATE UNIQUE INDEX sample_1m_dedupe_key ON sample_1m_dedupe(ts, instance_id);
+
         DELETE FROM sample_1m
         WHERE EXISTS (SELECT 1 FROM sample_1m_dedupe d
                       WHERE d.ts = sample_1m.ts AND d.instance_id = sample_1m.instance_id);
@@ -173,6 +198,8 @@ public static class SchemaMigrations
         FROM sample_10m
         GROUP BY ts, instance_id
         HAVING COUNT(*) > 1;
+
+        CREATE UNIQUE INDEX sample_10m_dedupe_key ON sample_10m_dedupe(ts, instance_id);
 
         DELETE FROM sample_10m
         WHERE EXISTS (SELECT 1 FROM sample_10m_dedupe d
