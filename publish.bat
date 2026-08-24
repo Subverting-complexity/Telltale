@@ -35,10 +35,10 @@ xcopy /s /y /q "%ROOT%viewer\wwwroot\*" "%ROOT%publish\viewer\wwwroot\" >nul
 echo.
 echo Build complete. Output in publish\
 echo.
-echo   publish\collector\Collector.exe  - Background process recorder
-echo   publish\viewer\Viewer.exe        - Web-based viewer (http://localhost:5111)
+echo   publish\collector\TelltaleCapture.exe  - Background process recorder
+echo   publish\viewer\TelltaleViewer.exe      - Web-based viewer (http://localhost:5111)
 echo.
-echo To run: start Collector.exe first, then open Viewer.exe.
+echo To run: start TelltaleCapture.exe first, then open TelltaleViewer.exe.
 goto :end
 
 :fail

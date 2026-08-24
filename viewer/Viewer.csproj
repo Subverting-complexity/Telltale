@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Telltale.Viewer</RootNamespace>
+    <AssemblyName>TelltaleViewer</AssemblyName>
     <NoWarn>NU1903</NoWarn>
   </PropertyGroup>
 

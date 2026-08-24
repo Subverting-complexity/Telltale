@@ -15,3 +15,6 @@ publish/
 .vscode/
 *.user
 *.suo
+
+## Local deploy
+deploy.bat
