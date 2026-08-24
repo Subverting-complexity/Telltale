@@ -210,6 +210,92 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
         }
     }
 
+    [Fact]
+    public void ConversionThatCannotWrite_LeavesTheDatabaseUsableAndSaysWhy()
+    {
+        string path = CreateLegacyDatabase();
+        try
+        {
+            MakeUnwritable(path);
+            var logger = new RecordingLogger();
+
+            // The constructor is the DI factory, resolved while the host starts, and
+            // Program.cs has no catch. If this throws, the collector stops running
+            // entirely and does so again on every start, which is far worse than the
+            // unreclaimed disk the conversion was meant to fix.
+            using (var db = new Database(path, logger, vacuumOnStartup: true))
+            {
+                // The Error log is only written from the catch block, so reaching it
+                // proves the VACUUM threw and was handled rather than never failing.
+                Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error);
+            }
+
+            MakeWritable(path);
+            Assert.Equal(AutoVacuumNone, Convert.ToInt64(ScalarOn(path, "PRAGMA auto_vacuum")));
+        }
+        finally
+        {
+            MakeWritable(path);
+            Cleanup(path);
+        }
+    }
+
+    [Fact]
+    public void ConversionThatCannotWrite_StillLetsTheCollectorCapture()
+    {
+        string path = CreateLegacyDatabase();
+        try
+        {
+            MakeUnwritable(path);
+            new Database(path, new RecordingLogger(), vacuumOnStartup: true).Dispose();
+
+            // Not throwing is only half of it. The database has to still be usable
+            // once whatever blocked the rewrite is gone, because failing to reclaim
+            // space is not a reason to stop recording.
+            MakeWritable(path);
+            using var reopened = new Database(path, new RecordingLogger());
+            long id = reopened.GetOrCreateProcessInstance(1, 100, "after.exe", null, null, 1_000);
+            reopened.WriteSampleBatch(1_000, [new SampleRow(id, 1.0, 10, 20, 1, 1, 1)]);
+
+            Assert.Equal(1L, Convert.ToInt64(ScalarOn(path, "SELECT COUNT(*) FROM sample")));
+        }
+        finally
+        {
+            MakeWritable(path);
+            Cleanup(path);
+        }
+    }
+
+    /// <summary>
+    /// Makes the rewrite fail. The write ahead log has to go first: in WAL mode a
+    /// VACUUM writes the rewritten pages into the log rather than the database file,
+    /// so a read-only database file on its own does not stop it. With no log to fall
+    /// back on the VACUUM has to write the file itself and fails immediately, which
+    /// is why this costs milliseconds rather than the thirty second wait an
+    /// exclusive lock on another connection would cost.
+    /// </summary>
+    private static void MakeUnwritable(string path)
+    {
+        SqliteConnection.ClearAllPools();
+        foreach (var suffix in new[] { "-wal", "-shm" })
+        {
+            try { File.Delete(path + suffix); } catch { /* may not exist */ }
+        }
+        File.SetAttributes(path, FileAttributes.ReadOnly);
+    }
+
+    /// <summary>
+    /// Undoes <see cref="MakeUnwritable"/>. The pool has to be cleared as well as
+    /// the attribute: SQLite decides a connection is read-only when it opens the
+    /// file, and a pooled connection opened while the file was read-only keeps that
+    /// decision however the attribute changes afterwards.
+    /// </summary>
+    private static void MakeWritable(string path)
+    {
+        try { File.SetAttributes(path, FileAttributes.Normal); } catch { /* already gone */ }
+        SqliteConnection.ClearAllPools();
+    }
+
     /// <summary>
     /// Builds a database the way the collector did before issue #37 was fixed: WAL
     /// first, which writes the header, so the auto_vacuum request that follows has

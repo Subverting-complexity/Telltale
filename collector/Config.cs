@@ -18,8 +18,8 @@ public sealed partial class TelltaleConfig
     /// <summary>
     /// Whether to convert a database that predates the auto_vacuum ordering fix on
     /// the next start. The conversion is a full VACUUM: it rewrites the whole file
-    /// and needs about as much free disk again, so it is off by default and the
-    /// collector only logs that it is available.
+    /// and needs roughly twice its size in free disk while it runs, so it is off by
+    /// default and the collector only logs that it is available.
     /// </summary>
     public bool VacuumOnStartup { get; set; }
     public ThresholdConfig Thresholds { get; set; } = new();
