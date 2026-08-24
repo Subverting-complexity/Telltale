@@ -96,7 +96,7 @@ public class ProcessIdentityResolverTests
     public void Resolve_RemembersNothingFromALookupThatFailed()
     {
         var source = new RecordingIdentitySource { CommandLineLookupFails = true };
-        source.CommandLines[100] = @"C:pp.exe --one";
+        source.CommandLines[100] = @"C:\app.exe --one";
         var resolver = new ProcessIdentityResolver(source, Config(recordCommandLines: true));
 
         resolver.Resolve([Key(100)]);
@@ -109,7 +109,7 @@ public class ProcessIdentityResolverTests
         // A failed lookup answers nothing about any process. Remembering it as "this
         // process has no command line" would take one bad moment as the truth about
         // everything running during it, for as long as those processes keep running.
-        Assert.Equal(@"C:pp.exe --one", resolver.For(Key(100)).CommandLine);
+        Assert.Equal(@"C:\app.exe --one", resolver.For(Key(100)).CommandLine);
     }
 
     [Fact]
