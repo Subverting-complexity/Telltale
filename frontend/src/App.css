@@ -461,9 +461,16 @@ body {
 
 .hour-grid {
   display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 1px;
   margin-top: 0;
+  padding: 3px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 .year-grid {
@@ -488,26 +495,29 @@ body {
 }
 
 .hour-cell {
-  min-width: 38px;
-  padding: 6px 6px;
+  flex: 0 0 auto;
+  min-width: 28px;
+  padding: 5px 4px;
   border: 1px solid transparent;
-  border-radius: 7px;
-  background: var(--bg-secondary);
+  border-radius: 6px;
+  background: none;
   color: var(--text-secondary);
   cursor: pointer;
   text-align: center;
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-variant-numeric: tabular-nums;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
 .hour-cell-all {
+  flex: 0 0 auto;
   font-weight: 600;
   color: var(--text-primary);
+  margin-right: 5px;
+  padding-left: 10px;
+  padding-right: 10px;
   border-right: 1px solid var(--border);
-  border-radius: 7px 0 0 7px;
-  margin-right: 3px;
-  padding-right: 12px;
+  border-radius: 6px 0 0 6px;
 }
 
 .month-cell.has-data,
@@ -518,7 +528,7 @@ body {
 
 .hour-cell.has-data {
   color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .month-cell.no-data,

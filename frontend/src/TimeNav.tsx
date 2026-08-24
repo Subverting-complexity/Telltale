@@ -10,7 +10,7 @@ interface TimeNavProps {
   maxTs: number | null;
 }
 
-const SCALES: ViewScale[] = ['year', 'month', 'week', 'day'];
+const SCALES: ViewScale[] = ['day', 'week', 'month', 'year'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function formatHourLabel(hour: number): string {
