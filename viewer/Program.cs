@@ -171,16 +171,19 @@ try
 
         if (grouped)
         {
+            // Every instance in one tier row covers the same wall-clock span, so the
+            // instant's weight is that span rather than the sum over instances.
+            string weightedCpu = TierSql.WeightedAvgExpr("sub.ts_cpu", "sub.ts_weight");
             string sortExpr = sort switch
             {
                 "memory" => "MAX(sub.ts_mem)",
                 "io" => "SUM(sub.ts_io)",
                 "name" => "sub.name",
-                _ => "AVG(sub.ts_cpu)"
+                _ => weightedCpu
             };
             cmd.CommandText = $"""
                 SELECT sub.name,
-                       AVG(sub.ts_cpu) as avg_cpu_pct,
+                       {TierSql.WeightedAvg("sub.ts_cpu", "avg_cpu_pct", "sub.ts_weight")},
                        MAX(sub.ts_mem) as peak_private_mb,
                        SUM(sub.ts_io) as total_io_kb,
                        MAX(sub.inst_cnt) as instance_count,
@@ -190,7 +193,8 @@ try
                            SUM(s.cpu_pct) as ts_cpu,
                            SUM(s.private_mb) as ts_mem,
                            SUM(s.io_kb) as ts_io,
-                           COUNT(DISTINCT s.instance_id) as inst_cnt
+                           COUNT(DISTINCT s.instance_id) as inst_cnt,
+                           MAX(s.weight) as ts_weight
                     FROM {source.Sql} s
                     JOIN process_instance pi ON pi.id = s.instance_id
                     WHERE s.ts >= @from AND s.ts <= @to
@@ -209,11 +213,11 @@ try
                 "memory" => $"MAX(s.private_mb)",
                 "io" => $"SUM(s.io_kb)",
                 "name" => "pi.name",
-                _ => $"AVG(s.cpu_pct)"
+                _ => TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight")
             };
             cmd.CommandText = $"""
                 SELECT pi.id, pi.pid, pi.name, pi.path,
-                       AVG(s.cpu_pct) as avg_cpu_pct,
+                       {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu_pct", "s.weight")},
                        MAX(s.private_mb) as peak_private_mb,
                        SUM(s.io_kb) as total_io_kb
                 FROM {source.Sql} s
@@ -414,13 +418,17 @@ try
 
             var plan = PlanTiers(conn, from, now, isMachine: false);
             TierSource source = TierSql.Source(plan, isMachine: false);
+            // A threshold has to be compared against a time-weighted mean, or whether
+            // an alert fires depends on how much of the window came from the raw
+            // tier rather than on how the process actually behaved.
+            string alertAvgCpu = TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight");
             cmd.CommandText = $"""
                 SELECT pi.name,
-                       AVG(s.cpu_pct) as avg_cpu,
-                       MAX(s.cpu_pct) as peak_cpu,
+                       {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu", "s.weight")},
+                       MAX(s.cpu_pct_peak) as peak_cpu,
                        MAX(s.private_mb) as peak_memory_mb,
                        SUM(s.io_kb) as total_io_kb,
-                       COUNT(*) as sample_count,
+                       SUM(s.weight) as sample_count,
                        COUNT(DISTINCT s.instance_id) as instance_count,
                        MIN(s.ts) as first_ts,
                        MAX(s.ts) as last_ts
@@ -429,8 +437,8 @@ try
                 WHERE s.ts >= @from AND s.ts <= @to
                   AND LOWER(pi.name) != 'idle'
                 GROUP BY pi.name
-                HAVING AVG(s.cpu_pct) > {ProcessCpuNotablePct} OR MAX(s.private_mb) > {ProcessMemoryNotableMb}
-                ORDER BY AVG(s.cpu_pct) DESC
+                HAVING {alertAvgCpu} > {ProcessCpuNotablePct} OR MAX(s.private_mb) > {ProcessMemoryNotableMb}
+                ORDER BY {alertAvgCpu} DESC
                 LIMIT 50
                 """;
 
@@ -463,7 +471,9 @@ try
                     peakCpuPct = Math.Round(peakCpu, 2),
                     peakMemoryMb = Math.Round(peakMemMb, 1),
                     totalIoKb = Math.Round(totalIoKb, 0),
-                    sampleCount = reader.GetInt32(5),
+                    // Raw samples represented, not rows read: a rollup row stands for
+                    // however many raw samples went into it.
+                    sampleCount = reader.GetInt64(5),
                     instanceCount = reader.GetInt32(6),
                     firstTs = reader.GetInt64(7),
                     lastTs = reader.GetInt64(8),
@@ -634,13 +644,26 @@ try
                 _ => "cpu_pct"
             };
 
+            // Only CPU and disk busy store a rollup maximum. For the other two the
+            // best available peak is still the averaged column, which understates a
+            // peak inside a rollup row. That understatement is pre-existing; what
+            // matters here is not mixing a raw peak with a rollup average.
+            string peakCol = metric switch
+            {
+                "disk" => "disk_busy_pct_peak",
+                "cpu" => "cpu_pct_peak",
+                _ => metricCol
+            };
+
             using var cmd = conn.CreateCommand();
+            // An hour cell can straddle the retention boundary, so it can hold rows
+            // from two tiers even though each is internally uniform.
             cmd.CommandText = $"""
                 SELECT (ts - @from) / 86400000 as day_offset,
                        ((ts % 86400000) / 3600000) as hour,
-                       AVG({metricCol}) as avg_val,
-                       MAX({metricCol}) as peak_val,
-                       COUNT(*) as cnt
+                       {TierSql.WeightedAvg(metricCol, "avg_val")},
+                       MAX({peakCol}) as peak_val,
+                       SUM(weight) as cnt
                 FROM {source.Sql}
                 WHERE ts >= @from AND ts <= @to
                 GROUP BY day_offset, hour

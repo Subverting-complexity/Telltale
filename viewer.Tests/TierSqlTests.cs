@@ -22,6 +22,32 @@ public class TierSqlTests : IDisposable
 
     const long RollupStart = Now - 12 * Hour;
 
+    /// <summary>CPU level each side of the boundary holds steadily in the seed.</summary>
+    const double RollupCpu = 20.0;
+    const double RawCpu = 40.0;
+
+    /// <summary>
+    /// A peak stored on the rollup rows that is above their average and below the
+    /// raw level, so a query reading the averaged column instead of the stored
+    /// maximum is distinguishable from one reading either level.
+    /// </summary>
+    const double RollupCpuPeak = 35.0;
+
+    /// <summary>Raw samples behind one rollup row: one minute at the 5 second raw interval.</summary>
+    const int RollupSampleCount = 12;
+
+    /// <summary>
+    /// The boundary sits halfway through the seeded range, so each tier covers the
+    /// same amount of time and a correctly time-weighted mean is the midpoint of
+    /// the two levels. An unweighted mean lands near the raw level instead,
+    /// because the raw tier contributes twelve times as many rows for that time.
+    ///
+    /// Comparisons against it allow a couple of decimal places: the raw side is
+    /// seeded through an inclusive endpoint, so it carries one row more than an
+    /// exact half and the true midpoint sits a thousandth above this.
+    /// </summary>
+    const double TimeWeightedCpu = (RollupCpu + RawCpu) / 2;
+
     readonly SqliteConnection _conn;
 
     public TierSqlTests()
@@ -67,14 +93,16 @@ public class TierSqlTests : IDisposable
         for (long ts = RollupStart; ts < Boundary; ts += Minute)
         {
             Execute($"""
-                INSERT INTO machine_1m (ts, cpu_pct_avg, memory_avail_mb_avg, memory_total_mb,
-                                        commit_mb_max, hard_faults_total, disk_read_ms_avg,
-                                        disk_write_ms_avg, disk_busy_pct_avg, net_kbps_avg,
-                                        gpu_busy_pct_avg, sample_count)
-                VALUES ({ts}, 20.0, 8000.0, 16000.0, 4000.0, 5, 1.0, 2.0, 10.0, 100.0, 3.0, 12);
+                INSERT INTO machine_1m (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg,
+                                        memory_total_mb, commit_mb_max, hard_faults_total,
+                                        disk_read_ms_avg, disk_write_ms_avg, disk_busy_pct_avg,
+                                        disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg,
+                                        sample_count)
+                VALUES ({ts}, {RollupCpu}, {RollupCpuPeak}, 8000.0, 16000.0, 4000.0, 5, 1.0, 2.0,
+                        10.0, 18.0, 100.0, 3.0, {RollupSampleCount});
                 INSERT INTO sample_1m (ts, instance_id, cpu_pct_avg, cpu_pct_max,
                                        private_mb_max, working_set_mb_max, io_kb_total, sample_count)
-                VALUES ({ts}, 1, 20.0, 35.0, 500.0, 600.0, 120.0, 12);
+                VALUES ({ts}, 1, {RollupCpu}, {RollupCpuPeak}, 500.0, 600.0, 120.0, {RollupSampleCount});
                 """, tx);
         }
 
@@ -85,9 +113,9 @@ public class TierSqlTests : IDisposable
                 INSERT INTO machine (ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
                                      disk_read_ms, disk_write_ms, memory_total_mb,
                                      disk_busy_pct, net_kbps, gpu_busy_pct)
-                VALUES ({ts}, 40.0, 6000.0, 5000.0, 9, 3.0, 4.0, 16000.0, 30.0, 300.0, 7.0);
+                VALUES ({ts}, {RawCpu}, 6000.0, 5000.0, 9, 3.0, 4.0, 16000.0, 30.0, 300.0, 7.0);
                 INSERT INTO sample (ts, instance_id, cpu_pct, private_mb, working_set_mb, io_kb, threads, handles)
-                VALUES ({ts}, 1, 40.0, 700.0, 800.0, 10.0, 12, 300);
+                VALUES ({ts}, 1, {RawCpu}, 700.0, 800.0, 10.0, 12, 300);
                 """, tx);
         }
 
@@ -203,14 +231,44 @@ public class TierSqlTests : IDisposable
         Assert.Equal(timestamps.Distinct().Count(), timestamps.Count);
     }
 
+    /// <summary>
+    /// A range served by one raw tier is still projected rather than named bare.
+    /// Callers aggregate with the weight column unconditionally, so it has to
+    /// exist whichever tiers were chosen.
+    /// </summary>
     [Fact]
-    public void RangeInsideRawTierReadsTheTableDirectly()
+    public void RangeInsideRawTierStillCarriesWeightAndPeakColumns()
     {
         var plan = Plan(Boundary, Now, isMachine: true);
         TierSource source = TierSql.Source(plan, isMachine: true);
 
-        Assert.Equal("machine", source.Sql);
-        Assert.Empty(source.Parameters);
+        Assert.True(plan.IsSingleRawTier);
+        Assert.Contains("FROM machine ", source.Sql);
+        Assert.Contains("1 AS weight", source.Sql);
+        Assert.Contains("cpu_pct AS cpu_pct_peak", source.Sql);
+        Assert.NotEmpty(source.Parameters);
+    }
+
+    /// <summary>Every raw row stands for itself, so weighting cannot shift a single-tier answer.</summary>
+    [Fact]
+    public void SingleRawTierWeightingMatchesAPlainAverage()
+    {
+        var plan = Plan(Boundary, Now, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT {TierSql.WeightedAvg("s.cpu_pct", "weighted", "s.weight")}, AVG(s.cpu_pct) as plain
+            FROM {source.Sql} s WHERE s.ts >= @from AND s.ts <= @to
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", Boundary);
+        cmd.Parameters.AddWithValue("@to", Now);
+
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+        Assert.Equal(reader.GetDouble(1), reader.GetDouble(0), precision: 6);
+        Assert.Equal(RawCpu, reader.GetDouble(0), precision: 6);
     }
 
     [Fact]
@@ -367,5 +425,208 @@ public class TierSqlTests : IDisposable
         Assert.Contains("private_mb_max AS private_mb", source.Sql);
         Assert.Contains("io_kb_total AS io_kb", source.Sql);
         Assert.Contains("instance_id", source.Sql);
+    }
+
+    // --- Weighting rows by the time they cover ---
+
+    /// <summary>
+    /// The ungrouped /api/processes average. The seeded range is half rollup and
+    /// half raw at two different steady levels, so the honest answer is the
+    /// midpoint. Counting rows equally pulls it most of the way to the raw level.
+    /// </summary>
+    [Fact]
+    public void UngroupedProcessAverageIsWeightedByTimeNotRowCount()
+    {
+        var plan = Plan(RollupStart, Now, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT {TierSql.WeightedAvg("s.cpu_pct", "weighted", "s.weight")},
+                   AVG(s.cpu_pct) as unweighted
+            FROM {source.Sql} s
+            JOIN process_instance pi ON pi.id = s.instance_id
+            WHERE s.ts >= @from AND s.ts <= @to
+            GROUP BY pi.id
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", RollupStart);
+        cmd.Parameters.AddWithValue("@to", Now);
+
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+        double weighted = reader.GetDouble(0);
+        double unweighted = reader.GetDouble(1);
+
+        Assert.Equal(TimeWeightedCpu, weighted, precision: 2);
+
+        // Guards the test itself: if the seed ever stopped exercising the bias,
+        // the assertion above would pass for the wrong reason.
+        Assert.True(unweighted > TimeWeightedCpu + 5,
+            $"seed no longer exercises the bias: unweighted {unweighted} is not far from {TimeWeightedCpu}");
+    }
+
+    /// <summary>The grouped /api/processes shape, which weights per instant rather than per row.</summary>
+    [Fact]
+    public void GroupedProcessAverageIsWeightedByTimeNotRowCount()
+    {
+        var plan = Plan(RollupStart, Now, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT sub.name,
+                   {TierSql.WeightedAvg("sub.ts_cpu", "avg_cpu_pct", "sub.ts_weight")},
+                   AVG(sub.ts_cpu) as unweighted
+            FROM (
+                SELECT pi.name, SUM(s.cpu_pct) as ts_cpu, MAX(s.weight) as ts_weight
+                FROM {source.Sql} s
+                JOIN process_instance pi ON pi.id = s.instance_id
+                WHERE s.ts >= @from AND s.ts <= @to
+                GROUP BY pi.name, s.ts
+            ) sub
+            GROUP BY sub.name
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", RollupStart);
+        cmd.Parameters.AddWithValue("@to", Now);
+
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+
+        Assert.Equal(TimeWeightedCpu, reader.GetDouble(1), precision: 2);
+        Assert.True(reader.GetDouble(2) > TimeWeightedCpu + 5);
+    }
+
+    /// <summary>
+    /// Shifting the window changes how much of it each tier serves. A time-weighted
+    /// mean should follow that shift in proportion to the time involved, which here
+    /// means tracking the seeded levels exactly. Counting rows equally barely
+    /// responds at all, because the raw tier already dominates the row count in
+    /// both windows: an hour of real composition change moves it about one point
+    /// where the honest answer moves five.
+    /// </summary>
+    [Fact]
+    public void AverageTracksTimeProportionAsTheWindowShifts()
+    {
+        (double Weighted, double Unweighted) Average(long from, long to)
+        {
+            var plan = Plan(from, to, isMachine: false);
+            TierSource source = TierSql.Source(plan, isMachine: false);
+
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = $"""
+                SELECT {TierSql.WeightedAvg("s.cpu_pct", "weighted", "s.weight")},
+                       AVG(s.cpu_pct) as unweighted
+                FROM {source.Sql} s WHERE s.ts >= @from AND s.ts <= @to
+                """;
+            AddBounds(cmd, source);
+            cmd.Parameters.AddWithValue("@from", from);
+            cmd.Parameters.AddWithValue("@to", to);
+
+            using var reader = cmd.ExecuteReader();
+            Assert.True(reader.Read());
+            return (reader.GetDouble(0), reader.GetDouble(1));
+        }
+
+        // Both windows are four hours wide and straddle the boundary. The first
+        // splits evenly; the second draws an hour more from the raw side.
+        var centred = Average(Boundary - 2 * Hour, Boundary + 2 * Hour);
+        var shifted = Average(Boundary - 1 * Hour, Boundary + 3 * Hour);
+
+        // Two hours at 20 and two at 40, then one hour at 20 and three at 40.
+        Assert.Equal((RollupCpu * 2 + RawCpu * 2) / 4, centred.Weighted, precision: 2);
+        Assert.Equal((RollupCpu * 1 + RawCpu * 3) / 4, shifted.Weighted, precision: 2);
+
+        double weightedMove = Math.Abs(shifted.Weighted - centred.Weighted);
+        double unweightedMove = Math.Abs(shifted.Unweighted - centred.Unweighted);
+
+        Assert.True(weightedMove > 4 * unweightedMove,
+            $"weighted moved {weightedMove} and unweighted {unweightedMove}; the "
+            + "unweighted mean is supposed to be the one that ignores the real time mix");
+    }
+
+    // --- Peaks compared like with like ---
+
+    /// <summary>
+    /// A maximum over a mixed range previously took raw 5 second peaks on one side
+    /// and 1 minute averages on the other, so the recent half looked peakier for
+    /// no real reason. The rollup side must report its stored maximum.
+    /// </summary>
+    [Fact]
+    public void PeakReadsTheStoredRollupMaximumNotItsAverage()
+    {
+        var plan = Plan(RollupStart, Boundary - Minute, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT MAX(s.cpu_pct_peak) as peak, MAX(s.cpu_pct) as averaged
+            FROM {source.Sql} s WHERE s.ts >= @from AND s.ts <= @to
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", RollupStart);
+        cmd.Parameters.AddWithValue("@to", Boundary - Minute);
+
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+
+        Assert.Equal(RollupCpuPeak, reader.GetDouble(0), precision: 6);
+        Assert.Equal(RollupCpu, reader.GetDouble(1), precision: 6);
+    }
+
+    /// <summary>The machine tables carry a stored maximum for CPU and disk busy too.</summary>
+    [Fact]
+    public void MachinePeakReadsTheStoredRollupMaximum()
+    {
+        var plan = Plan(RollupStart, Boundary - Minute, isMachine: true);
+        TierSource source = TierSql.Source(plan, isMachine: true);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT MAX(cpu_pct_peak), MAX(disk_busy_pct_peak)
+            FROM {source.Sql} WHERE ts >= @from AND ts <= @to
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", RollupStart);
+        cmd.Parameters.AddWithValue("@to", Boundary - Minute);
+
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+
+        Assert.Equal(RollupCpuPeak, reader.GetDouble(0), precision: 6);
+        Assert.Equal(18.0, reader.GetDouble(1), precision: 6);
+    }
+
+    /// <summary>
+    /// The /api/alerts sample count. Summing weights answers "how many raw samples
+    /// does this stand for", which is what the field claims to be; counting rows
+    /// mixes rows covering five seconds with rows covering a minute.
+    /// </summary>
+    [Fact]
+    public void AlertSampleCountSumsRawSamplesRepresented()
+    {
+        var plan = Plan(RollupStart, Now, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT SUM(s.weight) as represented, COUNT(*) as rows_read
+            FROM {source.Sql} s WHERE s.ts >= @from AND s.ts <= @to
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", RollupStart);
+        cmd.Parameters.AddWithValue("@to", Now);
+
+        using var reader = cmd.ExecuteReader();
+        Assert.True(reader.Read());
+        long represented = reader.GetInt64(0);
+        long rowsRead = reader.GetInt64(1);
+
+        long rollupRows = (Boundary - RollupStart) / Minute;
+        long rawRows = rowsRead - rollupRows;
+
+        Assert.Equal(rollupRows * RollupSampleCount + rawRows, represented);
+        Assert.True(represented > rowsRead);
     }
 }
