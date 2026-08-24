@@ -6,9 +6,11 @@ namespace Viewer.Tests;
 public class ViewerApiTests : IClassFixture<TelltaleTestFactory>
 {
     private readonly HttpClient _client;
+    private readonly TelltaleTestFactory _factory;
 
     public ViewerApiTests(TelltaleTestFactory factory)
     {
+        _factory = factory;
         _client = factory.CreateClient();
     }
 
@@ -27,6 +29,8 @@ public class ViewerApiTests : IClassFixture<TelltaleTestFactory>
     [Fact]
     public async Task GetRange_ReturnsNullsWhenNoDatabase()
     {
+        Assert.False(File.Exists(_factory.DbPath));
+
         var response = await _client.GetAsync("/api/range");
         var json = await response.Content.ReadAsStringAsync();
         var doc = JsonDocument.Parse(json);

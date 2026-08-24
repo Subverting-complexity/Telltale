@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 
 namespace Viewer.Tests;
@@ -15,6 +16,8 @@ public class RangeWithDataTests : IClassFixture<SeededTelltaleTestFactory>
     public async Task GetRange_ReturnsKnownRangeWhenDatabaseHasData()
     {
         var response = await _client.GetAsync("/api/range");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
         var json = await response.Content.ReadAsStringAsync();
         var doc = JsonDocument.Parse(json);
 

@@ -22,7 +22,8 @@ public class SeededTelltaleTestFactory : TelltaleTestFactory
 
         using (var schemaCmd = conn.CreateCommand())
         {
-            schemaCmd.CommandText = File.ReadAllText(FindSchemaSqlPath());
+            schemaCmd.CommandText = File.ReadAllText(
+                Path.Combine(AppContext.BaseDirectory, "schema.sql"));
             schemaCmd.ExecuteNonQuery();
         }
 
@@ -39,17 +40,25 @@ public class SeededTelltaleTestFactory : TelltaleTestFactory
         return path;
     }
 
-    private static string FindSchemaSqlPath()
+    protected override void Dispose(bool disposing)
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        for (int i = 0; i < 10 && dir != null; i++, dir = dir.Parent)
-        {
-            var candidate = Path.Combine(dir.FullName, "schema.sql");
-            if (File.Exists(candidate))
-                return candidate;
-        }
+        base.Dispose(disposing);
 
-        throw new FileNotFoundException(
-            $"Could not locate schema.sql by walking up from {AppContext.BaseDirectory}");
+        if (!disposing) return;
+
+        // The pool holds the seeding connection open, which keeps the WAL
+        // sidecar files locked and the delete below failing on Windows.
+        SqliteConnection.ClearAllPools();
+
+        try
+        {
+            Directory.Delete(Path.GetDirectoryName(DbPath)!, recursive: true);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 }
