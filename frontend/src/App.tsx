@@ -182,10 +182,15 @@ export default function App() {
     return (
       <div className="app">
         <header className="app-header" role="banner">
-          <h1>Telltale</h1>
-          <button className="theme-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`}>
-            {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
-          </button>
+          <div className="header-brand">
+            <span className="brand-mark" aria-hidden="true" />
+            <h1>Telltale</h1>
+          </div>
+          <div className="header-actions">
+            <button className="icon-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>
+              {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
+            </button>
+          </div>
         </header>
         <main className="app-main no-data" role="main">
           <h2>No data yet</h2>
@@ -253,14 +258,19 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header" role="banner">
-        <h1>Telltale</h1>
-        <StatusBar />
-        <button className="refresh-btn" onClick={refreshData} aria-label="Refresh data" title="Refresh data">
-          ↻
-        </button>
-        <button className="theme-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`}>
-          {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
-        </button>
+        <div className="header-brand">
+          <span className="brand-mark" aria-hidden="true" />
+          <h1>Telltale</h1>
+          <StatusBar />
+        </div>
+        <div className="header-actions">
+          <button className="icon-btn" onClick={refreshData} aria-label="Refresh data" title="Refresh data">
+            ↻
+          </button>
+          <button className="icon-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>
+            {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
+          </button>
+        </div>
       </header>
 
       <TimeNav
