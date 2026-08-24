@@ -119,6 +119,53 @@ public class RollupTests : IDisposable
     }
 
     [Fact]
+    public void Rollup_PromotesEveryProcessInABucket_NotJustTheFirst()
+    {
+        long bucket = BucketStart;
+        long[] instances =
+        [
+            _db.GetOrCreateProcessInstance(1, 100, "one.exe", null, null, bucket),
+            _db.GetOrCreateProcessInstance(2, 100, "two.exe", null, null, bucket),
+            _db.GetOrCreateProcessInstance(3, 100, "three.exe", null, null, bucket),
+        ];
+
+        foreach (long instanceId in instances)
+            WriteSample(instanceId, bucket, bucket + 30_000);
+
+        _db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+
+        // The bucket exclusion reads the table being inserted into, so a bucket that
+        // is new for one process must not read as taken for the next.
+        Assert.Equal(3, Count("sample_1m", $"ts = {bucket}"));
+        foreach (long instanceId in instances)
+            Assert.Equal(2L, Scalar(
+                $"SELECT sample_count FROM sample_1m WHERE ts = {bucket} AND instance_id = {instanceId}"));
+    }
+
+    [Fact]
+    public void Rollup_ProcessAppearingOnlyAfterItsBucketWasPromoted_IsStillPromoted()
+    {
+        long bucket = BucketStart;
+        long early = _db.GetOrCreateProcessInstance(1, 100, "early.exe", null, null, bucket);
+        WriteSample(early, bucket);
+        _db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+
+        // A process first sampled in the second half of a minute that was already
+        // promoted. The exclusion is keyed on (ts, instance_id), so this process is
+        // promoted rather than discarded along with the whole bucket.
+        long late = _db.GetOrCreateProcessInstance(2, 100, "late.exe", null, null, bucket + 45_000);
+        WriteSample(late, bucket + 45_000);
+
+        _db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
+
+        Assert.Equal(2, Count("sample_1m", $"ts = {bucket}"));
+        Assert.Equal(1L, Scalar(
+            $"SELECT sample_count FROM sample_1m WHERE ts = {bucket} AND instance_id = {late}"));
+        Assert.Equal(1L, Scalar(
+            $"SELECT sample_count FROM sample_1m WHERE ts = {bucket} AND instance_id = {early}"));
+    }
+
+    [Fact]
     public void Rollup_TenMinuteReRollup_LeavesAnIncompleteBucketAlone()
     {
         long first = BucketStart;
@@ -137,6 +184,28 @@ public class RollupTests : IDisposable
         Assert.Equal([first], Timestamps("machine_10m"));
         Assert.Equal(10L, Scalar($"SELECT sample_count FROM machine_10m WHERE ts = {first}"));
         Assert.Equal(4, Count("machine_1m"));
+    }
+
+    [Theory]
+    [InlineData(0L, 0L)]
+    [InlineData(59_999L, 0L)]
+    [InlineData(60_000L, 60_000L)]
+    [InlineData(60_001L, 60_000L)]
+    [InlineData(-1L, -60_000L)]
+    [InlineData(-60_000L, -60_000L)]
+    [InlineData(-60_001L, -120_000L)]
+    public void FloorToBucket_RoundsDownEvenBelowZero(long timestamp, long expected)
+    {
+        // Rounding toward zero rather than down would put a negative cutoff later
+        // than the caller asked for, which is how an incomplete bucket gets through.
+        Assert.Equal(expected, Database.FloorToBucket(timestamp, MinuteMs));
+    }
+
+    [Fact]
+    public void Rollup_RejectsABucketSizeBelowOneMinute()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => _db.RollupSamples(BucketStart, "machine", "machine_1m", 0, isMachine: true));
     }
 
     private void WriteMachine(params long[] timestamps)

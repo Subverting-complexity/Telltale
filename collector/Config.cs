@@ -57,6 +57,15 @@ public sealed partial class TelltaleConfig
         if (RollupIntervalMinutes < 1 || RollupIntervalMinutes > 60)
             errors.Add("rollupIntervalMinutes must be between 1 and 60.");
 
+        // Each tier has to retain data for at least as long as the tier feeding it.
+        // A shorter tier would be asked to promote or delete data the tier below has
+        // not finished producing, which loses whatever arrives afterwards.
+        if (Rollup1mRetentionDays * 24 < RawRetentionHours)
+            errors.Add("rollup1mRetentionDays must cover at least rawRetentionHours.");
+
+        if (Rollup10mRetentionDays < Rollup1mRetentionDays)
+            errors.Add("rollup10mRetentionDays must be at least rollup1mRetentionDays.");
+
         return errors;
     }
 
