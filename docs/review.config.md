@@ -72,6 +72,16 @@ Any of these force a `Changes Requested` verdict regardless of other findings.
 - Scope creep: changes unrelated to the linked issue.
 - A schema change in `schema.sql` with no matching migration or read path
   update in `collector/Database.cs`.
+- A migration that drops or renames a column or table, changes a column's type,
+  or changes what a column means. An older collector refuses to open a newer
+  database, but the viewer reads on regardless, so a migration has to stay safe
+  for a build that predates it. Adding tables, indexes or nullable columns,
+  dropping an index made redundant by one the same migration adds, and repairing
+  rows so they match what the column already means are all fine. Anything beyond
+  that is a breaking change needing a version gate on both executables and a
+  deliberate decision, not an override here.
+- A migration with no test proving that a failure part way through rolls it back
+  and leaves the recorded schema version untouched.
 
 ## Tech Stack Review Rules
 

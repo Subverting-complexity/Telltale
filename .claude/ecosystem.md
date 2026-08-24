@@ -41,8 +41,7 @@ session does not lose earlier work to compaction.
 
 Reach for it when a story runs long: compress the bulk material (large file
 dumps, long test output) rather than letting it push out the story context.
-On this project the usual candidates are full `dotnet test` output and the
-`v1-plan.md` design document.
+On this project the usual candidate is full `dotnet test` output.
 
 ## ccusage — usage and cost reporting
 
