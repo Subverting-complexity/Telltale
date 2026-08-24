@@ -92,7 +92,10 @@ public static class SchemaMigrations
                 migration.Version, migration.Description);
         }
 
-        return LatestVersion;
+        // Read back rather than assuming LatestVersion, so that raising it without
+        // adding the matching migration reports the version the database is really
+        // at instead of the one this build wishes it were at.
+        return ReadVersion(conn);
     }
 
     /// <summary>
@@ -102,20 +105,37 @@ public static class SchemaMigrations
     ///
     /// The duplicates come from the rollup wedge fixed in PR #30: the same bucket
     /// was promoted more than once, which the machine tables rejected on their
-    /// primary key but the process tables silently accepted. Rows are combined
-    /// the same way the tier two re-rollup combines them, so a repaired bucket
-    /// holds what a single correct promotion would have written.
+    /// primary key but the process tables silently accepted.
     ///
-    /// Every statement is written to survive being run again, so a migration
-    /// interrupted after its transaction committed but before its version row
-    /// was durable can simply be repeated.
+    /// Rows are combined so that a repaired bucket holds what a single correct
+    /// promotion would have written: the maxima and totals exactly as the tier two
+    /// re-rollup combines them, and the averages weighted by sample_count.
+    ///
+    /// A half whose average is NULL is left out of the weighting altogether rather
+    /// than only out of the numerator. The collector stores a sample precisely when
+    /// CPU could not be computed, so a bucket can carry a NULL average over a real
+    /// sample count, and charging that count against a value nobody measured would
+    /// drag the repaired average toward zero. This is the shape the viewer settled
+    /// on for the read side in <c>TierSql.WeightedAvgExpr</c>. The live re-rollup in
+    /// <see cref="Database.RollupSamples"/> still has the older shape, which is
+    /// tracked as issue #42; this migration writes permanent repairs and cannot be
+    /// run again once the duplicates are gone, so it uses the correct form now
+    /// rather than reproducing a known bias.
+    ///
+    /// Every statement is written to survive being run again. The version row goes
+    /// in inside the same transaction, so a half applied migration cannot happen,
+    /// but <see cref="ReadVersion"/> reports 0 for a <c>schema_version</c> table
+    /// that exists and is empty, and that replays every migration against a
+    /// database which may already carry its effect.
     /// </summary>
     private const string MergeDuplicateProcessRollupsSql = """
         DROP TABLE IF EXISTS sample_1m_dedupe;
         CREATE TABLE sample_1m_dedupe AS
         SELECT ts,
                instance_id,
-               SUM(cpu_pct_avg * sample_count) / SUM(sample_count) AS cpu_pct_avg,
+               SUM(cpu_pct_avg * sample_count)
+                   / NULLIF(SUM(CASE WHEN cpu_pct_avg IS NULL THEN 0 ELSE sample_count END), 0)
+                                                                   AS cpu_pct_avg,
                MAX(cpu_pct_max)                                    AS cpu_pct_max,
                MAX(private_mb_max)                                 AS private_mb_max,
                MAX(working_set_mb_max)                             AS working_set_mb_max,
@@ -142,7 +162,9 @@ public static class SchemaMigrations
         CREATE TABLE sample_10m_dedupe AS
         SELECT ts,
                instance_id,
-               SUM(cpu_pct_avg * sample_count) / SUM(sample_count) AS cpu_pct_avg,
+               SUM(cpu_pct_avg * sample_count)
+                   / NULLIF(SUM(CASE WHEN cpu_pct_avg IS NULL THEN 0 ELSE sample_count END), 0)
+                                                                   AS cpu_pct_avg,
                MAX(cpu_pct_max)                                    AS cpu_pct_max,
                MAX(private_mb_max)                                 AS private_mb_max,
                MAX(working_set_mb_max)                             AS working_set_mb_max,

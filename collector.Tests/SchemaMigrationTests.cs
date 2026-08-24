@@ -77,6 +77,44 @@ public class SchemaMigrationTests : IDisposable
     [Theory]
     [InlineData("sample_1m")]
     [InlineData("sample_10m")]
+    public void Migration_MergesDuplicateRows_LeavingOutHalvesWhereCpuWasNeverMeasured(string table)
+    {
+        string path = CreateLegacyDatabase();
+
+        using (var conn = Connect(path))
+        {
+            long instanceId = InsertInstance(conn, pid: 4243);
+
+            // The collector stores a sample precisely when CPU could not be
+            // computed, so a bucket whose raw samples all lacked a CPU figure
+            // rolls up to a NULL average over a real sample count. The unmeasured
+            // half is given the larger weight here, because that is the case that
+            // separates a correct merge from one that counts it.
+            InsertRollupRow(conn, table, BucketStart, instanceId,
+                cpuAvg: null, cpuMax: 0, privateMax: 100, workingSetMax: 150, ioTotal: 5, sampleCount: 12);
+            InsertRollupRow(conn, table, BucketStart, instanceId,
+                cpuAvg: 40, cpuMax: 50, privateMax: 80, workingSetMax: 200, ioTotal: 7, sampleCount: 4);
+        }
+
+        using (OpenCollectorDatabase(path)) { }
+
+        using var check = Connect(path);
+
+        Assert.Equal(1L, Scalar(check, $"SELECT COUNT(*) FROM {table}"));
+
+        // A single correct promotion averages the raw samples that carried a CPU
+        // figure and ignores the rest, giving 40. Counting the unmeasured half's
+        // weight against it would give 160 / 16 = 10.
+        Assert.Equal(40.0, ScalarDouble(check, $"SELECT cpu_pct_avg FROM {table}"), 6);
+
+        // The count still covers every raw sample the bucket held, the same
+        // pairing the raw to one minute rollup makes between AVG and COUNT(*).
+        Assert.Equal(16L, Scalar(check, $"SELECT sample_count FROM {table}"));
+    }
+
+    [Theory]
+    [InlineData("sample_1m")]
+    [InlineData("sample_10m")]
     public void Migration_LeavesRowsThatAreNotDuplicatedUntouched(string table)
     {
         string path = CreateLegacyDatabase();
@@ -269,7 +307,7 @@ public class SchemaMigrationTests : IDisposable
     }
 
     private static void InsertRollupRow(SqliteConnection conn, string table, long ts, long instanceId,
-        double cpuAvg, double cpuMax, double privateMax, double workingSetMax, double ioTotal, int sampleCount)
+        double? cpuAvg, double cpuMax, double privateMax, double workingSetMax, double ioTotal, int sampleCount)
     {
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
@@ -278,7 +316,7 @@ public class SchemaMigrationTests : IDisposable
             "VALUES (@ts, @instance, @cpuAvg, @cpuMax, @privateMax, @workingSetMax, @ioTotal, @count)";
         cmd.Parameters.AddWithValue("@ts", ts);
         cmd.Parameters.AddWithValue("@instance", instanceId);
-        cmd.Parameters.AddWithValue("@cpuAvg", cpuAvg);
+        cmd.Parameters.AddWithValue("@cpuAvg", (object?)cpuAvg ?? DBNull.Value);
         cmd.Parameters.AddWithValue("@cpuMax", cpuMax);
         cmd.Parameters.AddWithValue("@privateMax", privateMax);
         cmd.Parameters.AddWithValue("@workingSetMax", workingSetMax);
