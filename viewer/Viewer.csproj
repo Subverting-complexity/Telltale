@@ -14,8 +14,8 @@
   </ItemGroup>
 
   <Target Name="BuildFrontend" BeforeTargets="Build;Publish" Condition="Exists('../frontend/package.json')">
-    <Exec Command="npm install --prefix ../frontend" Condition="!Exists('../frontend/node_modules')" />
-    <Exec Command="npm run build --prefix ../frontend" />
+    <Exec Command="npm install" WorkingDirectory="../frontend" Condition="!Exists('../frontend/node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="../frontend" />
   </Target>
 
 </Project>
