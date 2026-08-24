@@ -350,15 +350,27 @@ try
         long effectiveBucket = plan.Bucket > 0 ? plan.Bucket : 5000;
 
         using var cmd = conn.CreateCommand();
+
+        // Total the group at each instant first, then combine those totals across
+        // the bucket, the same shape /api/processes uses. Summing rows directly
+        // over a bucket would scale with how many rows the bucket happens to
+        // hold, which differs between tiers and would step at the boundary.
         cmd.CommandText = $"""
-            SELECT (s.ts / @bucket) * @bucket as ts,
-                   SUM(s.cpu_pct) as cpu_pct, SUM(s.private_mb) as private_mb,
-                   SUM(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb,
-                   COUNT(DISTINCT s.instance_id) as instance_count
-            FROM {source.Sql} s
-            JOIN process_instance pi ON pi.id = s.instance_id
-            WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
-            GROUP BY s.ts / @bucket ORDER BY ts
+            SELECT (sub.ts / @bucket) * @bucket as ts,
+                   AVG(sub.ts_cpu) as cpu_pct, AVG(sub.ts_mem) as private_mb,
+                   AVG(sub.ts_ws) as working_set_mb, SUM(sub.ts_io) as io_kb,
+                   MAX(sub.inst_cnt) as instance_count
+            FROM (
+                SELECT s.ts,
+                       SUM(s.cpu_pct) as ts_cpu, SUM(s.private_mb) as ts_mem,
+                       SUM(s.working_set_mb) as ts_ws, SUM(s.io_kb) as ts_io,
+                       COUNT(DISTINCT s.instance_id) as inst_cnt
+                FROM {source.Sql} s
+                JOIN process_instance pi ON pi.id = s.instance_id
+                WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
+                GROUP BY s.ts
+            ) sub
+            GROUP BY sub.ts / @bucket ORDER BY ts
             """;
 
         AddTierBounds(cmd, source);

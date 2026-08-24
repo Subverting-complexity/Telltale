@@ -14,7 +14,8 @@ public class TierSqlTests : IDisposable
     const long Second = 1_000L;
     const long Minute = 60_000L;
     const long Hour = 3_600_000L;
-    const long Now = 1_700_000_000_000L;
+    /// <summary>Minute-aligned, so no bucket straddles the two tiers.</summary>
+    const long Now = 1_699_999_980_000L;
 
     /// <summary>Where the raw tables take over from the rollups.</summary>
     const long Boundary = Now - 6 * Hour;
@@ -298,6 +299,63 @@ public class TierSqlTests : IDisposable
 
         Assert.Contains(timestamps, ts => ts < Boundary);
         Assert.Contains(timestamps, ts => ts >= Boundary);
+    }
+
+    /// <summary>
+    /// Mirrors the /api/process-group/{name} query shape. The group is totalled
+    /// per instant before bucketing, so a bucket holding twelve raw rows reads
+    /// the same as one holding a single rollup row for the same CPU level.
+    /// </summary>
+    [Fact]
+    public void ProcessGroupQueryDoesNotStepAtTheTierBoundary()
+    {
+        var plan = Plan(RollupStart, Now, isMachine: false);
+        TierSource source = TierSql.Source(plan, isMachine: false);
+        long bucket = plan.Bucket > 0 ? plan.Bucket : 5000;
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT (sub.ts / @bucket) * @bucket as ts,
+                   AVG(sub.ts_cpu) as cpu_pct, AVG(sub.ts_mem) as private_mb,
+                   AVG(sub.ts_ws) as working_set_mb, SUM(sub.ts_io) as io_kb,
+                   MAX(sub.inst_cnt) as instance_count
+            FROM (
+                SELECT s.ts,
+                       SUM(s.cpu_pct) as ts_cpu, SUM(s.private_mb) as ts_mem,
+                       SUM(s.working_set_mb) as ts_ws, SUM(s.io_kb) as ts_io,
+                       COUNT(DISTINCT s.instance_id) as inst_cnt
+                FROM {source.Sql} s
+                JOIN process_instance pi ON pi.id = s.instance_id
+                WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
+                GROUP BY s.ts
+            ) sub
+            GROUP BY sub.ts / @bucket ORDER BY ts
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@bucket", bucket);
+        cmd.Parameters.AddWithValue("@name", "chrome.exe");
+        cmd.Parameters.AddWithValue("@from", RollupStart);
+        cmd.Parameters.AddWithValue("@to", Now);
+
+        var rollupCpu = new List<double>();
+        var rawCpu = new List<double>();
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                long ts = reader.GetInt64(0);
+                (ts < Boundary ? rollupCpu : rawCpu).Add(reader.GetDouble(1));
+            }
+        }
+
+        Assert.NotEmpty(rollupCpu);
+        Assert.NotEmpty(rawCpu);
+
+        // The seed holds one instance at a steady level per side, so every
+        // bucket must read as that level. Summing rows over a bucket instead
+        // would scale with row density and inflate the raw side many times over.
+        Assert.All(rollupCpu, cpu => Assert.Equal(20.0, cpu, precision: 6));
+        Assert.All(rawCpu, cpu => Assert.Equal(40.0, cpu, precision: 6));
     }
 
     [Fact]
