@@ -1,11 +1,24 @@
+import { useEffect, useState } from 'react';
 import type { ViewState, ViewScale } from './types';
 import { getDaysInMonth } from './utils';
+
+export interface HourSelection {
+  from: number;
+  to: number;
+  startHour: number;
+  endHour: number;
+}
+
+interface HourRange {
+  startHour: number;
+  endHour: number;
+}
 
 interface TimeNavProps {
   view: ViewState;
   onNavigate: (view: ViewState) => void;
-  onHourSelect?: (from: number, to: number) => void;
-  selectedHour?: number | null;
+  onHourSelect?: (selection: HourSelection | null) => void;
+  selectedHourRange?: HourSelection | null;
   minTs: number | null;
   maxTs: number | null;
 }
@@ -13,14 +26,11 @@ interface TimeNavProps {
 const SCALES: ViewScale[] = ['day', 'week', 'month', 'year'];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-function formatHourLabel(hour: number): string {
-  if (hour === 0) return '12a';
-  if (hour < 12) return `${hour}a`;
-  if (hour === 12) return '12p';
-  return `${hour - 12}p`;
+export function pad2(n: number): string {
+  return String(n).padStart(2, '0');
 }
 
-export function TimeNav({ view, onNavigate, onHourSelect, selectedHour, minTs, maxTs }: TimeNavProps) {
+export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs }: TimeNavProps) {
   const now = new Date();
 
   function prev() {
@@ -168,14 +178,19 @@ export function TimeNav({ view, onNavigate, onHourSelect, selectedHour, minTs, m
           year={view.year}
           month={view.month}
           day={view.day}
-          selectedHour={selectedHour ?? null}
-          onSelectHour={(hour) => {
-            if (hour === null) {
-              onHourSelect(0, 0);
+          selectedRange={selectedHourRange ?? null}
+          onSelectRange={(range) => {
+            if (range === null) {
+              onHourSelect(null);
             } else {
-              const start = new Date(view.year, view.month! - 1, view.day!, hour);
-              const end = new Date(view.year, view.month! - 1, view.day!, hour + 1);
-              onHourSelect(start.getTime(), end.getTime() - 1);
+              const start = new Date(view.year, view.month! - 1, view.day!, range.startHour);
+              const end = new Date(view.year, view.month! - 1, view.day!, range.endHour + 1);
+              onHourSelect({
+                from: start.getTime(),
+                to: end.getTime() - 1,
+                startHour: range.startHour,
+                endHour: range.endHour,
+              });
             }
           }}
           minTs={minTs}
@@ -252,44 +267,79 @@ function MonthGrid({ year, month, selectedDay, onSelectDay, minTs, maxTs }: {
   );
 }
 
-function HourGrid({ year, month, day, selectedHour, onSelectHour, minTs, maxTs }: {
+function HourGrid({ year, month, day, selectedRange, onSelectRange, minTs, maxTs }: {
   year: number;
   month: number;
   day: number;
-  selectedHour: number | null;
-  onSelectHour: (hour: number | null) => void;
+  selectedRange: HourRange | null;
+  onSelectRange: (range: HourRange | null) => void;
   minTs: number | null;
   maxTs: number | null;
 }) {
+  // The anchor hour is local UI state (which hour a shift-click range extends from);
+  // it resets whenever the displayed day changes so a stale anchor can't leak across days.
+  const [anchorHour, setAnchorHour] = useState<number | null>(null);
+
+  useEffect(() => {
+    setAnchorHour(null);
+  }, [year, month, day]);
+
+  function handleHourClick(hour: number, shiftKey: boolean) {
+    if (shiftKey && anchorHour !== null) {
+      onSelectRange({ startHour: Math.min(anchorHour, hour), endHour: Math.max(anchorHour, hour) });
+    } else {
+      setAnchorHour(hour);
+      onSelectRange({ startHour: hour, endHour: hour });
+    }
+  }
+
   return (
     <div className="nav-subgrid-section">
-      <span className="nav-subgrid-label">Filter by hour</span>
-      <div className="hour-grid" role="grid" aria-label={`Hours of ${day} ${MONTH_NAMES[month - 1]} ${year}`}>
+      <div className="hour-filter-header">
+        <span className="nav-subgrid-label">Filter by hour</span>
         <button
-          className={`hour-cell hour-cell-all ${selectedHour === null ? 'selected' : ''}`}
-          onClick={() => onSelectHour(null)}
-          aria-label="Show full day"
-          aria-pressed={selectedHour === null}
+          type="button"
+          className={`hour-reset-btn ${selectedRange === null ? 'active' : ''}`}
+          onClick={() => { setAnchorHour(null); onSelectRange(null); }}
+          aria-pressed={selectedRange === null}
         >
-          All
+          All hours
         </button>
+      </div>
+      <div className="hour-grid" role="grid" aria-label={`Hours of ${day} ${MONTH_NAMES[month - 1]} ${year}`}>
         {Array.from({ length: 24 }, (_, hour) => {
           const hourStart = new Date(year, month - 1, day, hour).getTime();
           const hourEnd = new Date(year, month - 1, day, hour + 1).getTime() - 1;
           const hasData = minTs !== null && maxTs !== null && hourEnd >= minTs && hourStart <= maxTs;
+          const inRange = selectedRange !== null && hour >= selectedRange.startHour && hour <= selectedRange.endHour;
+          const isRangeStart = inRange && hour === selectedRange!.startHour;
+          const isRangeEnd = inRange && hour === selectedRange!.endHour;
+          // Suppress the 6-hour group gap where a selected range continues across the boundary.
+          const isGroupEnd = hour % 6 === 5 && !(inRange && !isRangeEnd);
+          const label = pad2(hour);
+          const className = [
+            'hour-cell',
+            hasData ? 'has-data' : 'no-data',
+            inRange ? 'selected' : '',
+            isRangeStart ? 'range-start' : '',
+            isRangeEnd ? 'range-end' : '',
+            isGroupEnd ? 'group-end' : '',
+          ].filter(Boolean).join(' ');
           return (
             <button
               key={hour}
-              className={`hour-cell ${hasData ? 'has-data' : 'no-data'} ${selectedHour === hour ? 'selected' : ''}`}
-              onClick={() => onSelectHour(hour)}
-              aria-label={`${formatHourLabel(hour)}${hasData ? '' : ' (no data)'}`}
-              aria-pressed={selectedHour === hour}
+              type="button"
+              className={className}
+              onClick={(e) => handleHourClick(hour, e.shiftKey)}
+              aria-label={`${label}:00${hasData ? '' : ' (no data)'}`}
+              aria-pressed={inRange}
             >
-              {formatHourLabel(hour)}
+              {label}
             </button>
           );
         })}
       </div>
+      <p className="hour-range-hint">Shift-click another hour to select a range.</p>
     </div>
   );
 }
