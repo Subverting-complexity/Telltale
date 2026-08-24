@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Telltale.Collector;
 using Telltale.Collector.Interop;
 
@@ -19,6 +20,24 @@ public class ConfigTests
         var config = new TelltaleConfig { IntervalSeconds = 1 };
         var errors = config.Validate();
         Assert.Contains(errors, e => e.Contains("intervalSeconds"));
+    }
+
+    [Fact]
+    public void ShorterOneMinuteRetentionThanRaw_FailsValidation()
+    {
+        // Tier two would promote a ten minute bucket that tier one has not finished
+        // filling, and the minutes still to come would be discarded.
+        var config = new TelltaleConfig { RawRetentionHours = 72, Rollup1mRetentionDays = 2 };
+        var errors = config.Validate();
+        Assert.Contains(errors, e => e.Contains("rollup1mRetentionDays"));
+    }
+
+    [Fact]
+    public void ShorterTenMinuteRetentionThanOneMinute_FailsValidation()
+    {
+        var config = new TelltaleConfig { Rollup1mRetentionDays = 30, Rollup10mRetentionDays = 14 };
+        var errors = config.Validate();
+        Assert.Contains(errors, e => e.Contains("rollup10mRetentionDays"));
     }
 
     [Fact]
@@ -75,6 +94,32 @@ public class ConfigTests
     public void RedactCommandLine_HandlesNull()
     {
         Assert.Null(TelltaleConfig.RedactCommandLine(null));
+    }
+}
+
+public class RollupWorkerTests
+{
+    [Theory]
+    [InlineData(1, LogLevel.Error)]
+    [InlineData(2, LogLevel.Error)]
+    [InlineData(3, LogLevel.Critical)]
+    [InlineData(4, LogLevel.Critical)]
+    [InlineData(40, LogLevel.Critical)]
+    public void FailureLevel_EscalatesOnceFailuresPersist(int consecutiveFailures, LogLevel expected)
+    {
+        // A single failure is usually transient. A run of them means nothing is being
+        // aggregated and the raw tables are no longer being trimmed, which is what the
+        // raised severity is there to surface.
+        Assert.Equal(expected, RollupWorker.LevelForConsecutiveFailures(consecutiveFailures));
+    }
+
+    [Fact]
+    public void FailureLevel_IsNotCriticalBeforeTheThreshold()
+    {
+        Assert.Equal(LogLevel.Error,
+            RollupWorker.LevelForConsecutiveFailures(RollupWorker.ConsecutiveFailuresBeforeCritical - 1));
+        Assert.Equal(LogLevel.Critical,
+            RollupWorker.LevelForConsecutiveFailures(RollupWorker.ConsecutiveFailuresBeforeCritical));
     }
 }
 

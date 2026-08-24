@@ -265,14 +265,31 @@ public sealed class Database : IDisposable
         cmd.ExecuteNonQuery();
     }
 
+    /// <summary>
+    /// Promotes rows older than <paramref name="cutoffMs"/> from a raw or finer
+    /// grained table into coarser buckets, then removes the rows it promoted.
+    /// The cutoff is rounded down to a bucket boundary, and any bucket the target
+    /// already holds is skipped, so running this repeatedly is safe: a bucket is
+    /// never produced twice and never counted twice.
+    /// </summary>
     public void RollupSamples(long cutoffMs, string sourceTable, string targetTable,
         int bucketMinutes, bool isMachine)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(bucketMinutes, 1);
+
         using var tx = _conn.BeginTransaction();
         using var cmd = _conn.CreateCommand();
         cmd.Transaction = tx;
 
         long bucketMs = bucketMinutes * 60_000L;
+
+        // Only ever promote whole buckets. The caller's cutoff is a wall clock
+        // instant and rarely lands on a bucket boundary, so without this the bucket
+        // containing the cutoff would be promoted while part of it is still newer
+        // than the cutoff, and its leftover rows would be promoted a second time on
+        // the next cycle under the same bucket timestamp.
+        long alignedCutoff = FloorToBucket(cutoffMs, bucketMs);
+
         bool isReRollup = sourceTable.Contains("_1m") || sourceTable.Contains("_10m");
 
         if (isMachine && !isReRollup)
@@ -293,6 +310,9 @@ public sealed class Database : IDisposable
                        AVG(net_kbps), AVG(gpu_busy_pct), COUNT(*)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {targetTable} t
+                      WHERE t.ts = ({sourceTable}.ts / @bucket) * @bucket)
                 GROUP BY ts / @bucket
                 """;
         }
@@ -320,6 +340,9 @@ public sealed class Database : IDisposable
                        SUM(sample_count)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {targetTable} t
+                      WHERE t.ts = ({sourceTable}.ts / @bucket) * @bucket)
                 GROUP BY ts / @bucket
                 """;
         }
@@ -334,6 +357,10 @@ public sealed class Database : IDisposable
                        MAX(working_set_mb), SUM(io_kb), COUNT(*)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {targetTable} t
+                      WHERE t.ts = ({sourceTable}.ts / @bucket) * @bucket
+                        AND t.instance_id = {sourceTable}.instance_id)
                 GROUP BY ts / @bucket, instance_id
                 """;
         }
@@ -349,20 +376,46 @@ public sealed class Database : IDisposable
                        MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count)
                 FROM {sourceTable}
                 WHERE ts < @cutoff
+                  AND NOT EXISTS (
+                      SELECT 1 FROM {targetTable} t
+                      WHERE t.ts = ({sourceTable}.ts / @bucket) * @bucket
+                        AND t.instance_id = {sourceTable}.instance_id)
                 GROUP BY ts / @bucket, instance_id
                 """;
         }
 
         cmd.Parameters.AddWithValue("@bucket", bucketMs);
-        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.Parameters.AddWithValue("@cutoff", alignedCutoff);
         cmd.ExecuteNonQuery();
 
+        // Everything older than the aligned cutoff goes, including rows the insert
+        // skipped because the target already held their bucket. Keeping them would
+        // grow the raw table without bound and retry the same conflict on every
+        // later cycle. Those rows are discarded rather than merged, so the cost is
+        // whatever landed in an already promoted bucket: normally nothing, one
+        // bucket on the first cycle after a database was left stuck by the old
+        // behaviour, and as much as a backwards clock jump spans if one occurs.
         cmd.CommandText = $"DELETE FROM {sourceTable} WHERE ts < @cutoff";
         cmd.Parameters.Clear();
-        cmd.Parameters.AddWithValue("@cutoff", cutoffMs);
+        cmd.Parameters.AddWithValue("@cutoff", alignedCutoff);
         cmd.ExecuteNonQuery();
 
         tx.Commit();
+    }
+
+    /// <summary>
+    /// Rounds a timestamp down to the start of the bucket containing it. C# integer
+    /// division truncates toward zero rather than flooring, which would round a
+    /// negative timestamp up and let an incomplete bucket through, so negatives are
+    /// floored explicitly.
+    /// </summary>
+    public static long FloorToBucket(long timestampMs, long bucketMs)
+    {
+        long buckets = timestampMs / bucketMs;
+        if (timestampMs < 0 && buckets * bucketMs != timestampMs)
+            buckets--;
+
+        return buckets * bucketMs;
     }
 
     public void DeleteOldData(string table, long cutoffMs)
