@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Telltale.Viewer;
 
 Mutex? mutex = null;
 var isTestHost = AppDomain.CurrentDomain.GetAssemblies()
@@ -101,50 +102,34 @@ try
     app.MapGet("/api/timeline", (long from, long to) =>
     {
         using var conn = OpenDb();
-        var (table, bucket) = SelectTier(from, to, isMachine: true);
+        var plan = PlanTiers(conn, from, to, isMachine: true);
+        string source = TierSql.Source(plan, isMachine: true);
 
         using var cmd = conn.CreateCommand();
-        if (table == "machine")
+
+        // Raw-only ranges stay unaggregated, as they were before tier selection
+        // learned to span tiers.
+        if (!plan.IsSingleRawTier && plan.Bucket > 0)
+        {
+            cmd.CommandText = $"""
+                SELECT (ts / @bucket) * @bucket as ts,
+                       AVG(cpu_pct) as cpu_pct, AVG(memory_avail_mb) as memory_avail_mb,
+                       MAX(commit_mb) as commit_mb, SUM(hard_faults) as hard_faults,
+                       AVG(disk_read_ms) as disk_read_ms, AVG(disk_write_ms) as disk_write_ms,
+                       memory_total_mb, AVG(disk_busy_pct) as disk_busy_pct,
+                       AVG(net_kbps) as net_kbps, AVG(gpu_busy_pct) as gpu_busy_pct
+                FROM {source} WHERE ts >= @from AND ts <= @to
+                GROUP BY ts / @bucket ORDER BY ts
+                """;
+            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
+        }
+        else
         {
             cmd.CommandText = $"""
                 SELECT ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
                        disk_read_ms, disk_write_ms, memory_total_mb, disk_busy_pct, net_kbps, gpu_busy_pct
-                FROM machine WHERE ts >= @from AND ts <= @to ORDER BY ts
+                FROM {source} WHERE ts >= @from AND ts <= @to ORDER BY ts
                 """;
-        }
-        else
-        {
-            string cpuAvg = table == "machine" ? "cpu_pct" : "cpu_pct_avg";
-            string memAvg = table == "machine" ? "memory_avail_mb" : "memory_avail_mb_avg";
-            string memTotal = "memory_total_mb";
-            string diskBusyAvg = table == "machine" ? "disk_busy_pct" : "disk_busy_pct_avg";
-            string netAvg = table == "machine" ? "net_kbps" : "net_kbps_avg";
-
-            if (bucket > 0)
-            {
-                cmd.CommandText = $"""
-                    SELECT (ts / @bucket) * @bucket as ts,
-                           AVG({cpuAvg}) as cpu_pct, AVG({memAvg}) as memory_avail_mb,
-                           MAX(commit_mb_max) as commit_mb, SUM(hard_faults_total) as hard_faults,
-                           AVG(disk_read_ms_avg) as disk_read_ms, AVG(disk_write_ms_avg) as disk_write_ms,
-                           {memTotal}, AVG({diskBusyAvg}) as disk_busy_pct,
-                           AVG({netAvg}) as net_kbps, AVG(gpu_busy_pct_avg) as gpu_busy_pct
-                    FROM {table} WHERE ts >= @from AND ts <= @to
-                    GROUP BY ts / @bucket ORDER BY ts
-                    """;
-                cmd.Parameters.AddWithValue("@bucket", bucket);
-            }
-            else
-            {
-                cmd.CommandText = $"""
-                    SELECT ts, {cpuAvg} as cpu_pct, {memAvg} as memory_avail_mb,
-                           commit_mb_max as commit_mb, hard_faults_total as hard_faults,
-                           disk_read_ms_avg as disk_read_ms, disk_write_ms_avg as disk_write_ms,
-                           {memTotal}, {diskBusyAvg} as disk_busy_pct,
-                           {netAvg} as net_kbps, gpu_busy_pct_avg as gpu_busy_pct
-                    FROM {table} WHERE ts >= @from AND ts <= @to ORDER BY ts
-                    """;
-            }
         }
 
         cmd.Parameters.AddWithValue("@from", from);
@@ -170,7 +155,7 @@ try
             });
         }
 
-        return Results.Json(new { resolution = table, points }, jsonOptions);
+        return Results.Json(new { resolution = plan.Resolution, points }, jsonOptions);
     });
 
     app.MapGet("/api/processes", (long from, long to, int? limit, string? sort, string? q, bool? group) =>
@@ -179,11 +164,8 @@ try
         bool grouped = group ?? true;
         int take = Math.Clamp(limit ?? 50, 1, 500);
 
-        var (table, _) = SelectTier(from, to, isMachine: false);
-        string cpuCol = table == "sample" ? "cpu_pct" : "cpu_pct_avg";
-        string memCol = table == "sample" ? "private_mb" : "private_mb_max";
-        string ioCol = table == "sample" ? "io_kb" : "io_kb_total";
-
+        var plan = PlanTiers(conn, from, to, isMachine: false);
+        string source = TierSql.Source(plan, isMachine: false);
         using var cmd = conn.CreateCommand();
 
         if (grouped)
@@ -204,11 +186,11 @@ try
                        (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = sub.name AND pi2.path IS NOT NULL LIMIT 1) as path
                 FROM (
                     SELECT pi.name,
-                           SUM(s.{cpuCol}) as ts_cpu,
-                           SUM(s.{memCol}) as ts_mem,
-                           SUM(s.{ioCol}) as ts_io,
+                           SUM(s.cpu_pct) as ts_cpu,
+                           SUM(s.private_mb) as ts_mem,
+                           SUM(s.io_kb) as ts_io,
                            COUNT(DISTINCT s.instance_id) as inst_cnt
-                    FROM {table} s
+                    FROM {source} s
                     JOIN process_instance pi ON pi.id = s.instance_id
                     WHERE s.ts >= @from AND s.ts <= @to
                     {(q != null ? "AND pi.name LIKE @q" : "")}
@@ -223,17 +205,17 @@ try
         {
             string sortExpr = sort switch
             {
-                "memory" => $"MAX(s.{memCol})",
-                "io" => $"SUM(s.{ioCol})",
+                "memory" => $"MAX(s.private_mb)",
+                "io" => $"SUM(s.io_kb)",
                 "name" => "pi.name",
-                _ => $"AVG(s.{cpuCol})"
+                _ => $"AVG(s.cpu_pct)"
             };
             cmd.CommandText = $"""
                 SELECT pi.id, pi.pid, pi.name, pi.path,
-                       AVG(s.{cpuCol}) as avg_cpu_pct,
-                       MAX(s.{memCol}) as peak_private_mb,
-                       SUM(s.{ioCol}) as total_io_kb
-                FROM {table} s
+                       AVG(s.cpu_pct) as avg_cpu_pct,
+                       MAX(s.private_mb) as peak_private_mb,
+                       SUM(s.io_kb) as total_io_kb
+                FROM {source} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
                 {(q != null ? "AND pi.name LIKE @q" : "")}
@@ -289,31 +271,28 @@ try
     app.MapGet("/api/process/{id:long}", (long id, long from, long to) =>
     {
         using var conn = OpenDb();
-        var (table, bucket) = SelectTier(from, to, isMachine: false);
-        string cpuCol = table == "sample" ? "cpu_pct" : "cpu_pct_avg";
-        string memCol = table == "sample" ? "private_mb" : "private_mb_max";
-        string wsCol = table == "sample" ? "working_set_mb" : "working_set_mb_max";
-        string ioCol = table == "sample" ? "io_kb" : "io_kb_total";
+        var plan = PlanTiers(conn, from, to, isMachine: false);
+        string source = TierSql.Source(plan, isMachine: false);
 
         using var cmd = conn.CreateCommand();
-        if (bucket > 0)
+        if (plan.Bucket > 0)
         {
             cmd.CommandText = $"""
                 SELECT (s.ts / @bucket) * @bucket as ts,
-                       AVG(s.{cpuCol}) as cpu_pct, MAX(s.{memCol}) as private_mb,
-                       MAX(s.{wsCol}) as working_set_mb, SUM(s.{ioCol}) as io_kb
-                FROM {table} s
+                       AVG(s.cpu_pct) as cpu_pct, MAX(s.private_mb) as private_mb,
+                       MAX(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb
+                FROM {source} s
                 WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
                 GROUP BY s.ts / @bucket ORDER BY ts
                 """;
-            cmd.Parameters.AddWithValue("@bucket", bucket);
+            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
         }
         else
         {
             cmd.CommandText = $"""
-                SELECT s.ts, s.{cpuCol} as cpu_pct, s.{memCol} as private_mb,
-                       s.{wsCol} as working_set_mb, s.{ioCol} as io_kb
-                FROM {table} s
+                SELECT s.ts, s.cpu_pct as cpu_pct, s.private_mb as private_mb,
+                       s.working_set_mb as working_set_mb, s.io_kb as io_kb
+                FROM {source} s
                 WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
                 ORDER BY s.ts
                 """;
@@ -356,27 +335,24 @@ try
             };
         }
 
-        return Results.Json(new { info, resolution = table, points }, jsonOptions);
+        return Results.Json(new { info, resolution = plan.Resolution, points }, jsonOptions);
     });
 
     app.MapGet("/api/process-group/{name}", (string name, long from, long to) =>
     {
         using var conn = OpenDb();
-        var (table, bucket) = SelectTier(from, to, isMachine: false);
-        string cpuCol = table == "sample" ? "cpu_pct" : "cpu_pct_avg";
-        string memCol = table == "sample" ? "private_mb" : "private_mb_max";
-        string wsCol = table == "sample" ? "working_set_mb" : "working_set_mb_max";
-        string ioCol = table == "sample" ? "io_kb" : "io_kb_total";
+        var plan = PlanTiers(conn, from, to, isMachine: false);
+        string source = TierSql.Source(plan, isMachine: false);
 
-        long effectiveBucket = bucket > 0 ? bucket : 5000;
+        long effectiveBucket = plan.Bucket > 0 ? plan.Bucket : 5000;
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
             SELECT (s.ts / @bucket) * @bucket as ts,
-                   SUM(s.{cpuCol}) as cpu_pct, SUM(s.{memCol}) as private_mb,
-                   SUM(s.{wsCol}) as working_set_mb, SUM(s.{ioCol}) as io_kb,
+                   SUM(s.cpu_pct) as cpu_pct, SUM(s.private_mb) as private_mb,
+                   SUM(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb,
                    COUNT(DISTINCT s.instance_id) as instance_count
-            FROM {table} s
+            FROM {source} s
             JOIN process_instance pi ON pi.id = s.instance_id
             WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
             GROUP BY s.ts / @bucket ORDER BY ts
@@ -402,7 +378,7 @@ try
             });
         }
 
-        return Results.Json(new { name, resolution = table, points }, jsonOptions);
+        return Results.Json(new { name, resolution = plan.Resolution, points }, jsonOptions);
     });
 
     app.MapGet("/api/alerts", (int? days) =>
@@ -420,28 +396,25 @@ try
             if (cmd.ExecuteScalar() == null)
                 return Results.Json(new { period, alerts = Array.Empty<object>() }, jsonOptions);
 
-            var (table, _) = SelectTier(from, now, isMachine: false);
-            string cpuCol = table == "sample" ? "cpu_pct" : "cpu_pct_avg";
-            string memCol = table == "sample" ? "private_mb" : "private_mb_max";
-            string ioCol = table == "sample" ? "io_kb" : "io_kb_total";
-
+            var plan = PlanTiers(conn, from, now, isMachine: false);
+            string source = TierSql.Source(plan, isMachine: false);
             cmd.CommandText = $"""
                 SELECT pi.name,
-                       AVG(s.{cpuCol}) as avg_cpu,
-                       MAX(s.{cpuCol}) as peak_cpu,
-                       MAX(s.{memCol}) as peak_memory_mb,
-                       SUM(s.{ioCol}) as total_io_kb,
+                       AVG(s.cpu_pct) as avg_cpu,
+                       MAX(s.cpu_pct) as peak_cpu,
+                       MAX(s.private_mb) as peak_memory_mb,
+                       SUM(s.io_kb) as total_io_kb,
                        COUNT(*) as sample_count,
                        COUNT(DISTINCT s.instance_id) as instance_count,
                        MIN(s.ts) as first_ts,
                        MAX(s.ts) as last_ts
-                FROM {table} s
+                FROM {source} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to
                   AND LOWER(pi.name) != 'idle'
                 GROUP BY pi.name
-                HAVING AVG(s.{cpuCol}) > {ProcessCpuNotablePct} OR MAX(s.{memCol}) > {ProcessMemoryNotableMb}
-                ORDER BY AVG(s.{cpuCol}) DESC
+                HAVING AVG(s.cpu_pct) > {ProcessCpuNotablePct} OR MAX(s.private_mb) > {ProcessMemoryNotableMb}
+                ORDER BY AVG(s.cpu_pct) DESC
                 LIMIT 50
                 """;
 
@@ -633,14 +606,14 @@ try
             if (checkCmd.ExecuteScalar() == null)
                 return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
 
-            var (table, _) = SelectTier(from.Value, to.Value, isMachine: true);
+            var plan = PlanTiers(conn, from.Value, to.Value, isMachine: true);
+            string source = TierSql.Source(plan, isMachine: true);
 
             string metricCol = metric switch
             {
-                "cpu" => table == "machine" ? "cpu_pct" : "cpu_pct_avg",
-                "memory" => table == "machine" ? "memory_avail_mb" : "memory_avail_mb_avg",
-                "disk" => table == "machine" ? "disk_busy_pct" : "disk_busy_pct_avg",
-                "network" => table == "machine" ? "net_kbps" : "net_kbps_avg",
+                "memory" => "memory_avail_mb",
+                "disk" => "disk_busy_pct",
+                "network" => "net_kbps",
                 _ => "cpu_pct"
             };
 
@@ -651,7 +624,7 @@ try
                        AVG({metricCol}) as avg_val,
                        MAX({metricCol}) as peak_val,
                        COUNT(*) as cnt
-                FROM {table}
+                FROM {source}
                 WHERE ts >= @from AND ts <= @to
                 GROUP BY day_offset, hour
                 ORDER BY day_offset, hour
@@ -742,32 +715,41 @@ finally
     mutex?.Dispose();
 }
 
-static (string table, long bucket) SelectTier(long from, long to, bool isMachine)
+static TierPlan PlanTiers(SqliteConnection conn, long from, long to, bool isMachine)
+    => TierSelection.Plan(from, to, isMachine, LoadCoverage(conn, isMachine));
+
+/// <summary>
+/// Reads the time span each tier table actually holds. Tables absent from an
+/// older database are skipped rather than throwing.
+/// </summary>
+static Dictionary<string, TierCoverage> LoadCoverage(SqliteConnection conn, bool isMachine)
 {
-    long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-    long rangeMs = to - from;
-    long ageMs = now - from;
+    var coverage = new Dictionary<string, TierCoverage>();
+    IReadOnlyList<string> tiers = TierSelection.TiersFor(isMachine);
 
-    long oneDay = 86_400_000L;
-    long sevenDays = 7 * oneDay;
+    var present = new List<string>();
+    using (var existsCmd = conn.CreateCommand())
+    {
+        string names = string.Join(", ", tiers.Select(t => $"'{t}'"));
+        existsCmd.CommandText = $"SELECT name FROM sqlite_master WHERE type='table' AND name IN ({names})";
+        using var existsReader = existsCmd.ExecuteReader();
+        while (existsReader.Read()) present.Add(existsReader.GetString(0));
+    }
 
-    string table;
-    if (ageMs <= oneDay)
-        table = isMachine ? "machine" : "sample";
-    else if (ageMs <= sevenDays)
-        table = isMachine ? "machine_1m" : "sample_1m";
-    else
-        table = isMachine ? "machine_10m" : "sample_10m";
+    if (present.Count == 0) return coverage;
 
-    long bucket = 0;
-    long maxPoints = 2000;
-    long rawInterval = table.Contains("10m") ? 600_000 : table.Contains("1m") ? 60_000 : 5_000;
-    long estimatedPoints = rangeMs / rawInterval;
+    using var cmd = conn.CreateCommand();
+    cmd.CommandText = string.Join(" UNION ALL ",
+        present.Select(t => $"SELECT '{t}' AS tier, MIN(ts) AS min_ts, MAX(ts) AS max_ts FROM {t}"));
 
-    if (estimatedPoints > maxPoints)
-        bucket = (rangeMs / maxPoints / rawInterval) * rawInterval;
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+        if (reader.IsDBNull(1) || reader.IsDBNull(2)) continue;
+        coverage[reader.GetString(0)] = new TierCoverage(reader.GetInt64(1), reader.GetInt64(2));
+    }
 
-    return (table, bucket);
+    return coverage;
 }
 
 public partial class Program { }
