@@ -134,12 +134,12 @@ public static class SchemaMigrations
     /// than only out of the numerator. The collector stores a sample precisely when
     /// CPU could not be computed, so a bucket can carry a NULL average over a real
     /// sample count, and charging that count against a value nobody measured would
-    /// drag the repaired average toward zero. This is the shape the viewer settled
-    /// on for the read side in <c>TierSql.WeightedAvgExpr</c>. The live re-rollup in
-    /// <see cref="Database.RollupSamples"/> still has the older shape, which is
-    /// tracked as issue #42; this migration writes permanent repairs and cannot be
-    /// run again once the duplicates are gone, so it uses the correct form now
-    /// rather than reproducing a known bias.
+    /// drag the repaired average toward zero. This matches the weighting the live
+    /// re-rollup uses in <see cref="Database"/> and the viewer uses on the read
+    /// side, so a repaired bucket and a freshly promoted one are computed the same
+    /// way. It matters more here than in either of those: this migration repairs
+    /// history in place and cannot be run again once the duplicates are gone, so
+    /// anything it gets wrong is permanent.
     ///
     /// Every statement is written to survive being run again. The version row goes
     /// in inside the same transaction, so a half applied migration cannot happen,

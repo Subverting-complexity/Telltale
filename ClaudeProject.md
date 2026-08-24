@@ -191,7 +191,6 @@ rather than sprint.
 
 ## Reference Docs
 
-- `v1-plan.md` — the v1 design and scope document
 - `schema.sql` — SQLite schema for the collector database
 - `docs/review.config.md` — PR review rules and auto-merge settings
 

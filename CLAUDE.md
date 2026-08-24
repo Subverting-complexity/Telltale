@@ -45,6 +45,26 @@ Work on **one story at a time** in a **fresh session per story**. Complete it
 - Search for existing utilities before creating new ones.
 - Write tests alongside the code, not after.
 
+#### Schema Migrations
+
+A database that already exists is brought up to date by an ordered migration in
+`collector/SchemaMigrations.cs`. An older `TelltaleCapture.exe` refuses to open
+a database recorded at a newer version than it understands, but the viewer only
+reads and carries on, so a migration has to stay safe for a build that predates
+it.
+
+A migration may add tables, indexes or nullable columns; drop an index made
+redundant by one it adds; and repair existing rows so they match what the column
+already means.
+
+It may not drop or rename a column or table, change a column's type, or change
+what a column means. A migration that has to do one of those is a breaking
+change: it needs a version gate on both executables and a deliberate decision,
+not a review override.
+
+Every migration ships with a test proving that a failure part way through rolls
+it back and leaves the recorded version untouched.
+
 ### Before Every Commit
 
 ```
@@ -100,6 +120,5 @@ during development:
 | `docs/review.config.md`  | Review labels, non-compliance gates, tech-stack review rules, auto-merge settings. Read when reviewing a PR.  |
 | `docs/security-advisories.md` | A NuGet or npm advisory is reported against a dependency. Records what was decided about each one and why. |
 | `.claude/ecosystem.md`   | Companion tools available on this machine (graphify, rtk, headroom, ccusage, fallow) and when to use each.    |
-| `v1-plan.md`             | The v1 design and scope document. Consult for intent behind an existing subsystem.                            |
 | `schema.sql`             | SQLite schema. Read before any change to storage, rollups, or viewer queries.                                 |
 | `CONTRIBUTING.md`        | Contribution and local development setup.                                                                     |
