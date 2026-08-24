@@ -124,6 +124,54 @@ public class TierSqlWeightingEdgeCaseTests : IDisposable
     }
 
     /// <summary>
+    /// The grouped endpoints average in two stages, totalling a group across its
+    /// instances at one instant before averaging over time. An instant where
+    /// nothing was measured produces a NULL total, and it has to leave the divisor
+    /// as well, exactly as a NULL row does in the single-stage form. A process's
+    /// first observation is such an instant, so this is the common case rather
+    /// than an exotic one.
+    /// </summary>
+    [Fact]
+    public void AnInstantWhereNothingWasMeasuredLeavesTheTwoStageDivisor()
+    {
+        long start = 1_700_000_000_000L;
+        // First observation carries no CPU, then the process runs at 90%.
+        Execute($"""
+            INSERT INTO sample (ts, instance_id, cpu_pct, private_mb, working_set_mb, io_kb)
+            VALUES ({start}, 1, NULL, 100.0, 100.0, 0.0),
+                   ({start + RawInterval}, 1, 90.0, 100.0, 100.0, 0.0),
+                   ({start + 2 * RawInterval}, 1, 90.0, 100.0, 100.0, 0.0),
+                   ({start + 3 * RawInterval}, 1, 90.0, 100.0, 100.0, 0.0);
+            """);
+
+        long to = start + 3 * RawInterval;
+        TierSource source = TierSql.Source(Plan(start, to), isMachine: false);
+
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "grouped")}
+            FROM (
+                SELECT pi.name,
+                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
+                       {TierSql.InstantWeight("s.weight")} as ts_weight
+                FROM {source.Sql} s
+                JOIN process_instance pi ON pi.id = s.instance_id
+                WHERE s.ts >= @from AND s.ts <= @to
+                GROUP BY pi.name, s.ts
+            ) sub
+            GROUP BY sub.name
+            """;
+        AddBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", start);
+        cmd.Parameters.AddWithValue("@to", to);
+
+        // The three measured instants all read 90. Charging the unmeasured
+        // instant's weight against nothing would report 67.5 instead, and would
+        // disagree with the ungrouped endpoint over identical rows.
+        Assert.Equal(90.0, Convert.ToDouble(cmd.ExecuteScalar()), precision: 6);
+    }
+
+    /// <summary>
     /// A mixed bucket is at least as wide as the coarsest tier interval, which is
     /// why a bucket was assumed to hold one tier only. But the bucket grid is
     /// anchored to the epoch while the raw tier starts at whatever instant the

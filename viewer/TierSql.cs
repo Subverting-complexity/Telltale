@@ -83,8 +83,8 @@ public static class TierSql
     /// across its instances at one instant before averaging over time. The total
     /// is scaled by the row's weight here so the outer half only has to divide.
     /// </summary>
-    public static string WeightedTotal(string column, string alias) =>
-        $"SUM({column} * 1.0 * weight) AS {alias}";
+    public static string WeightedTotal(string column, string alias, string weight = "weight") =>
+        $"SUM({column} * 1.0 * {weight}) AS {alias}";
 
     /// <summary>
     /// Weight of one instant, for the same two-stage shape. Instances at one
@@ -92,11 +92,24 @@ public static class TierSql
     /// exited mid-bucket carries a smaller count than its siblings, and the
     /// instant is still worth the widest coverage any of them saw.
     /// </summary>
-    public const string InstantWeight = "MAX(weight)";
+    public static string InstantWeight(string weight = "weight") => $"MAX({weight})";
 
-    /// <summary>Outer half of the two-stage average: totals already weighted, so just divide.</summary>
+    /// <summary>
+    /// Outer half of the two-stage average: the totals arrive already weighted, so
+    /// this only divides.
+    ///
+    /// An instant where nothing was measured carries a NULL total, and it has to
+    /// leave the divisor as well, for the same reason a NULL row does in
+    /// <see cref="WeightedAvgExpr"/>. Dropping it from the numerator alone would
+    /// charge its weight against a total that was never taken, and a process's
+    /// first observation is exactly such an instant.
+    /// </summary>
+    public static string AvgOfWeightedTotalsExpr(string total, string weight) =>
+        $"SUM({total}) / NULLIF(SUM(CASE WHEN {total} IS NULL THEN 0 ELSE {weight} END), 0)";
+
+    /// <summary><see cref="AvgOfWeightedTotalsExpr"/> with an alias, for a select list.</summary>
     public static string AvgOfWeightedTotals(string total, string weight, string alias) =>
-        $"SUM({total}) / NULLIF(SUM({weight}), 0) AS {alias}";
+        $"{AvgOfWeightedTotalsExpr(total, weight)} AS {alias}";
 
     /// <summary>
     /// A parenthesised UNION ALL over the selected tiers, valid directly after

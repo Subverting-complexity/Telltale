@@ -150,11 +150,15 @@ public class TierSqlTests : IDisposable
         {
             cmd.CommandText = $"""
                 SELECT (ts / @bucket) * @bucket as ts,
-                       AVG(cpu_pct) as cpu_pct, AVG(memory_avail_mb) as memory_avail_mb,
+                       {TierSql.WeightedAvg("cpu_pct", "cpu_pct")},
+                       {TierSql.WeightedAvg("memory_avail_mb", "memory_avail_mb")},
                        MAX(commit_mb) as commit_mb, SUM(hard_faults) as hard_faults,
-                       AVG(disk_read_ms) as disk_read_ms, AVG(disk_write_ms) as disk_write_ms,
-                       memory_total_mb, AVG(disk_busy_pct) as disk_busy_pct,
-                       AVG(net_kbps) as net_kbps, AVG(gpu_busy_pct) as gpu_busy_pct
+                       {TierSql.WeightedAvg("disk_read_ms", "disk_read_ms")},
+                       {TierSql.WeightedAvg("disk_write_ms", "disk_write_ms")},
+                       memory_total_mb,
+                       {TierSql.WeightedAvg("disk_busy_pct", "disk_busy_pct")},
+                       {TierSql.WeightedAvg("net_kbps", "net_kbps")},
+                       {TierSql.WeightedAvg("gpu_busy_pct", "gpu_busy_pct")}
                 FROM {source.Sql} WHERE ts >= @from AND ts <= @to
                 GROUP BY ts / @bucket ORDER BY ts
                 """;
@@ -481,7 +485,7 @@ public class TierSqlTests : IDisposable
             FROM (
                 SELECT pi.name, SUM(s.cpu_pct) as ts_cpu,
                        {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted")},
-                       {TierSql.InstantWeight} as ts_weight
+                       {TierSql.InstantWeight("s.weight")} as ts_weight
                 FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE s.ts >= @from AND s.ts <= @to

@@ -185,7 +185,7 @@ try
             // totals are averaged over time. Scaling by weight happens on the inner
             // total, so an instance present for only part of a rollup bucket
             // contributes the share of the bucket it was actually there for.
-            string weightedCpu = "SUM(sub.ts_cpu_weighted) / NULLIF(SUM(sub.ts_weight), 0)";
+            string weightedCpu = TierSql.AvgOfWeightedTotalsExpr("sub.ts_cpu_weighted", "sub.ts_weight");
             string sortExpr = sort switch
             {
                 "memory" => "MAX(sub.ts_mem)",
@@ -206,7 +206,7 @@ try
                            SUM(s.private_mb) as ts_mem,
                            SUM(s.io_kb) as ts_io,
                            COUNT(DISTINCT s.instance_id) as inst_cnt,
-                           {TierSql.InstantWeight} as ts_weight
+                           {TierSql.InstantWeight("s.weight")} as ts_weight
                     FROM {source.Sql} s
                     JOIN process_instance pi ON pi.id = s.instance_id
                     WHERE s.ts >= @from AND s.ts <= @to
@@ -388,7 +388,7 @@ try
                        {TierSql.WeightedTotal("s.working_set_mb", "ts_ws_weighted")},
                        SUM(s.io_kb) as ts_io,
                        COUNT(DISTINCT s.instance_id) as inst_cnt,
-                       {TierSql.InstantWeight} as ts_weight
+                       {TierSql.InstantWeight("s.weight")} as ts_weight
                 FROM {source.Sql} s
                 JOIN process_instance pi ON pi.id = s.instance_id
                 WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
