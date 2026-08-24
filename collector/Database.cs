@@ -292,58 +292,88 @@ public sealed class Database : IDisposable
 
         bool isReRollup = sourceTable.Contains("_1m") || sourceTable.Contains("_10m");
 
+        // The machine tables carry memory_total_mb, a value that describes the
+        // machine rather than the interval, so it is taken from the last row in
+        // each bucket instead of being averaged. That lookup used to be a
+        // correlated subquery, which SQLite answered with one full scan of the
+        // source table per bucket: invisible when a cycle promotes one or two
+        // buckets, and minutes of held write lock when it promotes a backlog.
+        // The last_total CTE below computes the same value for every bucket in a
+        // fixed number of scans instead.
+        //
+        // Restricting the CTE to rows older than the cutoff is safe even though
+        // the original subquery had no such filter: the cutoff is already rounded
+        // down to a bucket boundary, so no promoted bucket straddles it and the
+        // row that wins is the same one either way.
+
         if (isMachine && !isReRollup)
         {
             cmd.CommandText = $"""
+                WITH last_total AS (
+                    SELECT bucket_ts, memory_total_mb
+                    FROM (
+                        SELECT (ts / @bucket) * @bucket AS bucket_ts, memory_total_mb,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY ts / @bucket ORDER BY ts DESC) AS rn
+                        FROM {sourceTable}
+                        WHERE ts < @cutoff)
+                    WHERE rn = 1)
                 INSERT INTO {targetTable}
                     (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
                      commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
                      disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
-                SELECT (ts / @bucket) * @bucket,
-                       AVG(cpu_pct), MAX(cpu_pct), AVG(memory_avail_mb),
-                       (SELECT m2.memory_total_mb FROM {sourceTable} m2
-                        WHERE m2.ts / @bucket = {sourceTable}.ts / @bucket
-                        ORDER BY m2.ts DESC LIMIT 1),
-                       MAX(commit_mb), SUM(hard_faults),
-                       AVG(disk_read_ms), AVG(disk_write_ms),
-                       AVG(disk_busy_pct), MAX(disk_busy_pct),
-                       AVG(net_kbps), AVG(gpu_busy_pct), COUNT(*)
-                FROM {sourceTable}
-                WHERE ts < @cutoff
+                SELECT (s.ts / @bucket) * @bucket,
+                       AVG(s.cpu_pct), MAX(s.cpu_pct), AVG(s.memory_avail_mb),
+                       MAX(lt.memory_total_mb),
+                       MAX(s.commit_mb), SUM(s.hard_faults),
+                       AVG(s.disk_read_ms), AVG(s.disk_write_ms),
+                       AVG(s.disk_busy_pct), MAX(s.disk_busy_pct),
+                       AVG(s.net_kbps), AVG(s.gpu_busy_pct), COUNT(*)
+                FROM {sourceTable} s
+                LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
+                WHERE s.ts < @cutoff
                   AND NOT EXISTS (
                       SELECT 1 FROM {targetTable} t
-                      WHERE t.ts = ({sourceTable}.ts / @bucket) * @bucket)
-                GROUP BY ts / @bucket
+                      WHERE t.ts = (s.ts / @bucket) * @bucket)
+                GROUP BY s.ts / @bucket
                 """;
         }
         else if (isMachine && isReRollup)
         {
             cmd.CommandText = $"""
+                WITH last_total AS (
+                    SELECT bucket_ts, memory_total_mb
+                    FROM (
+                        SELECT (ts / @bucket) * @bucket AS bucket_ts, memory_total_mb,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY ts / @bucket ORDER BY ts DESC) AS rn
+                        FROM {sourceTable}
+                        WHERE ts < @cutoff)
+                    WHERE rn = 1)
                 INSERT INTO {targetTable}
                     (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
                      commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
                      disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
-                SELECT (ts / @bucket) * @bucket,
-                       SUM(cpu_pct_avg * sample_count) / SUM(sample_count),
-                       MAX(cpu_pct_max),
-                       SUM(memory_avail_mb_avg * sample_count) / SUM(sample_count),
-                       (SELECT m2.memory_total_mb FROM {sourceTable} m2
-                        WHERE m2.ts / @bucket = {sourceTable}.ts / @bucket
-                        ORDER BY m2.ts DESC LIMIT 1),
-                       MAX(commit_mb_max), SUM(hard_faults_total),
-                       SUM(disk_read_ms_avg * sample_count) / SUM(sample_count),
-                       SUM(disk_write_ms_avg * sample_count) / SUM(sample_count),
-                       SUM(disk_busy_pct_avg * sample_count) / SUM(sample_count),
-                       MAX(disk_busy_pct_max),
-                       SUM(net_kbps_avg * sample_count) / SUM(sample_count),
-                       SUM(gpu_busy_pct_avg * sample_count) / SUM(sample_count),
-                       SUM(sample_count)
-                FROM {sourceTable}
-                WHERE ts < @cutoff
+                SELECT (s.ts / @bucket) * @bucket,
+                       {WeightedAvg("s.cpu_pct_avg", "s.sample_count")},
+                       MAX(s.cpu_pct_max),
+                       {WeightedAvg("s.memory_avail_mb_avg", "s.sample_count")},
+                       MAX(lt.memory_total_mb),
+                       MAX(s.commit_mb_max), SUM(s.hard_faults_total),
+                       {WeightedAvg("s.disk_read_ms_avg", "s.sample_count")},
+                       {WeightedAvg("s.disk_write_ms_avg", "s.sample_count")},
+                       {WeightedAvg("s.disk_busy_pct_avg", "s.sample_count")},
+                       MAX(s.disk_busy_pct_max),
+                       {WeightedAvg("s.net_kbps_avg", "s.sample_count")},
+                       {WeightedAvg("s.gpu_busy_pct_avg", "s.sample_count")},
+                       SUM(s.sample_count)
+                FROM {sourceTable} s
+                LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
+                WHERE s.ts < @cutoff
                   AND NOT EXISTS (
                       SELECT 1 FROM {targetTable} t
-                      WHERE t.ts = ({sourceTable}.ts / @bucket) * @bucket)
-                GROUP BY ts / @bucket
+                      WHERE t.ts = (s.ts / @bucket) * @bucket)
+                GROUP BY s.ts / @bucket
                 """;
         }
         else if (!isMachine && !isReRollup)
@@ -371,7 +401,7 @@ public sealed class Database : IDisposable
                     (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
                      working_set_mb_max, io_kb_total, sample_count)
                 SELECT (ts / @bucket) * @bucket, instance_id,
-                       SUM(cpu_pct_avg * sample_count) / SUM(sample_count),
+                       {WeightedAvg("cpu_pct_avg", "sample_count")},
                        MAX(cpu_pct_max), MAX(private_mb_max),
                        MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count)
                 FROM {sourceTable}
@@ -402,6 +432,22 @@ public sealed class Database : IDisposable
 
         tx.Commit();
     }
+
+    /// <summary>
+    /// Builds the weighted average of an already-rolled-up column, using each
+    /// source row's sample_count as its weight.
+    ///
+    /// A row whose average is NULL carries samples that were never measured, so
+    /// its weight is excluded from the divisor as well as the dividend. Summing
+    /// the weight on only one side of the division charges an unmeasured sample
+    /// against a value that was never taken, which biases the result low, and
+    /// the result is stored rather than recomputed per query, so the bias is
+    /// permanent. A bucket in which nothing was measured divides by NULL and
+    /// stays NULL rather than collapsing to zero.
+    /// </summary>
+    private static string WeightedAvg(string column, string weight) =>
+        $"SUM({column} * {weight}) / " +
+        $"NULLIF(SUM(CASE WHEN {column} IS NULL THEN 0 ELSE {weight} END), 0)";
 
     /// <summary>
     /// Rounds a timestamp down to the start of the bucket containing it. C# integer
