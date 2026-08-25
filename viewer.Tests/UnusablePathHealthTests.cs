@@ -36,6 +36,9 @@ public class UnusablePathHealthTests : IClassFixture<UnusablePathFactory>
     {
         await _client.GetAsync("/api/health");
 
+        // Searches everything the fixture recorded rather than only this request.
+        // A standing fault is reported once and then collapsed, so whichever test in
+        // this class polls first is the one that produces the entry.
         var warning = _factory.Logs.Entries.LastOrDefault(
             e => e.Level == LogLevel.Warning
                  && e.Message.Contains("path", StringComparison.OrdinalIgnoreCase));
@@ -46,6 +49,9 @@ public class UnusablePathHealthTests : IClassFixture<UnusablePathFactory>
                 .Where(e => e.Level == LogLevel.Warning)
                 .Select(e => e.Message)));
 
-        Assert.NotNull(warning!.Exception);
+        // Pinned to the failure this handler was widened for. Without this the test
+        // would accept any warning mentioning a path, including one from a future
+        // change that has nothing to do with the configured database path.
+        Assert.IsAssignableFrom<ArgumentException>(warning!.Exception);
     }
 }

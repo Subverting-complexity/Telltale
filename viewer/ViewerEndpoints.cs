@@ -53,20 +53,38 @@ public static class ViewerEndpoints
         // recorded here before the empty result goes out. Warning rather than error:
         // the request itself is still answered.
         //
-        // Recorded once per endpoint per distinct message. A capture that cannot be
-        // read fails on every request, and the frontend polls /api/health every ten
-        // seconds, so logging each one would fill the rotating log in a few hours and
-        // evict everything else in it. The cost of collapsing them is that a failure
-        // which clears and returns with the same message is only reported once.
+        // Recorded once per source per distinct message. A capture that cannot be read
+        // fails on every request, and the frontend polls /api/health every ten seconds,
+        // so logging each one would fill the rotating log in a few hours and evict
+        // everything else in it. The cost of collapsing them is that a failure which
+        // clears and returns with the same message is only reported once.
+        //
+        // Bounded: the keys are the fixed set of route templates below plus the one
+        // constant used for the configured path, and each value is replaced rather
+        // than accumulated. The check and the set are not one atomic step, so two
+        // simultaneous first requests to the same source can both report. That costs a
+        // duplicate line and nothing else, which is not worth locking for.
+        //
+        // The state lives with the WebApplication, so it starts empty each time the
+        // host builds one. Reopening the window reports a standing fault again.
+        // Not a route, so it cannot collide with the endpoint keys.
+        const string ConfiguredPathSource = "the configured database path";
+
         var lastReported = new ConcurrentDictionary<string, string>();
+
+        bool NotYetReported(string source, string message)
+        {
+            if (lastReported.TryGetValue(source, out string? previous) && previous == message)
+                return false;
+
+            lastReported[source] = message;
+            return true;
+        }
 
         void ReportQueryFailure(SqliteException ex, string endpoint)
         {
-            if (lastReported.TryGetValue(endpoint, out string? previous) && previous == ex.Message)
-                return;
-
-            lastReported[endpoint] = ex.Message;
-            logger.LogWarning(ex, "The capture database could not be queried for {Endpoint}. Returning an empty result.", endpoint);
+            if (NotYetReported(endpoint, ex.Message))
+                logger.LogWarning(ex, "The capture database could not be queried for {Endpoint}. Returning an empty result.", endpoint);
         }
 
         // --- Threshold constants (shared by /api/alerts and /api/thresholds) ---
@@ -604,10 +622,19 @@ public static class ViewerEndpoints
                 // escape instead would turn /api/health into a 500, and the frontend
                 // discards a failed health poll silently, so the operator would see the
                 // status bar disappear with nothing anywhere explaining why.
+                // Collapsed like the query failures, and for the same reason. An
+                // unusable path is a standing fault rather than a transient one, so it
+                // throws on every poll of this endpoint; reporting each one would
+                // refill the log this collapsing exists to protect.
                 if (ex is ArgumentException or NotSupportedException)
-                    logger.LogWarning(ex, "The configured capture database path is not usable.");
+                {
+                    if (NotYetReported(ConfiguredPathSource, ex.Message))
+                        logger.LogWarning(ex, "The configured capture database path is not usable.");
+                }
                 else
+                {
                     logger.LogDebug(ex, "The size of the capture database could not be read.");
+                }
             }
 
             return Results.Json(new

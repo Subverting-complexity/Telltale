@@ -24,7 +24,14 @@ public class BrokenDatabaseFactory : TelltaleTestFactory
     /// </summary>
     public const int FillerBytes = 3 * 1024 * 1024;
 
-    /// <summary>What the viewer logged while serving requests.</summary>
+    /// <summary>
+    /// What the viewer logged while serving requests.
+    ///
+    /// The viewer reports a given failure once and collapses identical repeats, so a
+    /// test that expects a fresh warning must hit an endpoint no other test in the
+    /// same class has already hit. Each test class gets its own instance of this
+    /// fixture, so the collapsing is scoped to one class.
+    /// </summary>
     public RecordingLoggerProvider Logs { get; } = new();
 
     public BrokenDatabaseFactory() : base(CreateUnreadableDb())
