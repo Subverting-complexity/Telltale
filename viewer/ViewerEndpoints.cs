@@ -36,6 +36,8 @@ public static class ViewerEndpoints
 
         var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+        var logger = app.Logger;
+
         SqliteConnection OpenDb()
         {
             string mode = File.Exists(dbPath) ? "ReadOnly" : "ReadWrite";
@@ -43,6 +45,14 @@ public static class ViewerEndpoints
             conn.Open();
             return conn;
         }
+
+        // Every endpoint answers a failed query with its own empty shape so the page
+        // still renders rather than breaking. That leaves the caller unable to tell a
+        // capture with no data from one the viewer could not read, so the reason is
+        // recorded here before the empty result goes out. Warning rather than error:
+        // the request itself is still answered.
+        void ReportQueryFailure(SqliteException ex, string endpoint) =>
+            logger.LogWarning(ex, "The capture database could not be queried for {Endpoint}. Returning an empty result.", endpoint);
 
         // --- Threshold constants (shared by /api/alerts and /api/thresholds) ---
         const double SystemCpuElevatedPct = 10;
@@ -91,8 +101,9 @@ public static class ViewerEndpoints
                 }
                 return Results.Json(new { min = (long?)null, max = (long?)null }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/range");
                 return Results.Json(new { min = (long?)null, max = (long?)null }, jsonOptions);
             }
         });
@@ -126,8 +137,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { resolution = result.Resolution, points }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/timeline");
                 return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -250,8 +262,9 @@ public static class ViewerEndpoints
         
                 return Results.Json(new { grouped, processes = results }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/processes");
                 return Results.Json(new { grouped, processes = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -329,8 +342,9 @@ public static class ViewerEndpoints
         
                 return Results.Json(new { info, resolution = plan.Resolution, points }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/process/{id:long}");
                 return Results.Json(new { info = (object?)null, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -399,8 +413,9 @@ public static class ViewerEndpoints
         
                 return Results.Json(new { name, resolution = plan.Resolution, points }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/process-group/{name}");
                 return Results.Json(new { name, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -487,8 +502,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { period, alerts }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/alerts");
                 return Results.Json(new { period, alerts = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -542,11 +558,12 @@ public static class ViewerEndpoints
                     }
                 }
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
                 // An unreadable capture leaves the counters at their defaults,
                 // which reports the collector as not running. That is the honest
                 // answer for a database the viewer cannot open.
+                ReportQueryFailure(ex, "/api/health");
             }
 
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -560,6 +577,9 @@ public static class ViewerEndpoints
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
+                // Only the reported size is lost, so this is a note rather than a
+                // warning: the health response is still correct in every other part.
+                logger.LogDebug(ex, "The size of the capture database could not be read.");
                 // Only the reported size is lost, so the rest of the health
                 // response is still worth returning. This guards a file probe
                 // rather than a query, so SqliteException is not what it throws;
@@ -649,8 +669,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { baselines }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/baselines");
                 return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -730,8 +751,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { metric, buckets }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/heatmap");
                 return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
             }
         });

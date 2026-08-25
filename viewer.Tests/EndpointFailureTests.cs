@@ -82,7 +82,7 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
     [InlineData("/api/process/1?from=0&to=99999999999999")]
     [InlineData("/api/process-group/testapp.exe?from=0&to=99999999999999")]
     [InlineData("/api/alerts?days=1")]
-    [InlineData("/api/baselines")]
+    [InlineData("/api/baselines?names=testapp.exe")]
     [InlineData("/api/heatmap?from=0&to=99999999999999&metric=cpu")]
     public async Task EveryQueryEndpoint_AnswersRatherThanFailingWhenTheDatabaseCannotBeRead(string url)
     {
