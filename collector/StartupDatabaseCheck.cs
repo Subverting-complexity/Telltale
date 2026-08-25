@@ -45,22 +45,29 @@ public static class StartupDatabaseCheck
     }
 
     /// <summary>
-    /// What to tell the user when the database could not be opened at all.
+    /// What to tell the user when the database could not be opened, or could not
+    /// be brought up to date once it was.
     ///
     /// The collector runs in the background with no interface, so this failure
     /// is both silent and repeating: it happens again on every start until
     /// somebody works out why. Naming the file and the underlying error is the
     /// difference between a fixable problem and a recorder that quietly stopped.
+    ///
+    /// The heading says "use" rather than "open" because the caller catches
+    /// everything the constructor can throw, and that includes a SQLite error
+    /// raised by a migration after the file opened perfectly well. Claiming the
+    /// file would not open would be wrong in that case, so the suggestions below
+    /// are stated as conditional rather than as the diagnosis.
     /// </summary>
     public static string DescribeOpenFailure(string databasePath, Exception error) =>
         $"""
-        Cannot open the Telltale database:
+        Cannot use the Telltale database:
           {databasePath}
 
         {error.Message}
 
-        Check that no other program has the file open, that the drive it is on is
-        available, and that this account can write to that folder. To record
-        somewhere else instead, set databasePath in telltale.json.
+        If the file cannot be opened, check that no other program has it open, that
+        the drive it is on is available, and that this account can write to that
+        folder. To record somewhere else instead, set databasePath in telltale.json.
         """;
 }

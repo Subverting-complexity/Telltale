@@ -84,7 +84,7 @@ public static class SchemaMigrations
             // see StartupDatabaseCheck.
             logger.LogWarning(
                 "Database is at schema version {Current}, newer than the version {Latest} this build knows. " +
-                "Leaving it unchanged.", current, target);
+                "Leaving it unchanged.", current, LatestVersion);
 
             return current;
         }

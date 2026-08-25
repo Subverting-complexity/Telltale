@@ -38,4 +38,34 @@ public class DatabaseOpenFailureTests
             try { Directory.Delete(path, recursive: true); } catch { /* best effort cleanup */ }
         }
     }
+
+    [Fact]
+    public void FileThatIsNotADatabase_ThrowsSomethingTheStartupPathCatches()
+    {
+        // A different code path from the test above, and worth having for that
+        // reason. The file opens without complaint and the failure comes later,
+        // out of the first pragma in InitSchema, so this covers the corrupt
+        // database case rather than the unopenable one.
+        string path = Path.Combine(Path.GetTempPath(), $"telltale_corrupt_{Guid.NewGuid():N}.db");
+        File.WriteAllText(path, "this is not a database");
+
+        try
+        {
+            var error = Assert.ThrowsAny<Exception>(
+                () => new Database(path, new RecordingLogger()));
+
+            Assert.True(
+                error is SqliteException or IOException or UnauthorizedAccessException,
+                $"Program.cs catches only those three types, and this was "
+                + $"{error.GetType().Name}: {error.Message}");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            foreach (string suffix in new[] { "", "-wal", "-shm" })
+            {
+                try { File.Delete(path + suffix); } catch { /* best effort cleanup */ }
+            }
+        }
+    }
 }
