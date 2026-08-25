@@ -90,4 +90,42 @@ describe('App drill-down history navigation', () => {
     await waitFor(() =>
       expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
   });
+
+  it('ArrowLeft backs out of a drill-down via history, same as Escape', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('listitem', { name: /chrome\.exe/ }));
+    expect(await screen.findByText('Drill-down: chrome.exe')).toBeInTheDocument();
+
+    await user.keyboard('{ArrowLeft}');
+
+    await waitFor(() =>
+      expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
+  });
+
+  it('leaves plain date-paging ArrowLeft/ArrowRight alone when no drill-down is open', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Wait for the dashboard to settle before reading the starting date, so
+    // the "before" snapshot isn't taken mid-load.
+    await screen.findByText(/Top Consumers/);
+    const before = document.querySelector('.breadcrumb-current')?.textContent;
+
+    await user.keyboard('{ArrowLeft}');
+
+    await waitFor(() => {
+      const after = document.querySelector('.breadcrumb-current')?.textContent;
+      expect(after).not.toBe(before);
+    });
+
+    const afterLeft = document.querySelector('.breadcrumb-current')?.textContent;
+    await user.keyboard('{ArrowRight}');
+
+    await waitFor(() => {
+      const after = document.querySelector('.breadcrumb-current')?.textContent;
+      expect(after).not.toBe(afterLeft);
+    });
+  });
 });

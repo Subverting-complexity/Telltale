@@ -281,6 +281,11 @@ export default function App() {
         setCustomRange(null);
         setSelectedHourRange(null);
         setSelectedProcess(null);
+        // Wiping is reachable while a drill-down is open (the header button
+        // isn't gated on it), and that drill-down's history entry would
+        // otherwise survive the wipe. Without this, Back then Forward could
+        // still land on a process whose data was just deleted.
+        window.history.replaceState({ selectedProcess: null }, '');
         refreshData();
       }}
     />
