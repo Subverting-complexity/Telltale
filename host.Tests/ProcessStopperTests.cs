@@ -48,7 +48,7 @@ public class ProcessStopperTests : IDisposable
         {
             Directory.Delete(_folder, recursive: true);
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // The executable can still be locked for a moment after the process
             // goes. A temporary folder left behind is not worth failing a test for.
