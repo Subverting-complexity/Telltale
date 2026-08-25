@@ -59,6 +59,34 @@ has admin rights on the repo.
 `bypass-ci-when-no-pipeline` is `false` and must stay so — this repo has an
 active workflow, and the two bypass settings are mutually exclusive.
 
+### The review gate
+
+Auto-merge stays on. What is not allowed is a merge landing before the review
+has finished, and `.github/workflows/review-gate.yml` is what enforces that.
+
+The job is called `Review complete`. It passes only while the pull request
+carries `claude-approved`, and it fails outright on a new push, because a
+commit the reviewer never saw invalidates the verdict that came before it. The
+next review sets the state label again, which re-runs the job.
+
+Two settings in branch protection on `main` make it real, and the file is inert
+without them:
+
+| Setting | Why |
+| --- | --- |
+| `Review complete` listed in required status checks | GitHub waits for every required check before completing a merge, queued or direct. This is what makes the label binding. |
+| **Include administrators** enabled | The agent merges as an account with admin on this repository. With admin enforcement off, a required check is advisory for precisely the account that needs it most. |
+
+This was added because the ordering had been held only by convention. A claim
+ref under `refs/claims/` and a review-state label are both invisible to a merge,
+so any process calling `gh pr merge` succeeded as soon as CI went green.
+
+PR #72 is the worked example, and the reason this is written down rather than
+assumed. It merged five minutes after opening, carrying `claude-reviewing`, with
+no verdict recorded, while two reviewers were still running and the claim ref
+was held. The findings that review had already produced were lost from the merge
+and had to be reapplied separately in PR #79.
+
 ## Hard Non-Compliance Gates
 
 Any of these force a `Changes Requested` verdict regardless of other findings.

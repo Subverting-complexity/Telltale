@@ -1,0 +1,79 @@
+name: Review gate
+
+# Stops a pull request merging while its review is still in flight.
+#
+# Auto-merge on approval is deliberate here. An approved pull request should go
+# in on its own once the tests are green, with no human step. What must not
+# happen is a merge landing before any reviewer has finished with it.
+#
+# Until this existed, nothing prevented that. The ordering was held only by
+# convention inside the agent workflow: a claim ref under refs/claims/, and a
+# review-state label. Neither is consulted by a merge. Branch protection asked
+# only for the two test jobs, so any process calling `gh pr merge` succeeded the
+# moment CI went green, and an enqueued `gh pr merge --auto` did the same thing
+# on GitHub's own schedule.
+#
+# PR #72 is the worked example. It merged five minutes after opening, carrying
+# claude-reviewing, with no verdict recorded, while two reviewers were still
+# running and the claim ref was held. The review findings it had already
+# collected were lost from that merge and had to be reapplied in PR #79.
+#
+# Making this job a required status check turns "review first, then merge" into
+# something the server enforces, without giving up auto-merge itself: GitHub
+# waits for every required check before completing a merge, queued or direct.
+#
+# TWO SETTINGS ARE LOAD BEARING, and this file does nothing on its own without
+# them. Both live in branch protection on main:
+#
+#   1. This job ("Review complete") must be added to the required status checks.
+#   2. "Include administrators" must be on. The agent pushes and merges as an
+#      account with admin on this repository, and with admin enforcement off a
+#      required check is advisory for exactly the account that needs it most.
+#
+# The review-state labels read below are defined in docs/review.config.md.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, labeled, unlabeled, ready_for_review]
+
+# Keep only the newest evaluation. Reconciling the state removes one label and
+# adds another, which fires two events in quick succession; without this the
+# older of the two could finish last and leave a stale verdict as the result.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  review-state:
+    name: Review complete
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a finished review
+        env:
+          ACTION: ${{ github.event.action }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          echo "Labels on this pull request: ${LABELS:-none}"
+
+          # A new commit invalidates whatever verdict came before it, because
+          # the reviewer read different code. Rather than try to work out
+          # whether an approval predates the push, refuse outright. The next
+          # review sets the state label again, and that re-runs this job.
+          if [ "$ACTION" = "synchronize" ]; then
+            echo "::error::New commits were pushed, so any earlier approval no longer applies to this code. Merging stays blocked until the review runs again."
+            exit 1
+          fi
+
+          case ",${LABELS}," in
+            *,claude-approved,*)
+              echo "Review finished and approved. Merging is allowed."
+              exit 0
+              ;;
+          esac
+
+          echo "::error::This pull request has not been approved. Merging stays blocked until a review sets claude-approved. Current labels: ${LABELS:-none}."
+          exit 1
