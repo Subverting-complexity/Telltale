@@ -19,6 +19,7 @@ if (!isTestHost)
 try
 {
     var builder = WebApplication.CreateBuilder(args);
+    builder.WebHost.UseUrls($"http://{ViewerDefaults.LoopbackAddress}:{ViewerDefaults.Port}");
 
     var app = builder.Build();
 
