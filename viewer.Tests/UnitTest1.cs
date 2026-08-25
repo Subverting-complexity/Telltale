@@ -82,10 +82,55 @@ public class ViewerApiTests : IClassFixture<TelltaleTestFactory>
     }
 
     [Fact]
+    public async Task GetTimeline_ReturnsEmptyWhenNoDatabase()
+    {
+        var response = await _client.GetAsync("/api/timeline?from=0&to=1000000000000");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync();
+        var doc = JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.TryGetProperty("resolution", out _));
+        Assert.Empty(doc.RootElement.GetProperty("points").EnumerateArray().ToList());
+    }
+
+    [Fact]
     public async Task GetProcesses_RequiresParameters()
     {
         var response = await _client.GetAsync("/api/processes");
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetProcesses_ReturnsEmptyWhenNoDatabase()
+    {
+        var response = await _client.GetAsync("/api/processes?from=0&to=1000000000000");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync();
+        var doc = JsonDocument.Parse(json);
+        Assert.Empty(doc.RootElement.GetProperty("processes").EnumerateArray().ToList());
+    }
+
+    [Fact]
+    public async Task GetProcessDetail_ReturnsEmptyWhenNoDatabase()
+    {
+        var response = await _client.GetAsync("/api/process/1?from=0&to=1000000000000");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync();
+        var doc = JsonDocument.Parse(json);
+        Assert.Empty(doc.RootElement.GetProperty("points").EnumerateArray().ToList());
+    }
+
+    [Fact]
+    public async Task GetProcessGroup_ReturnsEmptyWhenNoDatabase()
+    {
+        var response = await _client.GetAsync("/api/process-group/test.exe?from=0&to=1000000000000");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync();
+        var doc = JsonDocument.Parse(json);
+        Assert.Empty(doc.RootElement.GetProperty("points").EnumerateArray().ToList());
     }
 
     [Fact]
