@@ -11,13 +11,13 @@ if not exist frontend\node_modules (
     cd ..
 )
 
-:: Start collector in a new window
+:: Start collector in a new window (pause on failure so the error stays visible)
 echo Starting collector...
-start "Telltale Collector" cmd /c "cd collector && dotnet run"
+start "Telltale Collector" cmd /c "cd collector && dotnet run || pause"
 
 :: Start viewer backend in a new window
 echo Starting viewer backend...
-start "Telltale Viewer" cmd /c "cd viewer && dotnet run --launch-profile Development"
+start "Telltale Viewer" cmd /c "cd viewer && dotnet run --launch-profile Development || pause"
 
 :: Wait for backend to start
 timeout /t 3 /nobreak >nul
