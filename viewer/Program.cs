@@ -12,6 +12,7 @@ if (!isTestHost)
     {
         mutex.Dispose();
         Console.Error.WriteLine("Another instance of the Telltale viewer is already running.");
+        PauseOnError();
         Environment.Exit(1);
         return;
     }
@@ -750,6 +751,12 @@ try
 
     app.Run();
 }
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"Telltale viewer failed to start: {ex}");
+    PauseOnError();
+    Environment.Exit(1);
+}
 finally
 {
     mutex?.ReleaseMutex();
@@ -791,6 +798,14 @@ static void LaunchBrowser(string url)
         });
     }
     catch { }
+}
+
+static void PauseOnError()
+{
+    if (!Environment.UserInteractive) return;
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("Press any key to exit...");
+    try { Console.ReadKey(true); } catch { }
 }
 
 /// <summary>Binds the slice bounds a tier source reads between.</summary>

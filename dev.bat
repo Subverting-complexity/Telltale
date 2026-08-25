@@ -25,7 +25,14 @@ timeout /t 3 /nobreak >nul
 :: Open browser in a standalone app window so it doesn't mix with normal tabs
 start "" msedge --app=http://localhost:5173
 
-:: Start Vite dev server in the foreground
+:: Start Vite dev server in the foreground. If it exits with an error, pause
+:: so the output stays readable in the same way cmd /k keeps the backend
+:: windows open.
 echo Starting Vite dev server...
 cd frontend
 npm run dev
+if %errorlevel% neq 0 (
+    echo.
+    echo Vite dev server exited with an error.
+    pause
+)
