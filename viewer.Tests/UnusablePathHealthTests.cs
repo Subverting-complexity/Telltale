@@ -54,4 +54,20 @@ public class UnusablePathHealthTests : IClassFixture<UnusablePathFactory>
         // change that has nothing to do with the configured database path.
         Assert.IsAssignableFrom<ArgumentException>(warning!.Exception);
     }
+
+    [Fact]
+    public async Task Health_ReportsTheUnusablePathOnceRatherThanOnEveryPoll()
+    {
+        await _client.GetAsync("/api/health");
+        await _client.GetAsync("/api/health");
+
+        int pathWarnings = _factory.Logs.Entries.Count(
+            e => e.Level == LogLevel.Warning && e.Exception is ArgumentException);
+
+        // Counted across the whole fixture rather than within this test, which makes
+        // the expected number one however many times the sibling tests poll. An
+        // unusable path is a standing fault, so without the collapsing this would rise
+        // with every poll and fill the rotating log the application depends on.
+        Assert.Equal(1, pathWarnings);
+    }
 }

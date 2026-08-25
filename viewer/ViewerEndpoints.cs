@@ -67,6 +67,7 @@ public static class ViewerEndpoints
         //
         // The state lives with the WebApplication, so it starts empty each time the
         // host builds one. Reopening the window reports a standing fault again.
+
         // Not a route, so it cannot collide with the endpoint keys.
         const string ConfiguredPathSource = "the configured database path";
 
@@ -618,10 +619,13 @@ public static class ViewerEndpoints
                 // The last two cover a configured database path that is empty or
                 // malformed, which reaches here through the FileInfo constructor. That
                 // is a configuration error rather than a transient one, so it is worth
-                // a warning rather than the debug note the others get. Letting it
-                // escape instead would turn /api/health into a 500, and the frontend
+                // a warning, where the transient cases below are left at debug and so
+                // are dropped by the Information threshold the host's file logger
+                // applies. That is deliberate: only the reported size is lost. Letting
+                // it escape instead would turn /api/health into a 500, and the frontend
                 // discards a failed health poll silently, so the operator would see the
                 // status bar disappear with nothing anywhere explaining why.
+                //
                 // Collapsed like the query failures, and for the same reason. An
                 // unusable path is a standing fault rather than a transient one, so it
                 // throws on every poll of this endpoint; reporting each one would

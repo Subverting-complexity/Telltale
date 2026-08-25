@@ -56,4 +56,21 @@ public class EndpointFailureLoggingTests : IClassFixture<BrokenDatabaseFactory>
         // that makes a corrupt or unexpected database diagnosable.
         Assert.NotNull(warning!.Exception);
     }
+
+    [Fact]
+    public async Task AFailingEndpointIsReportedOnceRatherThanOnEveryRequest()
+    {
+        await _client.GetAsync("/api/range");
+        await _client.GetAsync("/api/range");
+
+        int rangeWarnings = _factory.Logs.Entries.Count(
+            e => e.Level == LogLevel.Warning
+                 && e.Message.Contains("/api/range", StringComparison.Ordinal));
+
+        // Counted across the whole fixture, so the expected number is one however many
+        // times the theory above also polls this endpoint. The frontend refreshes on a
+        // timer, so without the collapsing an unreadable capture would write a warning
+        // and a stack trace on every refresh until the log held nothing else.
+        Assert.Equal(1, rangeWarnings);
+    }
 }
