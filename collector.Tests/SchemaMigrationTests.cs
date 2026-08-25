@@ -16,6 +16,10 @@ public class SchemaMigrationTests : IDisposable
     /// <summary>An arbitrary timestamp sitting exactly on a minute boundary.</summary>
     private const long BucketStart = 1_700_000_000_000L / 60_000L * 60_000L;
 
+    /// <summary>Values <c>PRAGMA auto_vacuum</c> reports for off and for incremental.</summary>
+    private const long AutoVacuumOff = 0;
+    private const long AutoVacuumIncremental = 2;
+
     private readonly List<string> _dbPaths = [];
 
     [Fact]
@@ -266,7 +270,7 @@ public class SchemaMigrationTests : IDisposable
     }
 
     [Fact]
-    public void DatabaseWrittenByANewerBuild_IsReportedAndLeftAlone()
+    public void DatabaseWrittenByANewerBuild_IsLeftAloneAndRefused()
     {
         string path = NewDbPath();
         using (OpenCollectorDatabase(path)) { }
@@ -281,12 +285,54 @@ public class SchemaMigrationTests : IDisposable
 
         var logger = new CapturingLogger();
         using (var db = new Database(path, logger))
+        {
+            // Opening still reports the version it found and changes nothing.
+            // Migrating cannot help, and rewriting the schema backwards would
+            // lose whatever the newer build added.
             Assert.Equal(newerVersion, db.SchemaVersion);
+
+            // What is new is that the collector then declines to run against it
+            // rather than recording into a shape it does not understand.
+            Assert.NotNull(StartupDatabaseCheck.RefusalForNewerDatabase(
+                db.SchemaVersion, SchemaMigrations.LatestVersion, path));
+        }
 
         using var check = Connect(path);
         Assert.Equal(shapeBefore, Shape(check));
         Assert.Equal(newerVersion, SchemaMigrations.ReadVersion(check));
         Assert.Contains(logger.Warnings, w => w.Contains("newer than the version"));
+    }
+
+    [Fact]
+    public void DatabaseWrittenByANewerBuild_IsNotVacuumedEvenWhenOptedIn()
+    {
+        // The collector is about to refuse this database, so opening it to read
+        // the version must not write to it. The auto_vacuum conversion is the
+        // largest write there is: it rewrites every page of the file.
+        string path = CreateLegacyDatabase();
+        using (var conn = Connect(path))
+            Execute(conn, $"INSERT INTO schema_version (version) VALUES ({SchemaMigrations.LatestVersion + 1})");
+
+        using (new Database(path, new CapturingLogger(), vacuumOnStartup: true)) { }
+
+        using var check = Connect(path);
+        Assert.Equal(AutoVacuumOff, Scalar(check, "PRAGMA auto_vacuum"));
+    }
+
+    [Fact]
+    public void DatabaseThisBuildUnderstands_IsStillVacuumedWhenOptedIn()
+    {
+        // The control for the test above. Without it that one would still pass
+        // if the conversion had simply stopped working altogether.
+        string path = CreateLegacyDatabase();
+
+        using (var conn = Connect(path))
+            Assert.Equal(AutoVacuumOff, Scalar(conn, "PRAGMA auto_vacuum"));
+
+        using (new Database(path, new CapturingLogger(), vacuumOnStartup: true)) { }
+
+        using var check = Connect(path);
+        Assert.Equal(AutoVacuumIncremental, Scalar(check, "PRAGMA auto_vacuum"));
     }
 
     /// <summary>

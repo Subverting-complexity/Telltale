@@ -63,6 +63,22 @@ try
     var logger = host.Services.GetRequiredService<ILogger<Program>>();
     logger.LogInformation("Telltale collector starting. Database: {Path}", config.ResolvedDatabasePath);
 
+    // Opened here rather than left to whichever hosted service resolves it
+    // first. Migrations then run at a known point instead of inside the startup
+    // of whichever worker happened to win, and the check below gets its answer
+    // before anything has started recording.
+    var database = host.Services.GetRequiredService<Database>();
+
+    string? refusal = StartupDatabaseCheck.RefusalForNewerDatabase(
+        database.SchemaVersion, SchemaMigrations.LatestVersion, config.ResolvedDatabasePath);
+    if (refusal is not null)
+    {
+        Console.Error.WriteLine(refusal);
+        host.Dispose();
+        Environment.Exit(1);
+        return;
+    }
+
     await host.RunAsync();
 }
 finally

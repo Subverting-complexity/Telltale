@@ -59,7 +59,13 @@ public sealed class Database : IDisposable
         {
             // No lock in the constructor: nothing else can reach this instance yet.
             InitSchema();
-            ReconcileAutoVacuum(vacuumOnStartup);
+
+            // A database at a version this build does not understand is one the
+            // collector is about to refuse to run against, so nothing here may
+            // write to it. The conversion below is a full VACUUM that rewrites
+            // every page, which is the largest write the collector ever makes.
+            if (SchemaVersion <= SchemaMigrations.LatestVersion)
+                ReconcileAutoVacuum(vacuumOnStartup);
         }
         catch
         {
