@@ -928,14 +928,168 @@ public sealed class Database : IDisposable
         {
             ThrowIfDisposed();
 
-            using var cmd = _conn.CreateCommand();
-            cmd.CommandText = """
-                DELETE FROM process_instance
-                WHERE id NOT IN (SELECT DISTINCT instance_id FROM sample)
-                  AND id NOT IN (SELECT DISTINCT instance_id FROM sample_1m)
-                  AND id NOT IN (SELECT DISTINCT instance_id FROM sample_10m)
-                """;
-            cmd.ExecuteNonQuery();
+            DeleteOrphanedProcessInstancesLocked(transaction: null);
+        }
+    }
+
+    /// <summary>
+    /// Removes the <c>process_instance</c> rows nothing refers to any more.
+    /// </summary>
+    /// <param name="transaction">
+    /// The transaction to run inside, or null to run on its own. A wipe passes its
+    /// own transaction so that the cleanup either lands with the deletes that
+    /// caused it or does not happen at all.
+    /// </param>
+    /// <returns>How many rows went.</returns>
+    private int DeleteOrphanedProcessInstancesLocked(SqliteTransaction? transaction)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.Transaction = transaction;
+        cmd.CommandText = """
+            DELETE FROM process_instance
+            WHERE id NOT IN (SELECT DISTINCT instance_id FROM sample)
+              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_1m)
+              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_10m)
+            """;
+        return cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Every table holding recorded history, in the order a wipe empties them.
+    /// </summary>
+    /// <remarks>
+    /// <c>process_instance</c> is not here. It has no <c>ts</c> of its own, so a
+    /// wipe of part of the history reaches it through the orphan cleanup instead,
+    /// and a wipe of all of it empties the table separately.
+    ///
+    /// <c>machine_info</c> and <c>schema_version</c> are not here either, and for a
+    /// different reason: neither is recorded history. One describes the machine and
+    /// is rewritten every time the recorder starts, the other describes the file.
+    /// Emptying them would leave the viewer unable to convert a CPU reading and the
+    /// next open unable to tell what shape the database is in.
+    /// </remarks>
+    private static readonly string[] CaptureTables =
+    [
+        "sample",
+        "sample_1m",
+        "sample_10m",
+        "machine",
+        "machine_1m",
+        "machine_10m",
+        "collector_health",
+        "collector_tick_phase",
+    ];
+
+    /// <summary>
+    /// Deletes every recorded sample, rollup and health row, leaving a working but
+    /// empty database.
+    /// </summary>
+    /// <remarks>
+    /// The file is emptied rather than deleted and recreated, because the recorder
+    /// is normally running when this is called and holds this very connection open.
+    /// Removing the file underneath it would leave the collector writing into a
+    /// handle nothing can read.
+    /// </remarks>
+    public CaptureWipeResult WipeAll() => Wipe(from: null, to: null);
+
+    /// <summary>
+    /// Deletes everything recorded between <paramref name="fromMs"/> and
+    /// <paramref name="toMs"/>, both ends included, and leaves the rest alone.
+    /// </summary>
+    /// <remarks>
+    /// A rollup row is deleted when its own timestamp falls inside the range. A
+    /// bucket is stamped with the moment it starts, so a bucket that begins before
+    /// the range and runs into it is kept whole rather than half emptied. On a
+    /// calendar day boundary that only arises where the local offset is not a whole
+    /// ten minutes, which is a handful of timezones.
+    /// </remarks>
+    /// <exception cref="ArgumentException">
+    /// The range ends before it starts, which is a caller error rather than an
+    /// empty range.
+    /// </exception>
+    public CaptureWipeResult WipeRange(long fromMs, long toMs)
+    {
+        if (toMs < fromMs)
+        {
+            throw new ArgumentException(
+                $"The range ends ({toMs}) before it starts ({fromMs}).", nameof(toMs));
+        }
+
+        return Wipe(fromMs, toMs);
+    }
+
+    /// <summary>
+    /// The one implementation behind <see cref="WipeAll"/> and
+    /// <see cref="WipeRange"/>: a null range means everything.
+    /// </summary>
+    /// <remarks>
+    /// Every delete runs inside one transaction, so a failure part way through
+    /// leaves the recorded history exactly as it was rather than half gone. The
+    /// housekeeping afterwards is outside it on purpose: a checkpoint and a vacuum
+    /// cannot run inside a transaction, and neither of them can lose data if it
+    /// fails, so the wipe is not held hostage to them.
+    ///
+    /// It all runs under the same lock every other write takes, so the recorder
+    /// cannot be part way through a tick while this is happening, and this cannot
+    /// be part way through when the next tick starts. A wipe of a large database
+    /// therefore costs the sampler the ticks it spans, in the same way a slow
+    /// rollup does.
+    /// </remarks>
+    private CaptureWipeResult Wipe(long? from, long? to)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            long sizeBefore = GetDatabaseSizeBytesLocked();
+            long deleted = 0;
+
+            using (var tx = _conn.BeginTransaction())
+            {
+                string where = from is null ? "" : " WHERE ts >= @from AND ts <= @to";
+
+                foreach (var table in CaptureTables)
+                {
+                    using var cmd = _conn.CreateCommand();
+                    cmd.Transaction = tx;
+                    cmd.CommandText = $"DELETE FROM {table}{where}";
+                    if (from is not null)
+                    {
+                        cmd.Parameters.AddWithValue("@from", from.Value);
+                        cmd.Parameters.AddWithValue("@to", to!.Value);
+                    }
+
+                    deleted += cmd.ExecuteNonQuery();
+                }
+
+                if (from is null)
+                {
+                    // Nothing refers to any of them any more, so the whole table
+                    // goes. The recorder writes the rows it still needs back on its
+                    // next tick, because it looks each process up by pid and start
+                    // time and creates the row when the lookup finds nothing.
+                    using var instances = _conn.CreateCommand();
+                    instances.Transaction = tx;
+                    instances.CommandText = "DELETE FROM process_instance";
+                    deleted += instances.ExecuteNonQuery();
+                }
+                else
+                {
+                    deleted += DeleteOrphanedProcessInstancesLocked(tx);
+                }
+
+                tx.Commit();
+            }
+
+            // Freed pages sit in the file's own free list until something hands them
+            // back, and until the log is folded into the file most of them are not
+            // free yet. Checkpoint first, then vacuum: reversed, the vacuum finds
+            // little to release and the file stays the size it was.
+            CheckpointLocked();
+            IncrementalVacuumLocked();
+
+            long sizeAfter = GetDatabaseSizeBytesLocked();
+            return new CaptureWipeResult(deleted, Math.Max(0, sizeBefore - sizeAfter));
         }
     }
 
@@ -945,10 +1099,15 @@ public sealed class Database : IDisposable
         {
             ThrowIfDisposed();
 
-            using var cmd = _conn.CreateCommand();
-            cmd.CommandText = "PRAGMA incremental_vacuum;";
-            cmd.ExecuteNonQuery();
+            IncrementalVacuumLocked();
         }
+    }
+
+    private void IncrementalVacuumLocked()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "PRAGMA incremental_vacuum;";
+        cmd.ExecuteNonQuery();
     }
 
     public void WalCheckpoint()
@@ -957,10 +1116,15 @@ public sealed class Database : IDisposable
         {
             ThrowIfDisposed();
 
-            using var cmd = _conn.CreateCommand();
-            cmd.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
-            cmd.ExecuteNonQuery();
+            CheckpointLocked();
         }
+    }
+
+    private void CheckpointLocked()
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
+        cmd.ExecuteNonQuery();
     }
 
     public long GetDatabaseSizeBytes()

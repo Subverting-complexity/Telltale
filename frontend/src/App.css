@@ -1508,3 +1508,130 @@ body {
     forced-color-adjust: none;
   }
 }
+
+/* Delete recorded data dialog */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, #000 55%, transparent);
+}
+
+.dialog {
+  width: 100%;
+  max-width: 460px;
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 20px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px color-mix(in srgb, #000 35%, transparent);
+}
+
+.dialog h2 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+}
+
+.dialog-note {
+  margin: 0 0 14px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.dialog-choices {
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+
+.dialog-choices legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.dialog-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.dialog-choice + .dialog-choice {
+  margin-top: 6px;
+}
+
+.dialog-choice.unavailable {
+  cursor: default;
+  color: var(--text-muted);
+}
+
+.dialog-hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.dialog-confirm {
+  margin: 0 0 14px;
+  padding: 10px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  font-size: 0.9rem;
+}
+
+.dialog-error {
+  margin: 0 0 14px;
+  color: var(--danger);
+  font-size: 0.85rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-btn {
+  padding: 7px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.dialog-btn:hover:not(:disabled) {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+}
+
+.dialog-btn.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.dialog-btn.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 85%, #000);
+  border-color: color-mix(in srgb, var(--danger) 85%, #000);
+}
+
+.dialog-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

@@ -18,6 +18,8 @@ import { Alerts } from './Alerts';
 import { HealthSummary } from './HealthSummary';
 import { TopConsumers } from './TopConsumers';
 import { HeatmapView } from './Heatmap';
+import { WipeDataDialog } from './WipeDataDialog';
+import type { WipeTarget } from './WipeDataDialog';
 import {
   getDayRange, getMonthRange, getWeekRange, getYearRange,
 } from './utils';
@@ -73,6 +75,20 @@ function updateUrl(view: ViewState) {
   window.history.replaceState(null, '', `?${params}`);
 }
 
+/**
+ * The day the wipe control offers to delete, or null when the view spans more
+ * than one day. A wipe is offered per day and not per month or year, so a view
+ * that is not on one day has nothing to name.
+ */
+function viewedDay(view: ViewState): WipeTarget | null {
+  if (view.scale !== 'day' || view.month === undefined || view.day === undefined) return null;
+  const { from, to } = getDayRange(view.year, view.month, view.day);
+  const label = new Date(from).toLocaleDateString(undefined, {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+  return { label, from, to };
+}
+
 export default function App() {
   const now = new Date();
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
@@ -93,6 +109,7 @@ export default function App() {
   const [selectedProcess, setSelectedProcess] = useState<ProcessSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [customRange, setCustomRange] = useState<{ from: number; to: number } | null>(null);
+  const [wipeOpen, setWipeOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [thresholds, setThresholds] = useState<ThresholdConfig | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>('all');
@@ -157,11 +174,15 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedProcess]);
 
+  // Refreshed rather than read once. Deleting the earliest or the latest day
+  // moves where the recording starts and ends, and the navigation is built from
+  // exactly those two numbers, so a stale pair leaves the user able to walk into
+  // days that no longer exist.
   useEffect(() => {
     getRange().then(setRange).catch(() => {});
     getHealth().then(setHealth).catch(() => {});
     getThresholds().then(setThresholds).catch(() => {});
-  }, []);
+  }, [refreshKey]);
 
   const navigate = useCallback((newView: ViewState) => {
     setView(newView);
@@ -322,6 +343,14 @@ export default function App() {
           <button className="icon-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>
             {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
           </button>
+          <button
+            className="icon-btn"
+            onClick={() => setWipeOpen(true)}
+            aria-label="Delete recorded data"
+            title="Delete recorded data"
+          >
+            🗑
+          </button>
         </div>
       </header>
 
@@ -456,6 +485,22 @@ export default function App() {
           </>
         )}
       </main>
+
+      {wipeOpen && (
+        <WipeDataDialog
+          day={viewedDay(view)}
+          onClose={() => setWipeOpen(false)}
+          onWiped={() => {
+            // The deleted range has to read as empty straight away, and the
+            // range endpoint has to be asked again: wiping the earliest day
+            // moves where the recording starts.
+            setCustomRange(null);
+            setSelectedHourRange(null);
+            setSelectedProcess(null);
+            refreshData();
+          }}
+        />
+      )}
     </div>
   );
 }

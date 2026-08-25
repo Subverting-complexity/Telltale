@@ -25,6 +25,7 @@ Data is stored in `%LocalAppData%\Telltale\telltale.db`, and a small log of what
 - **Configurable alerts**: set CPU and memory thresholds in `telltale.json`
 - **Automatic rollup with retention**: raw samples roll up to 1-minute and 10-minute aggregates, with configurable retention periods per tier
 - **500 MB size cap**: the database is automatically kept within a configurable size limit
+- **Delete what you have recorded**: the window can throw away a single day or the whole recording, and recording carries on afterwards
 - **Its own window**: the UI opens in a browser app window with no address bar and no tabs, using your default browser when it is Chromium based
 - **Listens only while you are looking**: the HTTP server starts when the window opens and stops when it closes
 - **Standalone executable**: publishes as a self-contained single-file Windows binary
