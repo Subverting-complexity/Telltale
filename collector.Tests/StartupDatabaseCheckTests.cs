@@ -42,8 +42,12 @@ public class StartupDatabaseCheckTests
     {
         string refusal = StartupDatabaseCheck.RefusalForNewerDatabase(3, 2, DbPath)!;
 
-        Assert.Contains("version 3", refusal);
-        Assert.Contains("version 2", refusal);
+        // Bound to their roles rather than asserted as two loose substrings. A
+        // message that swapped the numbers round would still contain both, and
+        // telling the user their database is older than the build when it is
+        // newer sends them the wrong way.
+        Assert.Contains("schema version 3 is newer", refusal);
+        Assert.Contains("this build understands (version 2)", refusal);
         Assert.Contains(DbPath, refusal);
     }
 

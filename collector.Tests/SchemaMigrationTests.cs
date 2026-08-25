@@ -364,10 +364,11 @@ public class SchemaMigrationTests : IDisposable
         // a row written after the failing statement never gets to run either
         // way; only the shape shows the half applied table left behind.
         //
-        // Verified by mutation: dropping the transaction from Apply fails this
-        // test. Note that moving the cmd.Transaction assignment does not, and
-        // cannot, because a SQLite transaction belongs to the connection rather
-        // than to the command.
+        // Verified by mutation: removing the transaction from Apply fails this
+        // test. So does removing the cmd.Transaction assignment, for a separate
+        // reason worth knowing, which is that Microsoft.Data.Sqlite requires a
+        // command to carry the connection pending transaction and raises
+        // InvalidOperationException rather than SqliteException when it does not.
         Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(conn));
         Assert.Equal(shapeBefore, Shape(conn));
     }
@@ -426,6 +427,7 @@ public class SchemaMigrationTests : IDisposable
     private static SchemaMigrations.Migration RecordStep(int version) =>
         new(version, $"record step {version}",
             $"INSERT INTO applied_order (step) VALUES ({version})");
+
 
     /// <summary>
     /// Every object in the database, as the text that created it. Comparing this

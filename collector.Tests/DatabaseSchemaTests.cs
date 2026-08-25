@@ -228,10 +228,10 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
             MakeUnwritable(path);
             var logger = new RecordingLogger();
 
-            // The constructor is the DI factory, resolved while the host starts, and
-            // Program.cs has no catch. If this throws, the collector stops running
-            // entirely and does so again on every start, which is far worse than the
-            // unreclaimed disk the conversion was meant to fix.
+            // Program.cs now resolves the constructor explicitly and catches what it
+            // throws, so a failure here is explained rather than silent. It still
+            // stops the collector, and does so again on every start, which is far
+            // worse than the unreclaimed disk the conversion was meant to fix.
             using (var db = new Database(path, logger, vacuumOnStartup: true))
             {
                 // The Error log is only written from the catch block, so reaching it

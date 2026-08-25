@@ -6,8 +6,8 @@ if (!createdNew)
 {
     mutex.Dispose();
     Console.Error.WriteLine("Another instance of the Telltale collector is already running.");
-    PauseOnError();
-    return 1;
+    Environment.Exit(1);
+    return;
 }
 
 try
@@ -19,8 +19,8 @@ try
         Console.Error.WriteLine("Configuration errors:");
         foreach (var e in errors)
             Console.Error.WriteLine($"  - {e}");
-        PauseOnError();
-        return 1;
+        Environment.Exit(1);
+        return;
     }
 
     if (TelltaleConfig.IsInSyncFolder(config.ResolvedDatabasePath))
@@ -29,8 +29,8 @@ try
             $"Database path is inside a cloud sync folder: {config.ResolvedDatabasePath}");
         Console.Error.WriteLine(
             "This can cause database corruption. Set databasePath in telltale.json to a local folder.");
-        PauseOnError();
-        return 1;
+        Environment.Exit(1);
+        return;
     }
 
     var builder = Host.CreateApplicationBuilder(args);
@@ -52,6 +52,8 @@ try
     builder.Services.AddSingleton<IProcessIdentitySource>(sp =>
         new WmiProcessIdentitySource(
             sp.GetRequiredService<ILogger<WmiProcessIdentitySource>>(), config));
+    // Singleton because its whole purpose is remembering, across ticks, which
+    // process instances have already been looked up.
     builder.Services.AddSingleton(sp =>
         new ProcessIdentityResolver(sp.GetRequiredService<IProcessIdentitySource>(), config));
     builder.Services.AddHostedService<CollectorWorker>();
@@ -62,17 +64,26 @@ try
     var logger = host.Services.GetRequiredService<ILogger<Program>>();
     logger.LogInformation("Telltale collector starting. Database: {Path}", config.ResolvedDatabasePath);
 
+    // Opened here rather than left to whichever hosted service resolves it
+    // first. Migrations then run at a known point instead of inside the startup
+    // of whichever worker happened to win, and the check below gets its answer
+    // before anything has started recording.
     Database database;
     try
     {
         database = host.Services.GetRequiredService<Database>();
     }
-    catch (Exception ex)
+    catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
     {
+        // A locked, corrupt, unreachable or unwritable file. Without this the
+        // exception leaves host startup before logging is running, so the
+        // process dies with nothing said about which file failed or why, and
+        // does it again on every start. Anything outside these three is a bug
+        // rather than a broken database, and still gets to surface as one.
         Console.Error.WriteLine(StartupDatabaseCheck.DescribeOpenFailure(config.ResolvedDatabasePath, ex));
-        host.Dispose();
-        PauseOnError();
-        return 1;
+        ReleaseDatabaseFiles(host);
+        Environment.Exit(1);
+        return;
     }
 
     string? refusal = StartupDatabaseCheck.RefusalForNewerDatabase(
@@ -80,19 +91,12 @@ try
     if (refusal is not null)
     {
         Console.Error.WriteLine(refusal);
-        host.Dispose();
-        PauseOnError();
-        return 1;
+        ReleaseDatabaseFiles(host);
+        Environment.Exit(1);
+        return;
     }
 
     await host.RunAsync();
-    return 0;
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"Telltale collector failed to start: {ex}");
-    PauseOnError();
-    return 1;
 }
 finally
 {
@@ -100,12 +104,16 @@ finally
     mutex.Dispose();
 }
 
-static void PauseOnError()
+// Closes the database before the process exits on a startup failure.
+//
+// Disposing the host disposes the connection, but Microsoft.Data.Sqlite pools
+// connections, so the handle returns to the pool rather than closing and the
+// -wal and -shm sidecars stay beside the file. On the refusal path that would
+// leave traces next to a database this build has just declined to touch.
+static void ReleaseDatabaseFiles(IHost host)
 {
-    if (!Environment.UserInteractive) return;
-    Console.Error.WriteLine();
-    Console.Error.WriteLine("Press any key to exit...");
-    try { Console.ReadKey(true); } catch { }
+    host.Dispose();
+    SqliteConnection.ClearAllPools();
 }
 
 public partial class Program { }
