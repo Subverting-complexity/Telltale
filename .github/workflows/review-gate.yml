@@ -18,23 +18,35 @@ name: Review gate
 # running. The review findings it had already collected were lost from that
 # merge and had to be reapplied in PR #79.
 #
-# TWO SETTINGS ARE LOAD BEARING, and this file does nothing on its own without
-# them. Both live in branch protection on main:
+# ONE SETTING IS LOAD BEARING, and this file does nothing on its own without it.
+# It lives in branch protection on main:
 #
-#   1. This job ("Review complete") must be added to the required status checks.
-#   2. "Include administrators" must be on. The agent merges as an account with
-#      admin on this repository, and a required check does not block an admin
-#      merge while admin enforcement is off. This is not a theoretical bypass:
-#      the review skill's own merge step retries with `gh pr merge --admin` when
-#      branch protection refuses, so without this setting the gate is defeated
-#      automatically, with nobody choosing to defeat it.
+#   This job ("Review complete") must be listed in the required status checks.
+#   GitHub's auto-merge waits for every required check before completing a
+#   merge, whatever admin enforcement says, so this is what makes the label
+#   binding. It is set.
 #
-# Adding only the required check still closes the `--auto` path, because
-# GitHub's auto-merge waits for required checks whatever admin enforcement says.
-# It leaves the direct-merge path open, and the direct path is the one #72 took.
+# Writing that down was not enough on its own, which is the second worked
+# example. From this file being added until 2026-08-25 the check was never
+# actually added to branch protection, so this job ran, reported, and was
+# ignored. PR #79 merged carrying claude-needs-re-review with this job red, and
+# its re-review then ran against an already-merged pull request. See #85.
 #
-# See docs/review.config.md, which is where both settings and the recovery
-# procedure are written down.
+# "Include administrators" is deliberately OFF, and this is a change from what
+# this comment used to say. It would additionally close the direct
+# `gh pr merge --admin` path, which the review skill retries with when branch
+# protection refuses. That retry fires only after the skill's review has
+# finished and applied claude-approved, so it cannot merge during a review and
+# does not breach what this gate is for. Leaving it off also keeps
+# bypass-ci-on-billing-failure working, which turning it on would disable.
+#
+# The residual risk that buys: nothing stops some other process merging with
+# --admin mid-review. The review skill will not, but the execute skill has its
+# own merge path. If a premature merge ever happens by a route the required
+# check does not cover, that decision is the first thing to revisit.
+#
+# See docs/review.config.md, which is where the setting, the reasoning and the
+# recovery procedure are written down in full.
 
 on:
   pull_request:
