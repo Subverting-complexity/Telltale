@@ -65,7 +65,10 @@ take precedence — see `## Issue Types & Fields`.
 
 ### Status (issue lifecycle)
 
-Every issue carries exactly one of these lifecycle labels.
+Every issue carries exactly one of these lifecycle labels. `status-ready`
+is kept as the default lifecycle state, but it no longer has a column of its
+own: it maps to the `Todo` column, same as a fresh backlog issue. See
+`### Status Options`.
 
 | Purpose                | Label                    |
 | ---------------------- | ------------------------ |
@@ -122,6 +125,10 @@ pickup. Paired with `agent-gating: disabled` below, this means an agent works
 straight through the open backlog. To take an issue out of the pick pool,
 apply `status-parked` or `status-blocked`, or assign it to someone.
 
+The board matches this. There is no `Ready` column, so an issue sitting in
+`Todo` is ready by default and the only board state that withholds it is
+`Blocked`. See `### Status Options`.
+
 ## Agent Gating
 
 | Setting      | Value      |
@@ -172,17 +179,56 @@ org issue fields listed under `## Issue Types & Fields`.
 
 ### Status Options
 
-| Status      | Purpose key       | Option ID  |
-| ----------- | ----------------- | ---------- |
-| Todo        | `col-backlog`     | `f75ad846` |
-| Ready       | `col-ready`       | `1ba71a31` |
-| In Progress | `col-in-progress` | `47fc9ee4` |
-| In Review   | `col-in-review`   | `c079ff76` |
-| Blocked     | `col-blocked`     | `e01fd37c` |
-| Done        | `col-done`        | `98236657` |
+| Status      | Purpose key                | Option ID  |
+| ----------- | -------------------------- | ---------- |
+| Todo        | `col-backlog`, `col-ready` | `63f5d64f` |
+| In Progress | `col-in-progress`          | `adf2ed75` |
+| In Review   | `col-in-review`            | `b375b155` |
+| Blocked     | `col-blocked`              | `a3c1ddac` |
+| Done        | `col-done`                 | `626ca24b` |
 
-The backlog column is GitHub's default `Todo`, mapped to the `col-backlog`
-purpose key rather than duplicated as a second `Backlog` column.
+There is no `Ready` column. It was removed on 2026-08-25 because it split
+the pick pool in two for no benefit: with `ready-gate: none` an agent picks
+straight out of the open backlog, so a second column only added a manual
+promotion step that nobody performed.
+
+`Todo` therefore carries both purpose keys. `col-backlog` and `col-ready`
+both resolve to it, so a command that places a `status-ready` issue and a
+command that places a fresh backlog issue land in the same column. Work is
+taken out of the pick pool by `Blocked`, not by being left out of `Ready`.
+
+Every open issue belongs on the board. An issue with no Status is invisible
+to the board view, so put new issues in `Todo` unless they are genuinely
+blocked, in which case put them in `Blocked`.
+
+### Board Automation
+
+Placement is handled by the project's own built-in workflows, configured at
+`https://github.com/orgs/Subverting-complexity/projects/12/workflows`:
+
+| Built-in workflow      | Configuration                          |
+| ---------------------- | -------------------------------------- |
+| Auto-add to project    | `Subverting-complexity/Telltale`, filter `is:issue,is:open` |
+| Item added to project  | Set `Status` to `Todo`                 |
+
+These cannot be created or enabled through the API. GraphQL exposes
+`deleteProjectV2Workflow` but no create or update mutation, so changing them
+is a manual step in the Projects UI. Read the current state with the
+`workflows` connection on `ProjectV2` before assuming a given one is on.
+
+Do not rely on the plugin placing issues on the board. `report-issue` treats
+board placement as best-effort and skips silently when it cannot resolve the
+board, which is how nine open issues ended up off the board before
+2026-08-25. The built-in workflows are the mechanism that is meant to be
+correct; the plugin path is a bonus when it happens to fire.
+
+Two consequences worth knowing:
+
+- Only issues are auto-added. Pull requests stay off the board deliberately,
+  because PR state is tracked by the review labels in `docs/review.config.md`.
+- `Item added to project` stamps `Todo` on **every** add, including an issue
+  added by hand that is already in progress. Set the real Status after
+  adding one manually.
 
 ## Backlog Mode
 
