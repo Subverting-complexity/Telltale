@@ -65,7 +65,10 @@ take precedence — see `## Issue Types & Fields`.
 
 ### Status (issue lifecycle)
 
-Every issue carries exactly one of these lifecycle labels.
+Every issue carries exactly one of these lifecycle labels. `status-ready`
+is kept as the default lifecycle state, but it no longer has a column of its
+own: it maps to the `Todo` column, same as a fresh backlog issue. See
+`### Status Options`.
 
 | Purpose                | Label                    |
 | ---------------------- | ------------------------ |
@@ -122,6 +125,10 @@ pickup. Paired with `agent-gating: disabled` below, this means an agent works
 straight through the open backlog. To take an issue out of the pick pool,
 apply `status-parked` or `status-blocked`, or assign it to someone.
 
+The board matches this. There is no `Ready` column, so an issue sitting in
+`Todo` is ready by default and the only board state that withholds it is
+`Blocked`. See `### Status Options`.
+
 ## Agent Gating
 
 | Setting      | Value      |
@@ -172,17 +179,27 @@ org issue fields listed under `## Issue Types & Fields`.
 
 ### Status Options
 
-| Status      | Purpose key       | Option ID  |
-| ----------- | ----------------- | ---------- |
-| Todo        | `col-backlog`     | `f75ad846` |
-| Ready       | `col-ready`       | `1ba71a31` |
-| In Progress | `col-in-progress` | `47fc9ee4` |
-| In Review   | `col-in-review`   | `c079ff76` |
-| Blocked     | `col-blocked`     | `e01fd37c` |
-| Done        | `col-done`        | `98236657` |
+| Status      | Purpose key                | Option ID  |
+| ----------- | -------------------------- | ---------- |
+| Todo        | `col-backlog`, `col-ready` | `63f5d64f` |
+| In Progress | `col-in-progress`          | `adf2ed75` |
+| In Review   | `col-in-review`            | `b375b155` |
+| Blocked     | `col-blocked`              | `a3c1ddac` |
+| Done        | `col-done`                 | `626ca24b` |
 
-The backlog column is GitHub's default `Todo`, mapped to the `col-backlog`
-purpose key rather than duplicated as a second `Backlog` column.
+There is no `Ready` column. It was removed on 2026-08-25 because it split
+the pick pool in two for no benefit: with `ready-gate: none` an agent picks
+straight out of the open backlog, so a second column only added a manual
+promotion step that nobody performed.
+
+`Todo` therefore carries both purpose keys. `col-backlog` and `col-ready`
+both resolve to it, so a command that places a `status-ready` issue and a
+command that places a fresh backlog issue land in the same column. Work is
+taken out of the pick pool by `Blocked`, not by being left out of `Ready`.
+
+Every open issue belongs on the board. An issue with no Status is invisible
+to the board view, so put new issues in `Todo` unless they are genuinely
+blocked, in which case put them in `Blocked`.
 
 ## Backlog Mode
 
