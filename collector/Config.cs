@@ -53,6 +53,32 @@ public sealed partial class TelltaleConfig
     {
         var errors = new List<string>();
 
+        // Checked here because nowhere else can report it. IsInSyncFolder calls
+        // Path.GetFullPath, which throws on an empty or malformed path, and the
+        // collector runs that check before the host exists. An unusable path
+        // therefore reached the user as an unhandled exception and a process that
+        // died again on every start, rather than as the configuration error it is.
+        // A null value is not a problem: ResolvedDatabasePath supplies the default.
+        if (DatabasePath is not null)
+        {
+            if (string.IsNullOrWhiteSpace(DatabasePath))
+            {
+                errors.Add("databasePath must not be empty.");
+            }
+            else
+            {
+                try
+                {
+                    Path.GetFullPath(DatabasePath);
+                }
+                catch (Exception ex)
+                    when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+                {
+                    errors.Add($"databasePath is not a usable path: {ex.Message}");
+                }
+            }
+        }
+
         if (IntervalSeconds < 2 || IntervalSeconds > 60)
             errors.Add("intervalSeconds must be between 2 and 60.");
 

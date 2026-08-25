@@ -52,7 +52,13 @@ public sealed class Database : IDisposable
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
-        _conn = new SqliteConnection($"Data Source={dbPath}");
+        // Built rather than interpolated. A semicolon is a legal character in a
+        // Windows filename and is also the separator in a connection string, so
+        // interpolating a path that contains one produced a malformed string and
+        // an ArgumentException, which is not among the types the collector
+        // startup path catches and explains.
+        _conn = new SqliteConnection(
+            new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString());
         _conn.Open();
 
         try

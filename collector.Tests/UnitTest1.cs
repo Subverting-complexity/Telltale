@@ -65,6 +65,45 @@ public class ConfigTests
     }
 
     [Fact]
+    public void EmptyDatabasePath_FailsValidation()
+    {
+        // Reported as a configuration error rather than left to Path.GetFullPath,
+        // which throws before the collector has any way to say what went wrong.
+        var config = new TelltaleConfig { DatabasePath = "" };
+        var errors = config.Validate();
+        Assert.Contains(errors, e => e.Contains("databasePath"));
+    }
+
+    [Fact]
+    public void WhitespaceDatabasePath_FailsValidation()
+    {
+        var config = new TelltaleConfig { DatabasePath = "   " };
+        var errors = config.Validate();
+        Assert.Contains(errors, e => e.Contains("databasePath"));
+    }
+
+    [Fact]
+    public void UnsetDatabasePath_PassesValidation()
+    {
+        // Null is not a problem: ResolvedDatabasePath supplies the default. The
+        // control that stops the check above rejecting the ordinary case.
+        var config = new TelltaleConfig { DatabasePath = null };
+        var errors = config.Validate();
+        Assert.DoesNotContain(errors, e => e.Contains("databasePath"));
+    }
+
+    [Fact]
+    public void OrdinaryDatabasePath_PassesValidation()
+    {
+        var config = new TelltaleConfig
+        {
+            DatabasePath = Path.Combine(Path.GetTempPath(), "Telltale", "telltale.db"),
+        };
+        var errors = config.Validate();
+        Assert.DoesNotContain(errors, e => e.Contains("databasePath"));
+    }
+
+    [Fact]
     public void DefaultDatabasePath_IsUnderLocalAppData()
     {
         var config = new TelltaleConfig();
