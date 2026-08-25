@@ -1,10 +1,11 @@
 namespace Telltale.Collector;
 
 /// <summary>
-/// The one decision the collector makes about a database before it starts
-/// recording, and the wording it uses to explain itself when the answer is no.
+/// What the collector says when it cannot use the database it was pointed at.
+/// There are two reasons for that and this holds both: the file will not open,
+/// or it belongs to a build newer than this one.
 ///
-/// Both live here rather than in <c>Program.cs</c> because the startup path
+/// They live here rather than in <c>Program.cs</c> because the startup path
 /// itself is not reachable from a test. Launching the executable to watch it
 /// exit is slow and unreliable, so the judgement and the message are kept as
 /// plain functions a test can call directly, and the startup path is left with
@@ -42,4 +43,24 @@ public static class StartupDatabaseCheck
             file to start a fresh recording and keep {Path.GetFileName(databasePath)} for when you go back.
             """;
     }
+
+    /// <summary>
+    /// What to tell the user when the database could not be opened at all.
+    ///
+    /// The collector runs in the background with no interface, so this failure
+    /// is both silent and repeating: it happens again on every start until
+    /// somebody works out why. Naming the file and the underlying error is the
+    /// difference between a fixable problem and a recorder that quietly stopped.
+    /// </summary>
+    public static string DescribeOpenFailure(string databasePath, Exception error) =>
+        $"""
+        Cannot open the Telltale database:
+          {databasePath}
+
+        {error.Message}
+
+        Check that no other program has the file open, that the drive it is on is
+        available, and that this account can write to that folder. To record
+        somewhere else instead, set databasePath in telltale.json.
+        """;
 }

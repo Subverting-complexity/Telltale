@@ -60,4 +60,28 @@ public class StartupDatabaseCheckTests
         Assert.Contains("databasePath", refusal);
         Assert.Contains("telltale.json", refusal);
     }
+
+    [Fact]
+    public void OpenFailure_NamesTheFileAndTheUnderlyingError()
+    {
+        string described = StartupDatabaseCheck.DescribeOpenFailure(
+            DbPath, new IOException("The device is not ready."));
+
+        Assert.Contains(DbPath, described);
+        Assert.Contains("The device is not ready.", described);
+    }
+
+    [Fact]
+    public void OpenFailure_SaysWhatToCheck()
+    {
+        // This is read after a collector that stopped recording without saying
+        // anything, quite possibly days later. The SQLite error on its own is
+        // rarely enough to act on, so the message names the things that cause
+        // it and the setting that moves the recording elsewhere.
+        string described = StartupDatabaseCheck.DescribeOpenFailure(
+            DbPath, new IOException("The device is not ready."));
+
+        Assert.Contains("databasePath", described);
+        Assert.Contains("telltale.json", described);
+    }
 }
