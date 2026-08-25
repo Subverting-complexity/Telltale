@@ -19,8 +19,9 @@ public class ListeningAddressTests
     public void LaunchSettings_MatchesViewerDefaults()
     {
         var path = Path.Combine(FindViewerProjectDir(), "Properties", "launchSettings.json");
-        var json = JsonDocument.Parse(File.ReadAllText(path));
+        using var json = JsonDocument.Parse(File.ReadAllText(path));
 
+        int checked_ = 0;
         var profiles = json.RootElement.GetProperty("profiles");
         foreach (var profile in profiles.EnumerateObject())
         {
@@ -32,7 +33,10 @@ public class ListeningAddressTests
 
             Assert.Equal(ViewerDefaults.LoopbackAddress, uri.Host);
             Assert.Equal(ViewerDefaults.Port, uri.Port);
+            checked_++;
         }
+
+        Assert.True(checked_ > 0, "Expected at least one profile with applicationUrl");
     }
 
     private static string FindViewerProjectDir()
