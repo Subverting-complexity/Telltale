@@ -427,6 +427,7 @@ public class SchemaMigrationTests : IDisposable
         new(version, $"record step {version}",
             $"INSERT INTO applied_order (step) VALUES ({version})");
 
+
     /// <summary>
     /// Every object in the database, as the text that created it. Comparing this
     /// between two databases is what proves they are the same shape.
