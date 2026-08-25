@@ -4,25 +4,13 @@ import 'uplot/dist/uPlot.min.css';
 import { getProcessGroup } from './api';
 import type { ProcessPoint } from './types';
 import { CPU_OF_ONE_CORE } from './utils';
+import { COMPARE_COLORS, getThemeColors, pointsConfig, buildAxes } from './chartTheme';
 
 interface ProcessComparisonProps {
   names: string[];
   from: number;
   to: number;
   onBack: () => void;
-}
-
-const COMPARE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
-
-function getThemeColors() {
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-    (!document.documentElement.getAttribute('data-theme') &&
-     window.matchMedia('(prefers-color-scheme: dark)').matches);
-  return {
-    axes: isDark ? '#9ca3af' : '#6b7280',
-    grid: isDark ? '#374151' : '#e5e7eb',
-    bg: isDark ? '#111827' : '#ffffff',
-  };
 }
 
 interface CompareData {
@@ -68,35 +56,28 @@ function CompareChart({ title, datasets, seriesKey, unit }: {
     });
 
     const theme = getThemeColors();
+    const pointCount = tsSeconds.length;
 
     const series: uPlot.Series[] = [
       {},
-      ...datasets.map((ds, i) => ({
-        label: ds.name,
-        stroke: COMPARE_COLORS[i % COMPARE_COLORS.length],
-        width: 2,
-        value: (_u: uPlot, v: number | null) => v !== null ? `${v.toFixed(1)} ${unit}` : '-',
-        spanGaps: false,
-      })),
+      ...datasets.map((ds, i) => {
+        const color = COMPARE_COLORS[i % COMPARE_COLORS.length];
+        return {
+          label: ds.name,
+          stroke: color,
+          width: 2,
+          value: (_u: uPlot, v: number | null) => v !== null ? `${v.toFixed(1)} ${unit}` : '-',
+          spanGaps: false,
+          points: pointsConfig(pointCount, color),
+        };
+      }),
     ];
 
     const opts: uPlot.Options = {
       width: containerRef.current.clientWidth,
       height: 200,
       series,
-      axes: [
-        {
-          stroke: theme.axes,
-          grid: { stroke: theme.grid, width: 1 },
-          ticks: { stroke: theme.grid, width: 1 },
-        },
-        {
-          stroke: theme.axes,
-          grid: { stroke: theme.grid, width: 1 },
-          ticks: { stroke: theme.grid, width: 1 },
-          size: 60,
-        },
-      ],
+      axes: buildAxes(theme),
       cursor: { drag: { x: true, y: false } },
       padding: [8, 8, 0, 0],
     };

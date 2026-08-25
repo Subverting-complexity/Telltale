@@ -4,6 +4,7 @@ import 'uplot/dist/uPlot.min.css';
 import type { TimelinePoint, ProcessPoint, ThresholdConfig } from './types';
 import { DataTable, timelineColumns, processColumns } from './DataTable';
 import { formatSize, formatRate, computeMovingAverage, computeMean, computeLinearFit, CPU_OF_ONE_CORE, CPU_OF_ALL_CORES } from './utils';
+import { CHART_COLORS, getThemeColors, pointsConfig, buildAxes } from './chartTheme';
 
 interface TimelineProps {
   data: TimelinePoint[];
@@ -21,31 +22,6 @@ export interface OverlayConfig {
   movingAverage: boolean;
   mean: boolean;
   trend: boolean;
-}
-
-const CHART_COLORS = {
-  cpu: '#3b82f6',
-  memory: '#10b981',
-  disk: '#f59e0b',
-  network: '#8b5cf6',
-  io: '#ef4444',
-};
-
-function getThemeColors() {
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-    (!document.documentElement.getAttribute('data-theme') &&
-     window.matchMedia('(prefers-color-scheme: dark)').matches);
-
-  return {
-    axes: isDark ? '#9ca3af' : '#6b7280',
-    grid: isDark ? '#374151' : '#e5e7eb',
-    bg: isDark ? '#111827' : '#ffffff',
-    thresholdLine: isDark ? 'rgba(156,163,175,0.4)' : 'rgba(107,114,128,0.3)',
-    thresholdText: isDark ? '#9ca3af' : '#9ca3af',
-    meanLine: isDark ? 'rgba(251,191,36,0.7)' : 'rgba(217,119,6,0.6)',
-    meanText: isDark ? '#fbbf24' : '#d97706',
-    trendLine: isDark ? 'rgba(244,114,182,0.6)' : 'rgba(219,39,119,0.5)',
-  };
 }
 
 interface ThresholdLine {
@@ -385,7 +361,6 @@ function ChartPanel<T extends { ts: number }>({
     const labelFormatter = formatY ?? ((v: number) => `${v.toFixed(1)} ${unit}`);
 
     const pointCount = data.length;
-    const showPoints = pointCount > 0 && pointCount <= 200;
 
     const series: uPlot.Series[] = [
       {},
@@ -396,12 +371,7 @@ function ChartPanel<T extends { ts: number }>({
         width: 1.5,
         value: (_u: uPlot, v: number | null) => v !== null ? tooltipFormatter(v) : '-',
         spanGaps: false,
-        points: {
-          show: showPoints,
-          size: pointCount <= 60 ? 6 : 4,
-          fill: color,
-          stroke: color,
-        },
+        points: pointsConfig(pointCount, color),
       },
     ];
 
@@ -470,20 +440,7 @@ function ChartPanel<T extends { ts: number }>({
           max: yMax,
         },
       },
-      axes: [
-        {
-          stroke: theme.axes,
-          grid: { stroke: theme.grid, width: 1 },
-          ticks: { stroke: theme.grid, width: 1 },
-        },
-        {
-          stroke: theme.axes,
-          grid: { stroke: theme.grid, width: 1 },
-          ticks: { stroke: theme.grid, width: 1 },
-          size: 60,
-          values: yAxisValues,
-        },
-      ],
+      axes: buildAxes(theme, yAxisValues),
       cursor: {
         drag: { x: true, y: false },
       },
