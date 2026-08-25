@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Telltale.Viewer</RootNamespace>
+    <AssemblyName>TelltaleViewer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+
+  <Target Name="BuildFrontend" BeforeTargets="Build;Publish" Condition="Exists('../frontend/package.json')">
+    <Exec Command="npm install" WorkingDirectory="../frontend" Condition="!Exists('../frontend/node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="../frontend" />
+  </Target>
+
+</Project>
