@@ -58,7 +58,9 @@ Note that the collector tests exercise Windows-specific P/Invoke code, and the a
 
 `dev.bat` stops `Telltale.exe` first if it is running. Both take the same recorder lock, because both write to the same database and only one may.
 
-It forces the stop, because asking means running `Telltale.exe --quit` and this script never builds the host. That costs at most one sampling interval of data. The deploy script knows where the executable is, so it asks first and only forces if that does not work.
+It forces the stop, because asking means running `Telltale.exe --quit` and this script never builds the host. That costs at most one sampling interval of data.
+
+`publish.bat` does ask, because it knows where the executable is. It stops only a Telltale running from `publish/`, which would otherwise hold its own file open and make the publish fail with nothing said about why.
 
 To run what actually ships, build it with `publish.bat` and run `publish/Telltale.exe`. It records into your real capture database, so point `databasePath` in the copied `telltale.json` somewhere disposable if you do not want that.
 

@@ -17,6 +17,22 @@ call npm run build
 if errorlevel 1 goto :fail
 popd
 
+:: A Telltale started from publish\ holds its own executable open, and the
+:: publish below would fail to overwrite it with nothing said about why. Only a
+:: Telltale running from this folder is stopped: one running from somewhere else
+:: is not in the way and is not this script's to stop.
+::
+:: start /wait because Telltale.exe is a windowed application, so a shell neither
+:: waits for it nor collects its exit code.
+set "TT_PUBLISH=%ROOT%publish"
+if exist "%ROOT%publish\Telltale.exe" (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Get-Process Telltale -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($env:TT_PUBLISH, 'OrdinalIgnoreCase') }; if ($p) { exit 1 }; exit 0"
+    if errorlevel 1 (
+        echo       Stopping the Telltale running from publish\...
+        start /wait "" "%ROOT%publish\Telltale.exe" --quit
+    )
+)
+
 :: Publish the application. One executable: it records in the background and
 :: serves its own window. The frontend assets and telltale.json are copied
 :: alongside it by the project file.

@@ -17,7 +17,7 @@ if not exist frontend\node_modules (
 :: Forced rather than asked, because asking needs the path to Telltale.exe so it
 :: can be run with --quit, and this script never builds it. The cost of forcing is
 :: at most one sampling interval of data, which is a fair price for starting a
-:: development session. The deploy script, which does know the path, asks first.
+:: development session. publish.bat, which does know the path, asks first.
 tasklist /fi "IMAGENAME eq Telltale.exe" /nh 2>nul | find /i "Telltale.exe" >nul
 if not errorlevel 1 (
     echo Stopping Telltale so the development recorder can take over...

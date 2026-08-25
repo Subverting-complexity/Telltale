@@ -71,7 +71,7 @@ To stop Telltale, right-click its icon and choose Exit, or run `Telltale.exe --q
 `Telltale.exe` is a windowed application, so a shell does not wait for it and does not collect its exit code. A script that needs to know the stop finished has to say so:
 
 ```bat
-start /wait "" "path	o\Telltale.exe" --quit
+start /wait "" "C:\path\to\Telltale.exe" --quit
 ```
 
 In PowerShell that is `Start-Process -Wait -FilePath ... -ArgumentList '--quit'`.

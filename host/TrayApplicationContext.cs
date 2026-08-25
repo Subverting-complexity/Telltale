@@ -119,10 +119,27 @@ sealed class TrayApplicationContext : ApplicationContext
 
     void OnMessageLoop(Action action)
     {
-        if (_marshal.IsHandleCreated && _marshal.InvokeRequired)
+        if (!_marshal.IsHandleCreated || !_marshal.InvokeRequired)
+        {
+            // Already on the message loop, or there is no longer one to be on. The
+            // second case only happens once the tray has been disposed, and running
+            // the action here instead would put it on whichever thread raised the
+            // event, which is what these helpers exist to prevent.
+            if (_marshal.IsHandleCreated)
+                action();
+            return;
+        }
+
+        try
+        {
             _marshal.BeginInvoke(action);
-        else
-            action();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            // The handle went between the check and the call. Nothing left to run
+            // it on, and an exception on a system event thread has nothing to catch
+            // it and would take the process with it.
+        }
     }
 
     /// <summary>
@@ -131,7 +148,16 @@ sealed class TrayApplicationContext : ApplicationContext
     /// </summary>
     void WaitForOnMessageLoop(Action action, TimeSpan timeout)
     {
-        if (!_marshal.IsHandleCreated || !_marshal.InvokeRequired)
+        if (!_marshal.IsHandleCreated)
+        {
+            // The tray has already been disposed, so Telltale is stopping anyway.
+            // Running the action here would put it on the thread that raised the
+            // event, touching a notification icon and a timer that belong to a
+            // message loop that has gone.
+            return;
+        }
+
+        if (!_marshal.InvokeRequired)
         {
             action();
             return;
