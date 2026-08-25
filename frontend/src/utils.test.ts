@@ -3,7 +3,7 @@ import {
   formatSize, formatElapsed, formatCpu, formatIo, formatDate, formatTime,
   getDaysInMonth, getDayRange, getMonthRange, getYearRange, getWeekRange, clamp,
   categoriseProcess, formatRate, formatMemoryPercent, formatSizeGb,
-  computeMovingAverage, computeLinearFit, computeMean, formatCpuOfAllCores,
+  computeMovingAverage, computeLinearFit, computeMean, formatCpuOfAllCores, viewedDay,
 } from './utils';
 
 describe('formatSize', () => {
@@ -380,5 +380,32 @@ describe('formatCpuOfAllCores', () => {
     // A core count of zero would divide to infinity, so the recorded per core
     // figure is shown unchanged instead.
     expect(formatCpuOfAllCores(50, 0)).toBe('50.0%');
+  });
+});
+
+describe('viewedDay', () => {
+  it('names the day being viewed and covers exactly it', () => {
+    const target = viewedDay({ scale: 'day', year: 2025, month: 3, day: 3 })!;
+
+    expect(target).not.toBeNull();
+    expect(target.from).toBe(new Date(2025, 2, 3).getTime());
+    // Inclusive of the last millisecond of the day, and of nothing after it.
+    expect(target.to).toBe(new Date(2025, 2, 4).getTime() - 1);
+    expect(target.label).toContain('2025');
+    expect(target.label).toContain('3');
+  });
+
+  it('offers nothing for a view that spans more than one day', () => {
+    // A wipe deletes whole days and never a month or a year, so a view that is
+    // not on one day has no day to name. Offering one anyway would delete
+    // something narrower than the screen shows.
+    expect(viewedDay({ scale: 'week', year: 2025, month: 3, day: 3 })).toBeNull();
+    expect(viewedDay({ scale: 'month', year: 2025, month: 3 })).toBeNull();
+    expect(viewedDay({ scale: 'year', year: 2025 })).toBeNull();
+  });
+
+  it('offers nothing when the day view has no day set', () => {
+    expect(viewedDay({ scale: 'day', year: 2025, month: 3 })).toBeNull();
+    expect(viewedDay({ scale: 'day', year: 2025 })).toBeNull();
   });
 });

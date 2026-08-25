@@ -2,7 +2,9 @@ import type {
   RangeResponse, TimelineResponse, ProcessesResponse,
   ProcessDetailResponse, ProcessGroupResponse, HealthResponse,
   AlertsResponse, BaselinesResponse, HeatmapResponse, ThresholdConfig,
+  WipeScope, WipeResponse,
 } from './types';
+import { tokenFromUrl } from './session';
 
 const API_BASE = '/api';
 
@@ -58,4 +60,56 @@ export function getHeatmap(from: number, to: number, metric: string): Promise<He
 
 export function getThresholds(): Promise<ThresholdConfig> {
   return fetchJson(`${API_BASE}/thresholds`);
+}
+
+/**
+ * Thrown when a wipe was refused, carrying what the application said about it so
+ * the window can show the reason rather than a status code.
+ */
+export class WipeError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'WipeError';
+  }
+}
+
+/**
+ * Asks Telltale to throw recorded history away.
+ *
+ * Only the single application build serves this. It is behind the token Telltale
+ * put in the address it opened this window on, so a page from anywhere else
+ * cannot reach it, and the viewer executable does not offer it at all: it opens
+ * the capture file read-only. A window with no token therefore fails here rather
+ * than sending a request that would be refused anyway.
+ */
+export async function wipeCapture(what: WipeScope): Promise<WipeResponse> {
+  const token = tokenFromUrl();
+  if (!token) {
+    throw new WipeError(
+      'This window cannot delete recorded data. Open Telltale from its icon in the notification area.',
+      0,
+    );
+  }
+
+  const res = await fetch(`${API_BASE}/capture/wipe?s=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(what),
+  });
+
+  if (!res.ok) {
+    // The application answers a refusal with a reason. A body that is missing or
+    // is not the JSON we expect still has to say something, so the status stands
+    // in for it rather than the failure surfacing as a parse error.
+    let reason = `The request was refused (${res.status}).`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === 'string') reason = body.error;
+    } catch {
+      // Left as the status.
+    }
+    throw new WipeError(reason, res.status);
+  }
+
+  return res.json();
 }

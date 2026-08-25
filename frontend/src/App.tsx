@@ -18,8 +18,9 @@ import { Alerts } from './Alerts';
 import { HealthSummary } from './HealthSummary';
 import { TopConsumers } from './TopConsumers';
 import { HeatmapView } from './Heatmap';
+import { WipeDataDialog } from './WipeDataDialog';
 import {
-  getDayRange, getMonthRange, getWeekRange, getYearRange,
+  getDayRange, getMonthRange, getWeekRange, getYearRange, viewedDay,
 } from './utils';
 
 function getInitialTheme(): Theme {
@@ -93,6 +94,7 @@ export default function App() {
   const [selectedProcess, setSelectedProcess] = useState<ProcessSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [customRange, setCustomRange] = useState<{ from: number; to: number } | null>(null);
+  const [wipeOpen, setWipeOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [thresholds, setThresholds] = useState<ThresholdConfig | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>('all');
@@ -107,6 +109,14 @@ export default function App() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // The page's own shortcuts stand down while the wipe dialog is open. The
+      // dialog is a modal on top of the page, but these listen on the window, so
+      // an arrow key pressed with focus on the Cancel button would step the view
+      // to another day underneath it, and the day the dialog is offering to
+      // delete would move with it. Escape had the same shape of problem: one
+      // press would close the dialog and pop the drill-down behind it.
+      if (wipeOpen) return;
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === 'Escape' && selectedProcess) {
@@ -155,13 +165,17 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedProcess]);
+  }, [selectedProcess, wipeOpen]);
 
+  // Refreshed rather than read once. Deleting the earliest or the latest day
+  // moves where the recording starts and ends, and the navigation is built from
+  // exactly those two numbers, so a stale pair leaves the user able to walk into
+  // days that no longer exist.
   useEffect(() => {
     getRange().then(setRange).catch(() => {});
     getHealth().then(setHealth).catch(() => {});
     getThresholds().then(setThresholds).catch(() => {});
-  }, []);
+  }, [refreshKey]);
 
   const navigate = useCallback((newView: ViewState) => {
     setView(newView);
@@ -228,9 +242,34 @@ export default function App() {
 
   const hasData = range?.min != null;
   const logicalProcessors = health?.logicalProcessors || 1;
+
+  // Named rather than written inline, so the return below reads as one line and
+  // the reason the empty screen waits for it stays next to the condition.
+  const wipeDialog = wipeOpen ? (
+    <WipeDataDialog
+      day={viewedDay(view)}
+      onClose={() => setWipeOpen(false)}
+      onWiped={() => {
+        // The deleted range has to read as empty straight away, and the range
+        // endpoint has to be asked again: wiping the earliest day moves where
+        // the recording starts.
+        setCustomRange(null);
+        setSelectedHourRange(null);
+        setSelectedProcess(null);
+        refreshData();
+      }}
+    />
+  ) : null;
   const showHeatmapToggle = view.scale === 'week' || view.scale === 'month' || view.scale === 'year';
 
-  if (!hasData && !loading) {
+  // The empty screen waits while the dialog is open. Wiping everything empties
+  // the recording, which flips hasData false, and this return replaces the whole
+  // page: React sees a different tree in the same place, tears the dialog down
+  // and builds a new one with none of its state. The user would be told what had
+  // just been deleted for exactly as long as it took the range endpoint to
+  // answer. Nothing is hidden by waiting, because the dialog is on top of the
+  // page anyway, and the screen appears as soon as it is closed.
+  if (!hasData && !loading && !wipeOpen) {
     return (
       <div className="app">
         <header className="app-header" role="banner">
@@ -321,6 +360,14 @@ export default function App() {
           </button>
           <button className="icon-btn" onClick={cycleTheme} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>
             {theme === 'dark' ? '●' : theme === 'light' ? '○' : '◐'}
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => setWipeOpen(true)}
+            aria-label="Delete recorded data"
+            title="Delete recorded data"
+          >
+            🗑
           </button>
         </div>
       </header>
@@ -456,6 +503,8 @@ export default function App() {
           </>
         )}
       </main>
+
+      {wipeDialog}
     </div>
   );
 }

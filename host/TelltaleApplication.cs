@@ -154,7 +154,12 @@ static class TelltaleApplication
             .CreateLogger("Telltale")
             .LogInformation("Telltale started. Database: {Path}", config.ResolvedDatabasePath);
 
-        var listener = new ViewerListener(config.ResolvedDatabasePath, config.ViewerPort, log);
+        // The window wipes through the recorder's own connection rather than
+        // opening a second writable one. Two writers to one capture file would
+        // leave the sampler's next tick to fail on a busy database for as long as
+        // a large delete takes.
+        var wipe = new RecorderCaptureWipe(recorder.Services.GetRequiredService<Database>());
+        var listener = new ViewerListener(config.ResolvedDatabasePath, config.ViewerPort, log, wipe);
         using var tray = new TrayApplicationContext(listener, log);
 
         // The signal arrives on a background thread and opening the window touches

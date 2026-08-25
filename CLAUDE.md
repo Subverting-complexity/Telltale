@@ -38,6 +38,24 @@ since it has no window for a close request to reach. Neither reads or sends
 anything. Widening either one, to stop processes by some other name or to do
 more than stop on that handle, needs a reason written down here.
 
+The window can also destroy what has been recorded, either one local day of it
+or all of it. That is the only path by which Telltale deletes on request rather
+than by retention, and it is deliberately narrow. It is a POST, so a link or a
+prefetch cannot follow it into a delete. It is behind the same per window token
+that guards the session endpoints, because the listener serves loopback and
+every other page in the browser can reach loopback. It is mapped only by the
+single application build, which routes it through the recorder's own connection,
+so the viewer executable keeps its read-only handle and offers no wipe at all.
+The deletes run in one transaction, and nothing outside `schema_version` and
+`machine_info` survives a full wipe. A wipe writes one line to the log saying
+whether it took a range or everything, and how much went. It deliberately does
+not write the range. The line outlives the rows, and one of the two reasons to
+delete a day is that the day was private, so recording which day someone wanted
+gone would undo most of what they asked for. Widening any of that, to delete a
+finer selection, to run without the token, to write more than that one line or to
+put the range in it, or to reach the file from a second writable connection,
+needs a reason written down here.
+
 Command lines are not stored either unless the user turns on
 `recordCommandLines`, which is off by default. When it is on, the collector
 masks anything matching a fixed set of credential patterns before writing the

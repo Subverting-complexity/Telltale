@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -41,16 +40,25 @@ sealed class ViewerListener : IAsyncDisposable
     readonly string _databasePath;
     readonly int _preferredPort;
     readonly RollingLogFile? _log;
+    readonly ICaptureWipe? _wipe;
     readonly SemaphoreSlim _gate = new(1, 1);
 
     WebApplication? _app;
     SessionTracker? _session;
 
-    public ViewerListener(string databasePath, int preferredPort, RollingLogFile? log = null)
+    /// <param name="wipe">
+    /// How a window may throw recorded history away, or null to serve no wipe
+    /// endpoint at all. Null is not a degraded mode: a listener with nothing to
+    /// wipe through simply does not have the route, so the only build that offers
+    /// it is the one holding the recorder's own connection.
+    /// </param>
+    public ViewerListener(
+        string databasePath, int preferredPort, RollingLogFile? log = null, ICaptureWipe? wipe = null)
     {
         _databasePath = databasePath;
         _preferredPort = preferredPort;
         _log = log;
+        _wipe = wipe;
     }
 
     /// <summary>The address being served, or null when nothing is listening.</summary>
@@ -161,7 +169,7 @@ sealed class ViewerListener : IAsyncDisposable
     async Task<string> StartOnAsync(int port, CancellationToken cancellationToken)
     {
         var session = new SessionTracker(IdleTimeout, Settle, StartupGrace);
-        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+        var token = WindowToken.New();
         var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
         Directory.CreateDirectory(webRoot);
 
@@ -217,6 +225,13 @@ sealed class ViewerListener : IAsyncDisposable
         app.MapPost("/api/session/closed", (HttpRequest request) =>
             ForWindow(request, token, id => { session.Close(id); }));
 
+        // Mapped on the same terms and for the same reason, one step further: this
+        // one destroys the recording rather than closing a window, so it is behind
+        // the token too, and it only exists when there is a recorder to wipe
+        // through. See CaptureWipeEndpoint.
+        if (_wipe is not null)
+            app.MapCaptureWipe(_wipe, token, _log);
+
         try
         {
             await app.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -252,18 +267,10 @@ sealed class ViewerListener : IAsyncDisposable
     /// </returns>
     static IResult ForWindow(HttpRequest request, string token, Action<string> action)
     {
-        string? presented = request.Query["s"];
         string? windowId = request.Query["c"];
 
-        if (string.IsNullOrEmpty(presented) || string.IsNullOrEmpty(windowId))
+        if (string.IsNullOrEmpty(windowId) || !WindowToken.IsPresentedIn(request, token))
             return Results.NotFound();
-
-        if (!CryptographicOperations.FixedTimeEquals(
-                System.Text.Encoding.UTF8.GetBytes(presented),
-                System.Text.Encoding.UTF8.GetBytes(token)))
-        {
-            return Results.NotFound();
-        }
 
         action(windowId);
         return Results.NoContent();

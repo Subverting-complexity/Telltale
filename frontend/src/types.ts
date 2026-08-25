@@ -164,3 +164,14 @@ export type ProcessSelection =
   | { type: 'comparison'; names: string[] };
 
 export type Theme = 'light' | 'dark' | 'system';
+
+/** What to throw away: everything recorded, or one span of it. */
+export type WipeScope =
+  | { scope: 'all' }
+  | { scope: 'range'; from: number; to: number };
+
+/** What a wipe deleted. */
+export interface WipeResponse {
+  rowsDeleted: number;
+  bytesFreed: number;
+}

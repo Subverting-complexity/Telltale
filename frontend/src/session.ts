@@ -81,7 +81,7 @@ export function startSessionKeepalive(options: KeepaliveOptions = {}): () => voi
 }
 
 /** Reads the token Telltale put in the URL it opened this window on. */
-function tokenFromUrl(): string | null {
+export function tokenFromUrl(): string | null {
   if (typeof location === 'undefined') return null;
   try {
     return new URLSearchParams(location.search).get('s');

@@ -1,3 +1,5 @@
+import type { ViewState } from './types';
+
 export function formatSize(mb: number): string {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   if (mb >= 1) return `${mb.toFixed(1)} MB`;
@@ -85,6 +87,24 @@ export function getDayRange(year: number, month: number, day: number): { from: n
   const start = new Date(year, month - 1, day);
   const end = new Date(year, month - 1, day + 1);
   return { from: start.getTime(), to: end.getTime() - 1 };
+}
+
+/**
+ * The day a wipe would offer to delete, or null when the view spans more than
+ * one day.
+ *
+ * A wipe is offered per day and never per month or year, so a view that is not
+ * on a single day has no day to name, and the control says so rather than
+ * quietly deleting something wider than the label suggests.
+ */
+export function viewedDay(view: ViewState): { label: string; from: number; to: number } | null {
+  if (view.scale !== 'day' || view.month === undefined || view.day === undefined) return null;
+
+  const { from, to } = getDayRange(view.year, view.month, view.day);
+  const label = new Date(from).toLocaleDateString(undefined, {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+  });
+  return { label, from, to };
 }
 
 export function getMonthRange(year: number, month: number): { from: number; to: number } {
