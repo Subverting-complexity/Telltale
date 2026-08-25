@@ -39,9 +39,28 @@ public class DatabaseLifecycleTests() : SqliteTestBase("lifecycle")
         Assert.False(File.Exists(DbPath + "-shm"), "the shared memory file should have been removed");
 
         // Deleting the database itself is the stronger claim: on Windows this
-        // throws while any handle to the file is still open.
-        File.Delete(DbPath);
+        // throws while any handle to the file is still open. It retries briefly,
+        // because a scanner or indexer can hold a handle for a few milliseconds
+        // after SQLite closes the file, and this suite is not the place to add
+        // another intermittent failure.
+        DeleteWithShortRetry(DbPath);
         Assert.False(File.Exists(DbPath));
+    }
+
+    private static void DeleteWithShortRetry(string path)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Delete(path);
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException && attempt < 20)
+            {
+                Thread.Sleep(25);
+            }
+        }
     }
 
     [Fact]
