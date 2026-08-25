@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -36,12 +37,55 @@ public static class ViewerEndpoints
 
         var jsonOptions = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
+        var logger = app.Logger;
+
         SqliteConnection OpenDb()
         {
             string mode = File.Exists(dbPath) ? "ReadOnly" : "ReadWrite";
             var conn = new SqliteConnection($"Data Source={dbPath};Mode={mode}");
             conn.Open();
             return conn;
+        }
+
+        // Every endpoint answers a failed query with its own empty shape so the page
+        // still renders rather than breaking. That leaves the caller unable to tell a
+        // capture with no data from one the viewer could not read, so the reason is
+        // recorded here before the empty result goes out. Warning rather than error:
+        // the request itself is still answered.
+        //
+        // Recorded once per source per distinct message. A capture that cannot be read
+        // fails on every request, and the frontend polls /api/health every ten seconds,
+        // so logging each one would fill the rotating log in a few hours and evict
+        // everything else in it. The cost of collapsing them is that a failure which
+        // clears and returns with the same message is only reported once.
+        //
+        // Bounded: the keys are the fixed set of route templates below plus the one
+        // constant used for the configured path, and each value is replaced rather
+        // than accumulated. The check and the set are not one atomic step, so two
+        // simultaneous first requests to the same source can both report. That costs a
+        // duplicate line and nothing else, which is not worth locking for.
+        //
+        // The state lives with the WebApplication, so it starts empty each time the
+        // host builds one. Reopening the window reports a standing fault again.
+
+        // Not a route, so it cannot collide with the endpoint keys.
+        const string ConfiguredPathSource = "the configured database path";
+
+        var lastReported = new ConcurrentDictionary<string, string>();
+
+        bool NotYetReported(string source, string message)
+        {
+            if (lastReported.TryGetValue(source, out string? previous) && previous == message)
+                return false;
+
+            lastReported[source] = message;
+            return true;
+        }
+
+        void ReportQueryFailure(SqliteException ex, string endpoint)
+        {
+            if (NotYetReported(endpoint, ex.Message))
+                logger.LogWarning(ex, "The capture database could not be queried for {Endpoint}. Returning an empty result.", endpoint);
         }
 
         // --- Threshold constants (shared by /api/alerts and /api/thresholds) ---
@@ -91,8 +135,9 @@ public static class ViewerEndpoints
                 }
                 return Results.Json(new { min = (long?)null, max = (long?)null }, jsonOptions);
             }
-            catch
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/range");
                 return Results.Json(new { min = (long?)null, max = (long?)null }, jsonOptions);
             }
         });
@@ -126,8 +171,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { resolution = result.Resolution, points }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/timeline");
                 return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -250,8 +296,9 @@ public static class ViewerEndpoints
         
                 return Results.Json(new { grouped, processes = results }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/processes");
                 return Results.Json(new { grouped, processes = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -329,8 +376,9 @@ public static class ViewerEndpoints
         
                 return Results.Json(new { info, resolution = plan.Resolution, points }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/process/{id:long}");
                 return Results.Json(new { info = (object?)null, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -399,8 +447,9 @@ public static class ViewerEndpoints
         
                 return Results.Json(new { name, resolution = plan.Resolution, points }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/process-group/{name}");
                 return Results.Json(new { name, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -487,8 +536,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { period, alerts }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/alerts");
                 return Results.Json(new { period, alerts = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -542,7 +592,13 @@ public static class ViewerEndpoints
                     }
                 }
             }
-            catch { }
+            catch (SqliteException ex)
+            {
+                // An unreadable capture leaves the counters at their defaults,
+                // which reports the collector as not running. That is the honest
+                // answer for a database the viewer cannot open.
+                ReportQueryFailure(ex, "/api/health");
+            }
 
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             bool collectorRunning = lastSampleTs > 0 && (now - lastSampleTs) < 15000;
@@ -553,7 +609,37 @@ public static class ViewerEndpoints
                 var fi = new FileInfo(dbPath);
                 if (fi.Exists) dbSizeBytes = fi.Length;
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                or ArgumentException or NotSupportedException)
+            {
+                // This guards a file probe rather than a query, so SqliteException is
+                // not what it can throw. Only the reported size is lost either way, so
+                // the rest of the health response is still worth returning.
+                //
+                // The last two cover a configured database path that is empty or
+                // malformed, which reaches here through the FileInfo constructor. That
+                // is a configuration error rather than a transient one, so it is worth
+                // a warning, where the transient cases below are left at debug and so
+                // are dropped by the Information threshold the host's file logger
+                // applies. That is deliberate: only the reported size is lost. Letting
+                // it escape instead would turn /api/health into a 500, and the frontend
+                // discards a failed health poll silently, so the operator would see the
+                // status bar disappear with nothing anywhere explaining why.
+                //
+                // Collapsed like the query failures, and for the same reason. An
+                // unusable path is a standing fault rather than a transient one, so it
+                // throws on every poll of this endpoint; reporting each one would
+                // refill the log this collapsing exists to protect.
+                if (ex is ArgumentException or NotSupportedException)
+                {
+                    if (NotYetReported(ConfiguredPathSource, ex.Message))
+                        logger.LogWarning(ex, "The configured capture database path is not usable.");
+                }
+                else
+                {
+                    logger.LogDebug(ex, "The size of the capture database could not be read.");
+                }
+            }
 
             return Results.Json(new
             {
@@ -637,8 +723,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { baselines }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/baselines");
                 return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
             }
         });
@@ -718,8 +805,9 @@ public static class ViewerEndpoints
 
                 return Results.Json(new { metric, buckets }, jsonOptions);
             }
-            catch (SqliteException)
+            catch (SqliteException ex)
             {
+                ReportQueryFailure(ex, "/api/heatmap");
                 return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
             }
         });
