@@ -166,16 +166,76 @@ public class SessionTrackerTests
     }
 
     [Fact]
+    public void Asking_for_a_window_holds_the_listener_while_it_arrives()
+    {
+        // Reopening a moment after closing the last window used to hand the
+        // address to a browser and then tear the listener down before the browser
+        // had finished loading it.
+        var tracker = Tracker(out var advance);
+        tracker.Ping("a");
+        tracker.Close("a");
+        advance(Settle + TimeSpan.FromSeconds(1));
+        Assert.True(tracker.ShouldStop());
+
+        tracker.ExpectWindow();
+
+        Assert.False(tracker.ShouldStop());
+        advance(Grace - TimeSpan.FromSeconds(1));
+        Assert.False(tracker.ShouldStop());
+    }
+
+    [Fact]
+    public void A_window_that_was_asked_for_and_never_came_does_not_hold_it_forever()
+    {
+        var tracker = Tracker(out var advance);
+        tracker.Ping("a");
+        tracker.Close("a");
+        tracker.ExpectWindow();
+
+        advance(Grace + TimeSpan.FromSeconds(1));
+
+        Assert.True(tracker.ShouldStop());
+    }
+
+    [Fact]
+    public void A_window_arriving_ends_the_wait_for_it()
+    {
+        var tracker = Tracker(out var advance);
+        tracker.ExpectWindow();
+        tracker.Ping("a");
+
+        advance(Grace + TimeSpan.FromSeconds(5));
+
+        // Held by the window being there, not by the grace period, which the ping
+        // cleared. Left standing, it would delay every later shutdown by a minute.
+        Assert.False(tracker.ShouldStop());
+        tracker.Close("a");
+        advance(Settle);
+        Assert.True(tracker.ShouldStop());
+    }
+
+    [Fact]
     public void It_does_not_grow_without_limit()
     {
         // Only a page holding the listener's token can add a window, so this is
-        // insurance against a bug rather than a defence. The newest is kept.
-        var tracker = new SessionTracker(Idle, Settle, Grace);
+        // insurance against a bug rather than a defence.
+        var tracker = Tracker(out var advance);
 
         for (var i = 0; i < 500; i++)
+        {
             tracker.Ping($"window-{i}");
+            advance(TimeSpan.FromMilliseconds(1));
+        }
 
         Assert.Equal(64, tracker.OpenWindows);
+
+        // The newest survive. Evicting a window someone is still looking at, in
+        // preference to one that has been quiet for longer, would be the wrong way
+        // round.
+        tracker.Close("window-499");
+        Assert.Equal(63, tracker.OpenWindows);
+        tracker.Close("window-0");
+        Assert.Equal(63, tracker.OpenWindows);
     }
 
     [Fact]

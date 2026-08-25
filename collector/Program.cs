@@ -5,6 +5,10 @@ if (!createdNew)
 {
     mutex.Dispose();
     Console.Error.WriteLine("Another instance of the Telltale collector is already running.");
+    // Telltale.exe holds the same lock, because it records too and two recorders
+    // would write to one database. Naming it here saves anyone hunting for a
+    // TelltaleCapture.exe that is not running.
+    Console.Error.WriteLine("That is either TelltaleCapture.exe or Telltale.exe. Stop it and try again.");
     Environment.Exit(1);
     return;
 }

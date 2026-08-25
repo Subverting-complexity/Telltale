@@ -112,11 +112,28 @@ public static class AppWindowLauncher
         return token.Length == 0 ? null : token;
     }
 
+    /// <summary>A directory an unprivileged process cannot plant an executable in.</summary>
+    static string SafeWorkingDirectory()
+    {
+        var system = Environment.GetFolderPath(Environment.SpecialFolder.System);
+        return Directory.Exists(system) ? system : AppContext.BaseDirectory;
+    }
+
     static bool TryStart(string fileName, string? arguments)
     {
         try
         {
-            var info = new ProcessStartInfo { FileName = fileName, UseShellExecute = true };
+            var info = new ProcessStartInfo
+            {
+                FileName = fileName,
+                UseShellExecute = true,
+                // The fallbacks above are bare names, which the shell resolves
+                // through a search order that includes the working directory before
+                // the system ones. Naming a directory nobody else can write to takes
+                // that step out of the search rather than trusting whatever the
+                // process happened to be started from.
+                WorkingDirectory = SafeWorkingDirectory(),
+            };
             if (arguments is not null)
                 info.Arguments = arguments;
 

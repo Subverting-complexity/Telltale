@@ -42,6 +42,8 @@ Run `dev.bat` from the repo root. This starts the recorder and the API as separa
 
 Development runs the two halves separately on purpose: a console window shows what each of them is doing, and restarting one does not disturb the other. The shipped build is the single executable described above.
 
+`Telltale.exe` and the separate recorder take the same lock, because they record the same thing into the same database and only one of them may. They hand it back and forth rather than getting in each other's way: `dev.bat` stops Telltale before starting the development recorder, and `Telltale.exe` stops a running `TelltaleCapture.exe` and takes over when you start it. Neither refuses to start because the other is there.
+
 ```bat
 dev.bat
 ```
@@ -63,6 +65,10 @@ The window is served on `http://127.0.0.1:41821`, on loopback only, and only whi
 The window tells Telltale when it opens and when it closes, and that is how Telltale knows when to stop listening. Those two messages carry a token that Telltale put in the address it opened the window on, so only the window can send them. Without it, any page you happened to have open in another tab could post the closing message and take your window's server away, or send the opening one and hold the socket open for exactly the hours it is meant to be shut. Neither of those needs to read a reply to work, so a browser would send them without asking.
 
 To have Telltale start with Windows, put a shortcut to `Telltale.exe` in your Startup folder (`shell:startup`). That is a manual step. Telltale does not install itself.
+
+To stop Telltale, right-click its icon and choose Exit, or run `Telltale.exe --quit` from a script. It stops itself when Windows shuts down or you log off, so the database is closed properly rather than being cut off mid-write. Ask before you force: a tray application has no window for `taskkill` to close politely, so `taskkill` on its own always means `/f`.
+
+If a Startup shortcut still points at the old `TelltaleCapture.exe`, nothing breaks in the meantime. `Telltale.exe` stops it and takes over the recorder lock when it starts, because it is that executable's replacement and two recorders writing to one database is the thing the lock exists to prevent. Repointing the shortcut is still worth doing, so the old recorder is not started at every logon only to be stopped again.
 
 ### The window
 

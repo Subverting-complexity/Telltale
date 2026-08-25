@@ -60,10 +60,14 @@ sealed class ViewerListener : IAsyncDisposable
     /// The address to open a window on, which carries this listener's token.
     /// </summary>
     /// <remarks>
-    /// The token is what stops any other page the user has open from driving the
-    /// session endpoints. It is not a secret worth protecting beyond that: it lives
-    /// only as long as this listener, it authorises nothing but "this window is
-    /// open" and "this window has gone", and it is on loopback throughout.
+    /// The token stops any other page the user has open from driving the session
+    /// endpoints, which is the threat it was added for. It is not hidden from the
+    /// machine itself: it goes to the browser as a command line argument, so any
+    /// local process that can read another's arguments can read it, and Telltale's
+    /// own recorder stores it when recordCommandLines is on. That is a small thing
+    /// to lose, because it lives only as long as this listener and authorises
+    /// nothing but "this window is open" and "this window has gone", both on
+    /// loopback. Issue #90 covers closing it properly.
     /// </remarks>
     public string? WindowUrl { get; private set; }
 
@@ -71,6 +75,13 @@ sealed class ViewerListener : IAsyncDisposable
 
     /// <summary>Whether every window has gone and the listener should be stopped.</summary>
     public bool EveryWindowHasGone() => _session?.ShouldStop() ?? false;
+
+    /// <summary>
+    /// Says that a window is expected shortly, so the watchdog does not stop the
+    /// listener before it arrives. Used when the machine wakes from sleep, where
+    /// every window has been silent for as long as the machine was away.
+    /// </summary>
+    public void ExpectWindowBack() => _session?.ExpectWindow();
 
     /// <summary>
     /// Starts listening, or returns the address already being served.
@@ -91,7 +102,14 @@ sealed class ViewerListener : IAsyncDisposable
         try
         {
             if (WindowUrl is not null)
+            {
+                // The caller is about to launch a browser at this address, so the
+                // session has to expect a window even though it is already running.
+                // Otherwise the watchdog can stop the listener between handing the
+                // address out and the browser finishing with it.
+                _session!.ExpectWindow();
                 return WindowUrl;
+            }
 
             try
             {
@@ -173,6 +191,10 @@ sealed class ViewerListener : IAsyncDisposable
         // a search term and a process name there, so at Information every one of
         // those would be written to a file this application promises is safe.
         builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+        // Except this one. A refused Host header is the DNS rebinding defence doing
+        // its job, and it is worth knowing it fired. It carries a host name rather
+        // than a query string, so it does not raise the concern above.
+        builder.Logging.AddFilter("Microsoft.AspNetCore.HostFiltering", LogLevel.Information);
 
         // The lifetime's console banner is written for a console, and this
         // application has none.

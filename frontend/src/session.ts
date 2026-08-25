@@ -9,9 +9,9 @@
  * says so: a ping while it is open, and one message on the way out.
  *
  * Two things travel with each message. A token, which Telltale put in the URL it
- * opened this window on, and which no other page can read. And an id for this
- * window, so that closing one window does not stop the server under another one
- * that is still open.
+ * opened this window on, and which no page from anywhere else can read. And an id
+ * for this window, so that closing one window does not stop the server under
+ * another one that is still open.
  *
  * Without the token any page the user happened to have open in another tab could
  * post to the closing endpoint and take this window's server away, or poll the
@@ -38,6 +38,8 @@ export interface KeepaliveOptions {
   send?: (path: string) => void;
   /** Subscribes to the page going away, and returns the unsubscribe. */
   onPageHide?: (listener: () => void) => () => void;
+  /** Subscribes to the page coming back to life, and returns the unsubscribe. */
+  onWake?: (listener: () => void) => () => void;
 }
 
 /**
@@ -54,18 +56,27 @@ export function startSessionKeepalive(options: KeepaliveOptions = {}): () => voi
   const windowId = options.windowId ?? newWindowId();
   const send = options.send ?? sendOneWay;
   const onPageHide = options.onPageHide ?? subscribeToPageHide;
+  const onWake = options.onWake ?? subscribeToWake;
 
   const query = `?s=${encodeURIComponent(token)}&c=${encodeURIComponent(windowId)}`;
+  const ping = () => send(PING_PATH + query);
 
   // Sent immediately as well as on the interval, so a window that opens and is
   // closed again inside the first interval has still been seen.
-  send(PING_PATH + query);
-  const timer = setInterval(() => send(PING_PATH + query), PING_INTERVAL_MS);
-  const stopListening = onPageHide(() => send(CLOSE_PATH + query));
+  ping();
+  const timer = setInterval(ping, PING_INTERVAL_MS);
+  const stopHideListening = onPageHide(() => send(CLOSE_PATH + query));
+
+  // A machine that has been asleep comes back with this window long overdue and
+  // the interval not yet due again. Saying so at once, rather than waiting up to
+  // another fifteen seconds, is what keeps the application from concluding the
+  // window went away while it was not looking.
+  const stopWakeListening = onWake(ping);
 
   return () => {
     clearInterval(timer);
-    stopListening();
+    stopHideListening();
+    stopWakeListening();
   };
 }
 
@@ -98,9 +109,11 @@ function newWindowId(): string {
  * down, which is exactly the moment the closing message is sent.
  */
 function sendOneWay(path: string): void {
+  // sendBeacon returns false when the browser declines to queue the request,
+  // which is a refusal rather than a delivery. Falling through to fetch is what
+  // keeps a run of those from looking like the window having gone away.
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-    navigator.sendBeacon(path);
-    return;
+    if (navigator.sendBeacon(path)) return;
   }
 
   // A failure here means an application that has already gone, which is not
@@ -118,4 +131,24 @@ function sendOneWay(path: string): void {
 function subscribeToPageHide(listener: () => void): () => void {
   window.addEventListener('pagehide', listener);
   return () => window.removeEventListener('pagehide', listener);
+}
+
+/**
+ * Listens for the page becoming current again, after a sleep, a minimise or a
+ * switch to another window.
+ */
+function subscribeToWake(listener: () => void): () => void {
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') listener();
+  };
+
+  document.addEventListener('visibilitychange', onVisible);
+  window.addEventListener('pageshow', listener);
+  window.addEventListener('focus', listener);
+
+  return () => {
+    document.removeEventListener('visibilitychange', onVisible);
+    window.removeEventListener('pageshow', listener);
+    window.removeEventListener('focus', listener);
+  };
 }

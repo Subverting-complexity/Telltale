@@ -14,6 +14,7 @@ sealed class SecondInstanceSignal : IDisposable
     readonly EventWaitHandle _requested;
     readonly EventWaitHandle _stopping = new(false, EventResetMode.ManualReset);
     Thread? _listener;
+    bool _disposed;
 
     /// <summary>Creates the handle the running instance waits on.</summary>
     /// <remarks>
@@ -73,6 +74,10 @@ sealed class SecondInstanceSignal : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+        _disposed = true;
+
         _stopping.Set();
 
         // The handles are freed only once the waiting thread has definitely

@@ -32,7 +32,7 @@ sealed class SessionTracker
     readonly Lock _gate = new();
     readonly Dictionary<string, DateTimeOffset> _windows = new(StringComparer.Ordinal);
 
-    readonly DateTimeOffset _startedAt;
+    DateTimeOffset? _expectingUntil;
     DateTimeOffset? _emptySince;
     bool _everSawAWindow;
 
@@ -57,7 +57,26 @@ sealed class SessionTracker
         _settle = settle;
         _startupGrace = startupGrace;
         _now = now ?? (() => DateTimeOffset.UtcNow);
-        _startedAt = _now();
+        _expectingUntil = _now() + startupGrace;
+    }
+
+    /// <summary>
+    /// Says that a window has just been asked for and has not arrived yet.
+    /// </summary>
+    /// <remarks>
+    /// Called whenever a browser is launched at this listener, including when the
+    /// listener was already running. Without it, someone reopening the window a
+    /// moment after closing the last one gets a listener that is still inside its
+    /// settling period: the address is handed to the browser and torn down before
+    /// the browser has finished loading it.
+    /// </remarks>
+    public void ExpectWindow()
+    {
+        lock (_gate)
+        {
+            _expectingUntil = _now() + _startupGrace;
+            _emptySince = null;
+        }
     }
 
     /// <summary>Records that the window with this id is still open.</summary>
@@ -71,6 +90,7 @@ sealed class SessionTracker
             _windows[windowId] = _now();
             _everSawAWindow = true;
             _emptySince = null;
+            _expectingUntil = null;
         }
     }
 
@@ -121,8 +141,19 @@ sealed class SessionTracker
                 return false;
             }
 
-            if (!_everSawAWindow)
-                return now - _startedAt >= _startupGrace;
+            // A window has been asked for and has not reported in yet. Browsers
+            // take a moment to start, and a machine coming back from sleep takes
+            // one to notice it has. Waiting the whole grace period is the settling
+            // this case gets: adding another one on top would be waiting twice for
+            // the same window.
+            if (_expectingUntil is { } until)
+            {
+                if (now < until)
+                    return false;
+
+                _expectingUntil = null;
+                return true;
+            }
 
             _emptySince ??= lastWentQuiet ?? now;
             return now - _emptySince.Value >= _settle;

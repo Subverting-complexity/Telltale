@@ -14,15 +14,29 @@ static class TelltaleApplication
 {
     const string InstanceMutexName = @"Global\TelltaleApplicationInstance";
     const string OpenWindowEventName = @"Global\TelltaleOpenWindowRequest";
+    const string QuitEventName = @"Global\TelltaleQuitRequest";
+
+    /// <summary>
+    /// Asks a running Telltale to stop. The other half of launching it again to
+    /// open the window, and the way a script stops it.
+    /// </summary>
+    /// <remarks>
+    /// A tray application has no window while its browser window is shut, so the
+    /// usual way of asking a process to stop has nothing to post to and only force
+    /// is left. Force means the recorder is stopped part way through a write. This
+    /// is the polite way in.
+    /// </remarks>
+    const string QuitSwitch = "--quit";
 
     /// <summary>
     /// The name the separate recorder executable takes for its own single-instance
     /// check. Telltale takes it too, because the two record the same thing into the
-    /// same database and nothing else would stop them doing it at once. That is not
-    /// hypothetical during this changeover: a Startup shortcut still pointing at
-    /// TelltaleCapture.exe starts the old recorder at every logon.
+    /// same database and nothing else would stop them doing it at once.
     /// </summary>
     const string RecorderMutexName = @"Global\TelltaleCollectorInstance";
+
+    /// <summary>The executable Telltale replaces, and takes over the lock from.</summary>
+    const string ReplacedRecorder = "TelltaleCapture.exe";
 
     [STAThread]
     static int Main(string[] args)
@@ -45,6 +59,15 @@ static class TelltaleApplication
 
     static int Run(string[] args)
     {
+        if (args.Any(a => string.Equals(a, QuitSwitch, StringComparison.OrdinalIgnoreCase)))
+        {
+            // Nothing listening means nothing to stop, which is the outcome the
+            // caller wanted. Reported as success so a script does not have to
+            // check whether Telltale was running before asking it to stop.
+            SecondInstanceSignal.TrySignal(QuitEventName);
+            return 0;
+        }
+
         using var instance = new Mutex(true, InstanceMutexName, out bool createdNew);
         if (!createdNew)
         {
@@ -60,19 +83,7 @@ static class TelltaleApplication
         // Nothing acts on it until the tray exists, but the handle being there is
         // what stops that second launch giving up and exiting with nothing said.
         using var secondInstance = new SecondInstanceSignal(OpenWindowEventName);
-
-        using var recorderInstance = new Mutex(true, RecorderMutexName, out bool recorderIsOurs);
-        if (!recorderIsOurs)
-        {
-            StartupReport.Show(string.Join(Environment.NewLine,
-                "Telltale is already recording under its old name.",
-                "",
-                "TelltaleCapture.exe is running and holds the recorder lock. Two",
-                "recorders would write to the same database, so this one has not",
-                "started. Stop TelltaleCapture.exe, and repoint any Startup",
-                "shortcut at Telltale.exe."));
-            return 1;
-        }
+        using var quitRequest = new SecondInstanceSignal(QuitEventName);
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -89,6 +100,24 @@ static class TelltaleApplication
         }
 
         var log = new RollingLogFile(RollingLogFile.PathBeside(config.ResolvedDatabasePath));
+
+        // Taken here rather than at the top, so that the takeover it may perform is
+        // written to a log that exists. Telltale replaces TelltaleCapture.exe, so
+        // finding the old recorder holding this lock is the changeover happening,
+        // not a failure: it is stopped and Telltale carries on.
+        var recorderLock = RecorderLock.Acquire(
+            () => RecorderLock.TryTake(RecorderMutexName),
+            new ImageNameProcessStopper(log),
+            ReplacedRecorder,
+            log);
+
+        if (recorderLock.Mutex is null)
+        {
+            StartupReport.Show(recorderLock.Problem!);
+            return 1;
+        }
+
+        using var recorderInstance = recorderLock.Mutex;
 
         // Fully qualified because this namespace is called Telltale.App, which
         // shadows the Host type when it is written unqualified.
@@ -134,8 +163,16 @@ static class TelltaleApplication
         // The signal arrives on a background thread and opening the window touches
         // the notification icon, so the request crosses onto the message loop first.
         secondInstance.Listen(tray.RequestOpenWindow);
+        quitRequest.Listen(tray.RequestQuit);
 
         Application.Run(tray);
+
+        // Stopped before the tray is disposed, which happens at the end of this
+        // method. The listener thread hands its work to the tray's marshalling
+        // control, so a launch arriving after that control has gone would throw on
+        // a thread with nothing to catch it. Disposing twice is a no-op.
+        secondInstance.Dispose();
+        quitRequest.Dispose();
 
         listener.DisposeAsync().AsTask().GetAwaiter().GetResult();
         StopRecording(recorder, log);

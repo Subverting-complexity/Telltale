@@ -151,6 +151,47 @@ public class ViewerListenerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Reopening_a_window_holds_the_listener_while_the_browser_starts()
+    {
+        // Starting again on a listener that is already running is what the tray
+        // does when someone reopens the window, and it is about to hand this
+        // address to a browser. Without re-arming the session, the watchdog can
+        // stop the listener between handing the address out and the browser
+        // getting to it, and the user sees a connection refused.
+        _listener = new ViewerListener(_databasePath, FreePort());
+        await _listener.StartAsync();
+        using var client = new HttpClient();
+
+        await Ping(client, _listener, "window-a");
+        await Close(client, _listener, "window-a");
+        await Task.Delay(ViewerListener.Settle + TimeSpan.FromSeconds(1));
+        Assert.True(_listener.EveryWindowHasGone());
+
+        await _listener.StartAsync();
+
+        Assert.False(_listener.EveryWindowHasGone());
+    }
+
+    [Fact]
+    public async Task A_wake_from_sleep_holds_the_listener_while_the_window_checks_back_in()
+    {
+        // Every window has been silent for as long as the machine was away, which
+        // looks exactly like every window having gone.
+        _listener = new ViewerListener(_databasePath, FreePort());
+        await _listener.StartAsync();
+        using var client = new HttpClient();
+
+        await Ping(client, _listener, "window-a");
+        await Close(client, _listener, "window-a");
+        await Task.Delay(ViewerListener.Settle + TimeSpan.FromSeconds(1));
+        Assert.True(_listener.EveryWindowHasGone());
+
+        _listener.ExpectWindowBack();
+
+        Assert.False(_listener.EveryWindowHasGone());
+    }
+
+    [Fact]
     public async Task Stopping_closes_the_socket()
     {
         _listener = new ViewerListener(_databasePath, FreePort());
@@ -332,6 +373,18 @@ public class ViewerListenerTests : IAsyncLifetime
 
         Assert.False(_listener.IsRunning);
         Assert.False(_listener.EveryWindowHasGone());
+    }
+
+    [Fact]
+    public void A_window_has_room_to_miss_a_ping_or_two()
+    {
+        // The page pings every PING_INTERVAL_MS, which session.ts sets to 15
+        // seconds. The two constants cannot see each other, so this is the half of
+        // the contract that lives here: whatever the page chooses, the timeout has
+        // to leave room for a message or two to go missing.
+        Assert.True(ViewerListener.IdleTimeout >= TimeSpan.FromSeconds(45),
+            "The idle timeout must leave room for at least three pings at the 15 "
+            + "second interval frontend/src/session.ts uses.");
     }
 
     [Fact]

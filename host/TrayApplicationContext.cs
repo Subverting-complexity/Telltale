@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Reflection;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using Telltale.Viewer;
 
 namespace Telltale.App;
@@ -24,11 +25,11 @@ sealed class TrayApplicationContext : ApplicationContext
     readonly System.Windows.Forms.Timer _windowWatch;
 
     /// <summary>
-    /// Exists only to own a window handle on the message loop, so a request that
-    /// arrives on another thread has somewhere to cross over. A notification icon
-    /// is not a control and cannot be invoked onto.
+    /// Exists to own a window handle on the message loop, so a request arriving on
+    /// another thread has somewhere to cross over, and so that a plain close
+    /// request reaches something that knows how to shut Telltale down.
     /// </summary>
-    readonly Control _marshal = new();
+    readonly MarshallingWindow _marshal;
 
     bool _opening;
     bool _quitting;
@@ -40,6 +41,7 @@ sealed class TrayApplicationContext : ApplicationContext
 
         // Constructed on the thread that is about to run the message loop, so
         // touching the handle here is what binds it to that thread.
+        _marshal = new MarshallingWindow();
         _ = _marshal.Handle;
 
         var menu = new ContextMenuStrip();
@@ -65,17 +67,48 @@ sealed class TrayApplicationContext : ApplicationContext
         _windowWatch = new System.Windows.Forms.Timer { Interval = 5000 };
         _windowWatch.Tick += (_, _) => StopListenerIfWindowHasGone();
         _windowWatch.Start();
+
+        // A machine that has been asleep for an hour comes back with every window
+        // an hour overdue, and the watchdog would tear the listener down under a
+        // window that is still on screen before the page has had a chance to say
+        // otherwise. This gives it that chance.
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+
+        // Windows is shutting down or the user is logging off. Stopping properly
+        // here is what lets the recorder close its database and checkpoint the
+        // write-ahead log rather than being killed part way through a write, which
+        // otherwise happens at every shutdown.
+        SystemEvents.SessionEnding += OnSessionEnding;
+    }
+
+    void OnSessionEnding(object sender, SessionEndingEventArgs e)
+    {
+        _log?.Append("Windows is ending the session. Stopping Telltale.");
+        Quit();
+    }
+
+    void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume && !_quitting)
+            _listener.ExpectWindowBack();
     }
 
     /// <summary>
     /// Opens the window from any thread.
     /// </summary>
-    public void RequestOpenWindow()
+    public void RequestOpenWindow() => OnMessageLoop(OpenWindow);
+
+    /// <summary>
+    /// Stops Telltale from any thread. What "Telltale.exe --quit" ends up calling.
+    /// </summary>
+    public void RequestQuit() => OnMessageLoop(Quit);
+
+    void OnMessageLoop(Action action)
     {
         if (_marshal.IsHandleCreated && _marshal.InvokeRequired)
-            _marshal.BeginInvoke(OpenWindow);
+            _marshal.BeginInvoke(action);
         else
-            OpenWindow();
+            action();
     }
 
     /// <summary>
@@ -159,10 +192,29 @@ sealed class TrayApplicationContext : ApplicationContext
         return new Icon(stream, SystemInformation.SmallIconSize);
     }
 
+    /// <summary>
+    /// Exists to own a window handle on the message loop, so that a request
+    /// arriving on another thread has somewhere to cross over. A notification icon
+    /// is not a control and cannot be invoked onto.
+    /// </summary>
+    /// <remarks>
+    /// It is deliberately not something anything else can find and close. A tray
+    /// application has no window while its browser window is shut, so the usual way
+    /// of asking a process to stop, posting WM_CLOSE to a visible unowned top-level
+    /// window, has nothing to post to. Manufacturing one to be found means either a
+    /// taskbar entry or an Alt+Tab entry for a window that does not exist as far as
+    /// the user is concerned, and that is a worse thing to ship than the problem it
+    /// solves. Telltale is asked to stop through --quit instead, and stops itself
+    /// when Windows says the session is ending.
+    /// </remarks>
+    sealed class MarshallingWindow : Control;
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.SessionEnding -= OnSessionEnding;
             _windowWatch.Dispose();
             _icon.Visible = false;
             _icon.Dispose();

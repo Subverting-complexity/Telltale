@@ -4,7 +4,9 @@ import { startSessionKeepalive, PING_INTERVAL_MS } from './session';
 describe('session keepalive', () => {
   let sent: string[];
   let pageHideListener: (() => void) | null;
+  let wakeListener: (() => void) | null;
   let unsubscribed: boolean;
+  let wakeUnsubscribed: boolean;
 
   const options = (extra: Record<string, unknown> = {}) => ({
     token: 'TOKEN123',
@@ -13,6 +15,10 @@ describe('session keepalive', () => {
     onPageHide: (listener: () => void) => {
       pageHideListener = listener;
       return () => { unsubscribed = true; };
+    },
+    onWake: (listener: () => void) => {
+      wakeListener = listener;
+      return () => { wakeUnsubscribed = true; };
     },
     ...extra,
   });
@@ -23,12 +29,15 @@ describe('session keepalive', () => {
   beforeEach(() => {
     sent = [];
     pageHideListener = null;
+    wakeListener = null;
     unsubscribed = false;
+    wakeUnsubscribed = false;
     vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('says the window is open straight away', () => {
@@ -118,8 +127,59 @@ describe('session keepalive', () => {
     expect(sent).toEqual([ping]);
   });
 
+  it('says it is still here as soon as the page wakes up', () => {
+    // A machine coming back from sleep has left this window overdue and the
+    // interval not yet due again. Waiting up to another fifteen seconds is long
+    // enough for the application to conclude the window went away.
+    startSessionKeepalive(options());
+    sent.length = 0;
+
+    wakeListener?.();
+
+    expect(sent).toEqual([ping]);
+  });
+
+  it('stops listening for wake-ups once it has been stopped', () => {
+    // A subscription left behind would keep pinging for a window that has gone.
+    const stop = startSessionKeepalive(options());
+
+    stop();
+
+    expect(wakeUnsubscribed).toBe(true);
+  });
+
+  it('reads the token out of the address the window was opened on', () => {
+    // The only path the shipped build takes. Everything else here passes the
+    // token in, so without this the real one is never exercised.
+    vi.stubGlobal('location', { search: '?s=FROM-URL' });
+
+    startSessionKeepalive({
+      windowId: 'window-a',
+      send: (path: string) => { sent.push(path); },
+      onPageHide: () => () => {},
+      onWake: () => () => {},
+    });
+
+    expect(sent).toEqual(['/api/session/ping?s=FROM-URL&c=window-a']);
+  });
+
+  it('does nothing when the address carries no token', () => {
+    // Someone typed the address in, or this is the standalone viewer.
+    vi.stubGlobal('location', { search: '' });
+
+    startSessionKeepalive({
+      windowId: 'window-a',
+      send: (path: string) => { sent.push(path); },
+      onPageHide: () => () => {},
+      onWake: () => () => {},
+    });
+
+    expect(sent).toEqual([]);
+  });
+
   it('pings well inside the timeout the application uses', () => {
-    // The application gives up on a window after 90 seconds of silence. The
+    // The application gives up on a window after 90 seconds of silence, which
+    // host/ViewerListener.cs asserts from its side. This is the other half: the
     // interval has to leave room for a ping or two to be lost on the way.
     expect(PING_INTERVAL_MS).toBeLessThan(90_000 / 3);
   });
