@@ -1,1 +1,8 @@
 * text=auto eol=lf
+
+# Windows batch files must have CRLF endings in the working tree. cmd resolves
+# `call :label` and `goto :label` by seeking through the file, and the missing
+# carriage returns throw that seek off, so a label far enough in fails with
+# "The system cannot find the batch label specified". The rule above would
+# otherwise check these out as LF and break them on every clone.
+*.bat text eol=crlf

@@ -11,6 +11,27 @@ if not exist frontend\node_modules (
     popd
 )
 
+:: Telltale.exe holds the same recorder lock as the collector below, because both
+:: write to the same database, so it is stopped first.
+::
+:: Forced rather than asked, because asking needs the path to Telltale.exe so it
+:: can be run with --quit, and this script never builds it. The cost of forcing is
+:: at most one sampling interval of data, which is a fair price for starting a
+:: development session. publish.bat, which does know the path, asks first.
+tasklist /fi "IMAGENAME eq Telltale.exe" /nh 2>nul | find /i "Telltale.exe" >nul
+if not errorlevel 1 (
+    echo Stopping Telltale so the development recorder can take over...
+    set "TELLTALE_WAS_RUNNING=1"
+    taskkill /f /im Telltale.exe >nul 2>&1
+    ping -n 4 -w 1000 127.0.0.1 >nul 2>&1
+    tasklist /fi "IMAGENAME eq Telltale.exe" /nh 2>nul | find /i "Telltale.exe" >nul
+    if not errorlevel 1 (
+        echo Could not stop Telltale. Exit it from the notification area and run this again.
+        pause
+        exit /b 1
+    )
+)
+
 :: Start collector and viewer in their own windows. cmd /k keeps the window
 :: open after the process exits so error output is always readable.
 echo Starting collector...
@@ -31,6 +52,11 @@ start "" msedge --app=http://localhost:5173
 echo Starting Vite dev server...
 cd frontend
 npm run dev
+if defined TELLTALE_WAS_RUNNING (
+    echo.
+    echo Telltale was stopped so this session could record. Start it again from
+    echo your Startup folder or the deploy target when you are done.
+)
 if %errorlevel% neq 0 (
     echo.
     echo Vite dev server exited with an error.

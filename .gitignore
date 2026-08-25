@@ -1,12 +1,9 @@
-collector/bin/
-collector/obj/
-viewer/bin/
-viewer/obj/
+# Build output. Matched by folder name rather than listed per project, because
+# the enumerated form silently stopped covering anything a new project added.
+bin/
+obj/
+
 viewer/wwwroot/
-collector.Tests/bin/
-collector.Tests/obj/
-viewer.Tests/bin/
-viewer.Tests/obj/
 frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo

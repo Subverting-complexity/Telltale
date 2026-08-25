@@ -3,7 +3,7 @@
     "Telltale.Viewer": {
       "commandName": "Project",
       "launchBrowser": false,
-      "applicationUrl": "http://localhost:5111",
+      "applicationUrl": "http://127.0.0.1:41821",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Production"
       }
@@ -11,7 +11,7 @@
     "Development": {
       "commandName": "Project",
       "launchBrowser": false,
-      "applicationUrl": "http://localhost:5111",
+      "applicationUrl": "http://127.0.0.1:41821",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       }

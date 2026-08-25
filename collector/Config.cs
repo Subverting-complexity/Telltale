@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Telltale.Collector;
@@ -28,7 +29,41 @@ public sealed partial class TelltaleConfig
     /// default and the collector only logs that it is available.
     /// </summary>
     public bool VacuumOnStartup { get; set; }
+
+    /// <summary>
+    /// The loopback port the Telltale window is served on. Zero lets the operating
+    /// system pick one.
+    /// </summary>
+    /// <remarks>
+    /// The recorder never reads this. It lives here because telltale.json is the
+    /// one file a user edits, and modelling it twice would mean two validation
+    /// paths reporting the same mistake differently. The viewer executable does not
+    /// read it either, so nothing about the boundary between the two projects
+    /// changes: only the host, which composes both, acts on it.
+    ///
+    /// The default sits below 49152, where the Windows dynamic port range starts,
+    /// so a transient outbound socket cannot claim it first, and it is not the
+    /// default for any common development server. It is not reserved, so the host
+    /// still has to cope with the port being unavailable.
+    /// </remarks>
+    public int ViewerPort { get; set; } = DefaultViewerPort;
+
+    /// <summary>The value <see cref="ViewerPort"/> takes when telltale.json is silent.</summary>
+    public const int DefaultViewerPort = 41821;
     public ThresholdConfig Thresholds { get; set; } = new();
+
+    /// <summary>
+    /// Why telltale.json could not be read, or null when there was nothing wrong.
+    /// </summary>
+    /// <remarks>
+    /// Recorded rather than thrown. A malformed file used to leave an unhandled
+    /// JsonException, which the console build turned into a stack trace and the
+    /// windowed build turned into nothing at all: the application simply did not
+    /// appear. Validation reports it like any other configuration mistake, and the
+    /// values fall back to the defaults so nothing runs on a half-read file.
+    /// </remarks>
+    [JsonIgnore]
+    public string? LoadError { get; private set; }
 
     public string ResolvedDatabasePath =>
         DatabasePath ?? Path.Combine(
@@ -41,17 +76,48 @@ public sealed partial class TelltaleConfig
         if (!File.Exists(configPath))
             configPath = Path.Combine(Environment.CurrentDirectory, "telltale.json");
 
+        return LoadFrom(configPath);
+    }
+
+    /// <summary>Reads one named configuration file.</summary>
+    /// <remarks>
+    /// Separate from <see cref="Load"/> so that where the file is found and what
+    /// happens when it cannot be read are two things rather than one. Only the
+    /// second is worth testing, and testing it through <see cref="Load"/> would
+    /// mean moving the process's working directory around.
+    /// </remarks>
+    public static TelltaleConfig LoadFrom(string configPath)
+    {
         if (!File.Exists(configPath))
             return new TelltaleConfig();
 
-        var json = File.ReadAllText(configPath);
-        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        return JsonSerializer.Deserialize<TelltaleConfig>(json, options) ?? new TelltaleConfig();
+        try
+        {
+            var json = File.ReadAllText(configPath);
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            return JsonSerializer.Deserialize<TelltaleConfig>(json, options) ?? new TelltaleConfig();
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return new TelltaleConfig
+            {
+                LoadError = $"{configPath} could not be read: {ex.Message}",
+            };
+        }
     }
 
     public List<string> Validate()
     {
         var errors = new List<string>();
+
+        // Reported first and on its own: every value below is a default that was
+        // used because the file could not be read, so listing them as well would
+        // bury the one thing that is actually wrong.
+        if (LoadError is not null)
+        {
+            errors.Add(LoadError);
+            return errors;
+        }
 
         // Checked here because nowhere else can report it. IsInSyncFolder calls
         // Path.GetFullPath, which throws on an empty or malformed path, and the
@@ -96,6 +162,11 @@ public sealed partial class TelltaleConfig
 
         if (RollupIntervalMinutes < 1 || RollupIntervalMinutes > 60)
             errors.Add("rollupIntervalMinutes must be between 1 and 60.");
+
+        // Zero is allowed and means "let the operating system choose". Anything
+        // below 1024 needs privileges Telltale does not have and should not want.
+        if (ViewerPort != 0 && (ViewerPort < 1024 || ViewerPort > 65535))
+            errors.Add("viewerPort must be 0, or between 1024 and 65535.");
 
         // Each tier has to retain data for at least as long as the tier feeding it.
         // A shorter tier would be asked to promote or delete data the tier below has

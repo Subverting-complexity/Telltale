@@ -174,6 +174,66 @@ public class ConfigTests
     }
 
     [Fact]
+    public void DefaultViewerPort_IsTheDocumentedOne()
+    {
+        // The default is quoted in the README, in publish.bat and in the Vite dev
+        // proxy. Pinning it here means changing it breaks a test rather than
+        // silently leaving three places saying something that is no longer true.
+        Assert.Equal(41821, new TelltaleConfig().ViewerPort);
+        Assert.Equal(41821, TelltaleConfig.DefaultViewerPort);
+    }
+
+    [Fact]
+    public void ShippedConfigFile_UsesTheDefaultViewerPort()
+    {
+        Assert.True(
+            File.Exists(Path.Combine(AppContext.BaseDirectory, "telltale.json")),
+            "telltale.json was not copied next to the tests, so this asserts nothing.");
+
+        Assert.Equal(TelltaleConfig.DefaultViewerPort, TelltaleConfig.Load().ViewerPort);
+    }
+
+    [Fact]
+    public void ViewerPort_BindsFromTheConfigFile()
+    {
+        var config = System.Text.Json.JsonSerializer.Deserialize<TelltaleConfig>(
+            """{"viewerPort": 40000}""",
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+        Assert.Equal(40000, config!.ViewerPort);
+    }
+
+    [Fact]
+    public void ViewerPortOfZero_PassesValidation()
+    {
+        // Zero means "let Windows choose", which is the same thing the host falls
+        // back to when a configured port turns out to be taken.
+        Assert.Empty(new TelltaleConfig { ViewerPort = 0 }.Validate());
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(80)]
+    [InlineData(1023)]
+    [InlineData(65536)]
+    [InlineData(-1)]
+    public void ViewerPortOutsideTheUsableRange_FailsValidation(int port)
+    {
+        var errors = new TelltaleConfig { ViewerPort = port }.Validate();
+
+        Assert.Contains(errors, e => e.Contains("viewerPort"));
+    }
+
+    [Theory]
+    [InlineData(1024)]
+    [InlineData(41821)]
+    [InlineData(65535)]
+    public void ViewerPortInsideTheUsableRange_PassesValidation(int port)
+    {
+        Assert.Empty(new TelltaleConfig { ViewerPort = port }.Validate());
+    }
+
+    [Fact]
     public void RedactCommandLine_HandlesNull()
     {
         Assert.Null(TelltaleConfig.RedactCommandLine(null));
