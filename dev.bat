@@ -6,18 +6,18 @@ cd /d "%~dp0"
 :: Install frontend dependencies if needed
 if not exist frontend\node_modules (
     echo Installing frontend dependencies...
-    cd frontend
+    pushd frontend
     npm install
-    cd ..
+    popd
 )
 
-:: Start collector in a new window (pause on failure so the error stays visible)
+:: Start collector and viewer in their own windows. cmd /k keeps the window
+:: open after the process exits so error output is always readable.
 echo Starting collector...
-start "Telltale Collector" cmd /c "cd collector && dotnet run || pause"
+start "Telltale Collector" cmd /k "cd collector && dotnet run"
 
-:: Start viewer backend in a new window
 echo Starting viewer backend...
-start "Telltale Viewer" cmd /c "cd viewer && dotnet run --launch-profile Development || pause"
+start "Telltale Viewer" cmd /k "cd viewer && dotnet run --launch-profile Development"
 
 :: Wait for backend to start
 timeout /t 3 /nobreak >nul
