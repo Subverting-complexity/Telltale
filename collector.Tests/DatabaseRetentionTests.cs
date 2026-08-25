@@ -170,8 +170,11 @@ public class DatabaseRetentionTests() : SqliteTestBase("retention")
     }
 
     /// <summary>
-    /// The phase breakdown is pruned on the health retention cutoff, not on its
-    /// own, so the two halves of a tick's health record never outlive each other.
+    /// The phase breakdown is prunable by timestamp the same way the health row
+    /// is, so the two halves of a tick's health record can be kept for the same
+    /// span. That they are actually given the same cutoff is wiring in
+    /// <c>RollupWorker</c>, which has no test harness, so this covers the half it
+    /// can reach: that a cutoff applied to both tables leaves the same rows.
     /// </summary>
     [Fact]
     public void DeleteOldData_PrunesTheTickPhaseTableOnTheSameCutoffAsTheHealthRow()

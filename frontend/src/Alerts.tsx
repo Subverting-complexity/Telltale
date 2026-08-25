@@ -214,8 +214,12 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
                   // Kept as a number for the threshold classes below, which
                   // compare against a share of the whole machine. The figures
                   // shown go through formatCpuOfAllCores so there is one
-                  // conversion rather than one per call site.
-                  const normAvgCpu = alert.avgCpuPct / logicalProcessors;
+                  // conversion rather than one per call site, and this falls back
+                  // the same way it does, so the colour and the number cannot
+                  // disagree about which scale they are on.
+                  const normAvgCpu = logicalProcessors >= 1
+                    ? alert.avgCpuPct / logicalProcessors
+                    : alert.avgCpuPct;
                   return (
                     <tr
                       key={alert.name}
@@ -295,7 +299,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
                     <td style={{ textAlign: 'left' }}>
                       <span className="alert-process-name">{anomaly.name}</span>
                     </td>
-                    <td>{anomaly.metric}</td>
+                    <td>{anomaly.metric === 'CPU' ? CPU_OF_ALL_CORES : anomaly.metric}</td>
                     <td>
                       {anomaly.metric === 'CPU'
                         ? formatCpuOfAllCores(anomaly.current, logicalProcessors)

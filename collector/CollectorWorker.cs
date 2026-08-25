@@ -59,6 +59,7 @@ public sealed class CollectorWorker : BackgroundService
         // which is a share of one core, into a share of the whole machine, and
         // reading the live count instead is wrong as soon as a capture is opened
         // anywhere but the machine it was made on.
+
         // Guarded like the machine sampler above, and for the same reason. This is
         // the first write of the run, so it is the one most likely to meet a full
         // disk or a locked file, and an unhandled exception in a BackgroundService

@@ -380,10 +380,12 @@ public sealed class Database : IDisposable
         --
         --   sampler_ms         enumerating every running process
         --   machine_sample_ms  reading the machine wide performance counters
-        --   identity_ms        resolving the paths of processes not seen before
+        --   identity_ms        finding the tick's distinct processes and resolving
+        --                      the paths of any not seen before
         --   instance_ms        resolving a database row id for each process
         --   row_build_ms       working out each process's CPU and I/O since last tick
-        --   sample_write_ms    writing the tick's sample rows
+        --   sample_write_ms    writing the tick's sample rows, and forgetting the
+        --                      processes that have since gone
         --   machine_write_ms   writing the tick's machine row
         --
         -- It is a separate table rather than more columns on collector_health because a
