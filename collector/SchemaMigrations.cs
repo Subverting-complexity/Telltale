@@ -19,7 +19,7 @@ public static class SchemaMigrations
     /// migration is added below, and change <c>schema.sql</c> to match, so a
     /// database created from scratch and one migrated up end at the same shape.
     /// </summary>
-    public const int LatestVersion = 3;
+    public const int LatestVersion = 4;
 
     /// <summary>
     /// One step, taking a database from the version before it to
@@ -55,6 +55,9 @@ public static class SchemaMigrations
         new(3, "record how long each phase of a sampling tick takes",
             AddTickPhaseTableSql,
             conn => HasTable(conn, "collector_tick_phase")),
+        new(4, "record the logical processor count of the machine being recorded",
+            AddMachineInfoTableSql,
+            conn => HasTable(conn, "machine_info")),
     ];
 
     /// <summary>
@@ -322,6 +325,28 @@ public static class SchemaMigrations
             instance_ms       REAL,
             sample_write_ms   REAL,
             machine_write_ms  REAL
+        );
+        """;
+
+    /// <summary>
+    /// Version 4. Adds the table holding the logical processor count of the
+    /// machine being recorded, so the viewer can convert a per process CPU figure
+    /// using the count the recording was made on rather than the count of whatever
+    /// machine is reading it.
+    ///
+    /// The table is left empty here. Backfilling it would mean writing this
+    /// machine's core count against a recording that may have been made on
+    /// another, and a viewer that finds no row falls back to the live count, which
+    /// is exactly what it did before this table existed. An empty table is
+    /// therefore the honest state until the collector next starts and fills it in.
+    ///
+    /// Written out in full rather than with IF NOT EXISTS, for the reason given on
+    /// the version 3 step.
+    /// </summary>
+    private const string AddMachineInfoTableSql = """
+        CREATE TABLE machine_info (
+            id                 INTEGER PRIMARY KEY CHECK (id = 1),
+            logical_processors INTEGER NOT NULL
         );
         """;
 }

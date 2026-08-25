@@ -237,7 +237,7 @@ public sealed class Database : IDisposable
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY
         );
-        INSERT INTO schema_version VALUES (3);
+        INSERT INTO schema_version VALUES (4);
 
         CREATE TABLE process_instance (
             id           INTEGER PRIMARY KEY,
@@ -294,6 +294,20 @@ public sealed class Database : IDisposable
         );
         CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
         CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
+
+        -- The machine the recording was made on. One row, rewritten whenever the
+        -- collector starts, because a recording describes one machine.
+        --
+        -- logical_processors is here so the viewer can convert a per process CPU figure
+        -- without asking the machine it happens to be running on. Every cpu_pct in
+        -- sample and its rollups is a share of one core, so a process spread over four
+        -- of them reads 400, while the machine gauge is a share of all of them and stops
+        -- at 100. Converting between the two needs this number, and reading it live is
+        -- wrong the moment a capture is opened somewhere else.
+        CREATE TABLE machine_info (
+            id                 INTEGER PRIMARY KEY CHECK (id = 1),
+            logical_processors INTEGER NOT NULL
+        );
 
         CREATE TABLE machine (
             ts              INTEGER PRIMARY KEY,
@@ -598,6 +612,35 @@ public sealed class Database : IDisposable
             cmd.Parameters.AddWithValue("@cost", sampleCostMs);
             cmd.Parameters.AddWithValue("@pc", processCount);
             cmd.Parameters.AddWithValue("@sc", storedCount);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Records the machine the capture is being made on. Called once at startup,
+    /// and it replaces whatever was there, because the row describes the machine
+    /// rather than a moment in the recording.
+    ///
+    /// A capture that spans a change to the machine, a virtual machine given more
+    /// cores between runs, ends up describing the machine as it was on the last
+    /// start. Recording the count against every sample would be exact and would
+    /// cost a column on the largest table in the database to answer a question
+    /// almost nobody has.
+    /// </summary>
+    public void WriteMachineInfo(int logicalProcessors)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(logicalProcessors, 1);
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT OR REPLACE INTO machine_info (id, logical_processors)
+                VALUES (1, @count)
+                """;
+            cmd.Parameters.AddWithValue("@count", logicalProcessors);
             cmd.ExecuteNonQuery();
         }
     }

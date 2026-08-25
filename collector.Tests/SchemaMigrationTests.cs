@@ -191,6 +191,24 @@ public class SchemaMigrationTests : IDisposable
         Assert.Equal(0, Scalar(after, "SELECT COUNT(*) FROM collector_tick_phase"));
     }
 
+    [Fact]
+    public void Migration_AddsTheMachineInfoTableToAnExistingDatabase()
+    {
+        string path = CreateLegacyDatabase();
+
+        using (OpenCollectorDatabase(path)) { }
+
+        using var after = Connect(path);
+
+        Assert.Equal(1, Scalar(after,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'machine_info'"));
+
+        // Left empty on purpose. The count belongs to the machine the recording
+        // was made on, and this migration may be running somewhere else entirely,
+        // so guessing it would be worse than the viewer's existing fallback.
+        Assert.Equal(0, Scalar(after, "SELECT COUNT(*) FROM machine_info"));
+    }
+
     /// <summary>
     /// The version 3 step creates a table, and SQLite has no way to write that so
     /// it both tolerates a repeat and stores a definition identical to the one in

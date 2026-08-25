@@ -1,5 +1,5 @@
 import type { TimelinePoint, ProcessPoint } from './types';
-import { formatCpu, formatSize, formatIo, formatTime } from './utils';
+import { formatCpu, formatSize, formatIo, formatTime, CPU_OF_ONE_CORE, CPU_OF_ALL_CORES } from './utils';
 
 interface DataTableProps<T> {
   data: T[];
@@ -55,7 +55,7 @@ export function DataTable<T>({ data, columns, caption }: DataTableProps<T>) {
 export function timelineColumns(): ColumnDef<TimelinePoint>[] {
   return [
     { key: 'time', label: 'Time', render: r => formatTime(r.ts), align: 'left' },
-    { key: 'cpu', label: 'CPU %', render: r => formatCpu(r.cpuPct) },
+    { key: 'cpu', label: CPU_OF_ALL_CORES, render: r => formatCpu(r.cpuPct) },
     { key: 'memAvail', label: 'Mem Avail', render: r => r.memoryAvailMb != null ? formatSize(r.memoryAvailMb) : '-' },
     { key: 'memTotal', label: 'Mem Total', render: r => r.memoryTotalMb != null ? formatSize(r.memoryTotalMb) : '-' },
     { key: 'disk', label: 'Disk %', render: r => r.diskBusyPct != null ? `${r.diskBusyPct.toFixed(1)}%` : '-' },
@@ -66,7 +66,7 @@ export function timelineColumns(): ColumnDef<TimelinePoint>[] {
 export function processColumns(): ColumnDef<ProcessPoint>[] {
   return [
     { key: 'time', label: 'Time', render: r => formatTime(r.ts), align: 'left' },
-    { key: 'cpu', label: 'CPU %', render: r => formatCpu(r.cpuPct) },
+    { key: 'cpu', label: CPU_OF_ONE_CORE, render: r => formatCpu(r.cpuPct) },
     { key: 'mem', label: 'Private MB', render: r => r.privateMb != null ? formatSize(r.privateMb) : '-' },
     { key: 'ws', label: 'Working Set', render: r => r.workingSetMb != null ? formatSize(r.workingSetMb) : '-' },
     { key: 'io', label: 'I/O', render: r => formatIo(r.ioKb) },

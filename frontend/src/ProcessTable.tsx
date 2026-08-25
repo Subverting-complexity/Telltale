@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ProcessGroupRow } from './types';
-import { formatCpu, formatSize, formatIo, categoriseProcess } from './utils';
+import { formatSize, formatIo, categoriseProcess, formatCpuOfAllCores, CPU_OF_ALL_CORES } from './utils';
 import type { ProcessCategory } from './utils';
 
 interface ProcessTableProps {
@@ -60,11 +60,6 @@ export function ProcessTable({
     });
   }
 
-  function formatNormalisedCpu(rawPct: number): string {
-    const normalised = rawPct / logicalProcessors;
-    return formatCpu(normalised);
-  }
-
   return (
     <div className="process-table-section">
       <div className="process-table-controls">
@@ -115,7 +110,7 @@ export function ProcessTable({
               </th>
               <th scope="col">
                 <button className="sort-btn" onClick={() => onSortChange('cpu')}>
-                  CPU %{sortIcon('cpu')}
+                  {CPU_OF_ALL_CORES}{sortIcon('cpu')}
                 </button>
               </th>
               <th scope="col">
@@ -185,9 +180,9 @@ export function ProcessTable({
                         style={{ width: `${Math.min((normCpu / maxCpu) * 100, 100)}%` }}
                         role="meter"
                         aria-valuenow={normCpu}
-                        aria-label={`CPU ${formatNormalisedCpu(proc.cpuPct)}`}
+                        aria-label={`CPU ${formatCpuOfAllCores(proc.cpuPct, logicalProcessors)} of all cores`}
                       />
-                      <span className="bar-label">{formatNormalisedCpu(proc.cpuPct)}</span>
+                      <span className="bar-label">{formatCpuOfAllCores(proc.cpuPct, logicalProcessors)}</span>
                     </div>
                   </td>
                   <td>

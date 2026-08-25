@@ -500,6 +500,14 @@ public static class ViewerEndpoints
             int processCount = 0;
             int storedCount = 0;
 
+            // The core count of the machine this recording was made on. Falls back
+            // to the machine reading it, which is what the viewer used to do
+            // unconditionally: right whenever a capture is read where it was made,
+            // and wrong the moment it is copied somewhere else. A recording made
+            // before machine_info existed has no row, and the fallback is the only
+            // answer available for it.
+            int logicalProcessors = Environment.ProcessorCount;
+
             try
             {
                 using var conn = OpenDb();
@@ -516,6 +524,21 @@ public static class ViewerEndpoints
                         sampleCostMs = reader.GetDouble(1);
                         processCount = reader.GetInt32(2);
                         storedCount = reader.GetInt32(3);
+                    }
+                }
+
+                cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine_info'";
+                if (cmd.ExecuteScalar() != null)
+                {
+                    cmd.CommandText = "SELECT logical_processors FROM machine_info WHERE id = 1";
+                    if (cmd.ExecuteScalar() is { } recorded && recorded != DBNull.Value)
+                    {
+                        int recordedCount = Convert.ToInt32(recorded);
+
+                        // A count of zero or less would make every conversion that
+                        // uses it either divide by zero or change sign, so it is
+                        // treated as no answer rather than as an answer.
+                        if (recordedCount > 0) logicalProcessors = recordedCount;
                     }
                 }
             }
@@ -540,7 +563,7 @@ public static class ViewerEndpoints
                 processCount,
                 storedCount,
                 dbSizeMb = Math.Round(dbSizeBytes / (1024.0 * 1024.0), 1),
-                logicalProcessors = Environment.ProcessorCount,
+                logicalProcessors,
             }, jsonOptions);
         });
 

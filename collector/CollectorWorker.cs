@@ -54,6 +54,13 @@ public sealed class CollectorWorker : BackgroundService
                 + "disk, network) will be missing from this recording.");
         }
 
+        // Recorded once, because it describes the machine rather than a moment in
+        // the recording. The viewer needs it to turn a per process CPU figure,
+        // which is a share of one core, into a share of the whole machine, and
+        // reading the live count instead is wrong as soon as a capture is opened
+        // anywhere but the machine it was made on.
+        _db.WriteMachineInfo(Environment.ProcessorCount);
+
         _elapsedTimer.Start();
 
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_config.IntervalSeconds));

@@ -3,7 +3,7 @@ import {
   formatSize, formatElapsed, formatCpu, formatIo, formatDate, formatTime,
   getDaysInMonth, getDayRange, getMonthRange, getYearRange, getWeekRange, clamp,
   categoriseProcess, formatRate, formatMemoryPercent, formatSizeGb,
-  computeMovingAverage, computeLinearFit, computeMean,
+  computeMovingAverage, computeLinearFit, computeMean, formatCpuOfAllCores,
 } from './utils';
 
 describe('formatSize', () => {
@@ -347,5 +347,31 @@ describe('computeMean', () => {
 
   it('computes mean of single value', () => {
     expect(computeMean([42])).toBe(42);
+  });
+});
+
+describe('formatCpuOfAllCores', () => {
+  it('turns a full single core into its share of a sixteen core machine', () => {
+    expect(formatCpuOfAllCores(100, 16)).toBe('6.25%');
+  });
+
+  it('keeps a figure above one core readable rather than showing it over 100%', () => {
+    // The case issue #94 observed: a process recorded at 151% of one core next
+    // to a machine gauge reading about 14%. On the machine scale it is under 10.
+    expect(formatCpuOfAllCores(151, 16)).toBe('9.44%');
+  });
+
+  it('changes nothing on a single core machine', () => {
+    expect(formatCpuOfAllCores(45, 1)).toBe('45.0%');
+  });
+
+  it('shows a dash when there is no reading', () => {
+    expect(formatCpuOfAllCores(null, 16)).toBe('-');
+  });
+
+  it('leaves the figure on its recorded scale rather than inflating it', () => {
+    // A core count of zero would divide to infinity, so the recorded per core
+    // figure is shown unchanged instead.
+    expect(formatCpuOfAllCores(50, 0)).toBe('50.0%');
   });
 });

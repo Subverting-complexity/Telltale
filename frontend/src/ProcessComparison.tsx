@@ -3,6 +3,7 @@ import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import { getProcessGroup } from './api';
 import type { ProcessPoint } from './types';
+import { CPU_OF_ONE_CORE } from './utils';
 
 interface ProcessComparisonProps {
   names: string[];
@@ -164,7 +165,7 @@ export function ProcessComparison({ names, from, to, onBack }: ProcessComparison
         ))}
       </div>
 
-      <CompareChart title="CPU %" datasets={datasets} seriesKey="cpuPct" unit="%" />
+      <CompareChart title={CPU_OF_ONE_CORE} datasets={datasets} seriesKey="cpuPct" unit="%" />
       <CompareChart title="Memory MB" datasets={datasets} seriesKey="privateMb" unit="MB" />
       <CompareChart title="I/O KB" datasets={datasets} seriesKey="ioKb" unit="KB" />
     </div>

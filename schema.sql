@@ -9,7 +9,7 @@ PRAGMA synchronous = NORMAL;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version VALUES (3);
+INSERT INTO schema_version VALUES (4);
 
 CREATE TABLE process_instance (
     id           INTEGER PRIMARY KEY,
@@ -66,6 +66,20 @@ CREATE TABLE sample_10m (
 );
 CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
 CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
+
+-- The machine the recording was made on. One row, rewritten whenever the
+-- collector starts, because a recording describes one machine.
+--
+-- logical_processors is here so the viewer can convert a per process CPU figure
+-- without asking the machine it happens to be running on. Every cpu_pct in
+-- sample and its rollups is a share of one core, so a process spread over four
+-- of them reads 400, while the machine gauge is a share of all of them and stops
+-- at 100. Converting between the two needs this number, and reading it live is
+-- wrong the moment a capture is opened somewhere else.
+CREATE TABLE machine_info (
+    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+    logical_processors INTEGER NOT NULL
+);
 
 CREATE TABLE machine (
     ts              INTEGER PRIMARY KEY,

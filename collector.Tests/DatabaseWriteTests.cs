@@ -266,4 +266,37 @@ public class DatabaseWriteTests() : SqliteTestBase("write")
 
         Assert.Equal(1, Count("collector_health", "cpu_pct = 0"));
     }
+
+    [Fact]
+    public void WriteMachineInfo_RecordsTheCoreCountAsASingleRow()
+    {
+        Db.WriteMachineInfo(16);
+
+        Assert.Equal(1, Count("machine_info"));
+        Assert.Equal(16L, Convert.ToInt64(Scalar("SELECT logical_processors FROM machine_info")));
+    }
+
+    [Fact]
+    public void WriteMachineInfo_ReplacesTheRowRatherThanAddingASecond()
+    {
+        // The row describes the machine, not a moment in the recording, so a
+        // second start with a different count corrects it instead of appending.
+        Db.WriteMachineInfo(16);
+        Db.WriteMachineInfo(32);
+
+        Assert.Equal(1, Count("machine_info"));
+        Assert.Equal(32L, Convert.ToInt64(Scalar("SELECT logical_processors FROM machine_info")));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void WriteMachineInfo_RefusesACountNothingCouldBeDividedBy(int count)
+    {
+        // Every use of this number is a division, so a zero or negative count
+        // recorded here would come back as an infinity or a sign flip much later
+        // and much further away.
+        Assert.Throws<ArgumentOutOfRangeException>(() => Db.WriteMachineInfo(count));
+        Assert.Equal(0, Count("machine_info"));
+    }
 }
