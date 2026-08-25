@@ -22,8 +22,8 @@ start "Telltale Viewer" cmd /c "cd viewer && dotnet run --launch-profile Develop
 :: Wait for backend to start
 timeout /t 3 /nobreak >nul
 
-:: Open browser
-start http://localhost:5173
+:: Open browser in a standalone app window so it doesn't mix with normal tabs
+start "" msedge --app=http://localhost:5173
 
 :: Start Vite dev server in the foreground
 echo Starting Vite dev server...

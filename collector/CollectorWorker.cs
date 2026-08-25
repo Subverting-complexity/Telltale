@@ -36,7 +36,17 @@ public sealed class CollectorWorker : BackgroundService
         _logger.LogInformation("Collector started. Interval: {Interval}s, Sampler: {Type}",
             _config.IntervalSeconds, _sampler.IsNative ? "Native" : "Managed");
 
-        _machineSampler.Initialize();
+        try
+        {
+            _machineSampler.Initialize();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Machine sampler failed to initialise. System-level metrics (CPU, memory, "
+                + "disk, network) will be missing from this recording.");
+        }
+
         _elapsedTimer.Start();
 
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_config.IntervalSeconds));
