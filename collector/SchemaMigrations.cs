@@ -82,8 +82,14 @@ public static class SchemaMigrations
             // database is left as it is and the mismatch is reported instead.
             // Whether to then run against it at all is the caller's decision:
             // see StartupDatabaseCheck.
+            // LatestVersion here, not target, and deliberately so. This sentence
+            // is about what the build knows, which is the constant; the
+            // "Migrating to" line below is about where this call is heading,
+            // which is the list in hand. They are the same number in production.
+            // The placeholder is named apart from that one so a single logging
+            // key does not carry two different meanings across one method.
             logger.LogWarning(
-                "Database is at schema version {Current}, newer than the version {Latest} this build knows. " +
+                "Database is at schema version {Current}, newer than the version {BuildVersion} this build knows. " +
                 "Leaving it unchanged.", current, LatestVersion);
 
             return current;
