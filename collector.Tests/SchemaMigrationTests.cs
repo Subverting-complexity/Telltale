@@ -335,6 +335,98 @@ public class SchemaMigrationTests : IDisposable
         Assert.Equal(AutoVacuumIncremental, Scalar(check, "PRAGMA auto_vacuum"));
     }
 
+    [Fact]
+    public void MigrationThatFails_LeavesTheVersionAndTheShapeUnchanged()
+    {
+        string path = NewDbPath();
+        using (OpenCollectorDatabase(path)) { }
+
+        using var conn = Connect(path);
+        string shapeBefore = Shape(conn);
+
+        // The first statement succeeds and the second does not, so there is a
+        // half finished change for the transaction to undo. A migration that
+        // fell over on its very first statement would leave nothing behind and
+        // would prove nothing about rolling back.
+        var failing = new SchemaMigrations.Migration(
+            SchemaMigrations.LatestVersion + 1,
+            "create a table, then fail",
+            """
+            CREATE TABLE half_applied (x INTEGER);
+            INSERT INTO no_such_table (x) VALUES (1);
+            """);
+
+        Assert.Throws<SqliteException>(
+            () => SchemaMigrations.Apply(conn, new CapturingLogger(), [failing]));
+
+        // The shape assertion is the half that does the work. The version
+        // assertion alone would pass even with the transaction removed, because
+        // a row written after the failing statement never gets to run either
+        // way; only the shape shows the half applied table left behind.
+        //
+        // Verified by mutation: dropping the transaction from Apply fails this
+        // test. Note that moving the cmd.Transaction assignment does not, and
+        // cannot, because a SQLite transaction belongs to the connection rather
+        // than to the command.
+        Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(conn));
+        Assert.Equal(shapeBefore, Shape(conn));
+    }
+
+    [Fact]
+    public void Migrations_AreAppliedInVersionOrder()
+    {
+        string path = NewDbPath();
+        using (OpenCollectorDatabase(path)) { }
+
+        using var conn = Connect(path);
+
+        // Created here rather than by either migration, so that both orders run
+        // without error and the order they ran in shows up in the rows. Left to
+        // one of the migrations, the wrong order would fail instead, which
+        // proves the same point only by accident.
+        Execute(conn, "CREATE TABLE applied_order (step INTEGER)");
+
+        int first = SchemaMigrations.LatestVersion + 1;
+        int second = SchemaMigrations.LatestVersion + 2;
+
+        // Handed over highest first, so a build that walked the list as given
+        // would record them the wrong way round.
+        SchemaMigrations.Apply(conn, new CapturingLogger(), [RecordStep(second), RecordStep(first)]);
+
+        Assert.Equal(2L, Scalar(conn, "SELECT COUNT(*) FROM applied_order"));
+        Assert.Equal(first, Scalar(conn, "SELECT step FROM applied_order ORDER BY rowid LIMIT 1"));
+        Assert.Equal(second, Scalar(conn, "SELECT step FROM applied_order ORDER BY rowid DESC LIMIT 1"));
+        Assert.Equal(second, SchemaMigrations.ReadVersion(conn));
+    }
+
+    [Fact]
+    public void MigrationTheDatabaseHasAlreadyPassed_IsNotAppliedAgain()
+    {
+        string path = NewDbPath();
+        using (OpenCollectorDatabase(path)) { }
+
+        using var conn = Connect(path);
+        Execute(conn, "CREATE TABLE applied_order (step INTEGER)");
+
+        int first = SchemaMigrations.LatestVersion + 1;
+        int second = SchemaMigrations.LatestVersion + 2;
+        Execute(conn, $"INSERT INTO schema_version (version) VALUES ({first})");
+
+        SchemaMigrations.Apply(conn, new CapturingLogger(), [RecordStep(first), RecordStep(second)]);
+
+        Assert.Equal(1L, Scalar(conn, "SELECT COUNT(*) FROM applied_order"));
+        Assert.Equal(second, Scalar(conn, "SELECT step FROM applied_order"));
+        Assert.Equal(second, SchemaMigrations.ReadVersion(conn));
+    }
+
+    /// <summary>
+    /// A migration that does nothing but write down that it ran, so that the
+    /// order a set of them ran in can be read back afterwards.
+    /// </summary>
+    private static SchemaMigrations.Migration RecordStep(int version) =>
+        new(version, $"record step {version}",
+            $"INSERT INTO applied_order (step) VALUES ({version})");
+
     /// <summary>
     /// Every object in the database, as the text that created it. Comparing this
     /// between two databases is what proves they are the same shape.
