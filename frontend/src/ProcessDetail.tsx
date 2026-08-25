@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { getProcessDetail, getProcessGroup, getProcesses } from './api';
 import type { ProcessDetailResponse, ProcessGroupResponse, ProcessInstanceRow, ThresholdConfig } from './types';
 import { ProcessTimeline } from './Timeline';
-import { formatDateTime, formatElapsed, formatSize, formatCpu } from './utils';
+import { formatDateTime, formatElapsed, formatSize, formatCpu, formatIo } from './utils';
 
 interface ProcessDetailProps {
   type: 'instance' | 'group';
@@ -153,7 +153,7 @@ export function ProcessDetail({
                       </td>
                       <td>{formatCpu(inst.cpuPct)}</td>
                       <td>{formatSize(inst.privateMb)}</td>
-                      <td>{inst.ioKb != null ? formatSize(inst.ioKb) : '-'}</td>
+                      <td>{formatIo(inst.ioKb)}</td>
                     </tr>
                   ))}
                 </tbody>
