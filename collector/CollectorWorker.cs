@@ -70,8 +70,16 @@ public sealed class CollectorWorker : BackgroundService
         long elapsedTicks = _elapsedTimer.ElapsedTicks;
         long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
+        // Every phase of the tick is timed separately. sample_cost_ms says only
+        // that a tick ran long; these say which part of it did, which is the
+        // difference between knowing there is a problem and knowing where it is.
+        var phase = Stopwatch.StartNew();
+
         var snapshots = _sampler.Sample();
+        double samplerMs = LapMs(phase);
+
         var machineSample = _machineSampler.Sample();
+        double machineSampleMs = LapMs(phase);
 
         // The tick's distinct process instances, gathered before the loop so every
         // one whose identity is not yet known can be looked up in a single batch
@@ -81,6 +89,28 @@ public sealed class CollectorWorker : BackgroundService
             seenKeys.Add((snap.Pid, snap.CreateTimeTicks));
 
         _identities.Resolve(seenKeys);
+        double identityMs = LapMs(phase);
+
+        // The row ids are resolved for the whole tick in one call, for the same
+        // reason the identities above are: asking per process meant a separate
+        // commit per process, and a tick covering some 670 of them spent tens of
+        // seconds waiting on them one after another.
+        var upserts = new List<ProcessInstanceUpsert>(seenKeys.Count);
+        var queued = new HashSet<(int, long)>(seenKeys.Count);
+
+        foreach (var snap in snapshots)
+        {
+            var snapKey = (snap.Pid, snap.CreateTimeTicks);
+            if (!queued.Add(snapKey)) continue;
+
+            var snapIdentity = _identities.For(snapKey);
+            upserts.Add(new ProcessInstanceUpsert(
+                snap.Pid, snap.CreateTimeTicks, snap.Name,
+                snapIdentity.Path, snapIdentity.CommandLine));
+        }
+
+        var instanceIds = _db.UpsertProcessInstances(upserts, timestamp);
+        double instanceMs = LapMs(phase);
 
         var rows = new List<SampleRow>(snapshots.Count);
         var handled = new HashSet<(int, long)>(seenKeys.Count);
@@ -92,11 +122,9 @@ public sealed class CollectorWorker : BackgroundService
                 var key = (snap.Pid, snap.CreateTimeTicks);
                 if (!handled.Add(key)) continue;
 
-                var identity = _identities.For(key);
-
-                long instanceId = _db.GetOrCreateProcessInstance(
-                    snap.Pid, snap.CreateTimeTicks, snap.Name, identity.Path, identity.CommandLine,
-                    timestamp);
+                // Absent only if the upsert could not place the row, which it
+                // reports by leaving the key out rather than by guessing an id.
+                if (!instanceIds.TryGetValue(key, out long instanceId)) continue;
 
                 double? cpuPct = null;
                 double? ioKb = null;
@@ -147,16 +175,36 @@ public sealed class CollectorWorker : BackgroundService
 
         if (rows.Count > 0)
             _db.WriteSampleBatch(timestamp, rows);
+        double sampleWriteMs = LapMs(phase);
 
         _db.WriteMachineSample(timestamp, machineSample);
+        double machineWriteMs = LapMs(phase);
 
         // Read before the health write so sample_cost_ms keeps meaning what it always
         // meant, but stop the clock after it, so a tick pushed over the interval by
-        // its own health write is still counted as an overrun.
+        // its own health write is still counted as an overrun. The phase row is
+        // written after the reading too, for the same reason: the phases have to add
+        // up to the cost recorded beside them.
         double sampleCostMs = sw.Elapsed.TotalMilliseconds;
+
+        _db.WriteTickPhases(timestamp, new TickPhaseTimings(
+            samplerMs, machineSampleMs, identityMs, instanceMs, sampleWriteMs, machineWriteMs));
+
         RecordHealth(timestamp, sampleCostMs, snapshots.Count, rows.Count);
         sw.Stop();
         RecordOverrun(sw.Elapsed);
+    }
+
+    /// <summary>
+    /// Reads how long the current phase took and starts the clock for the next
+    /// one, so the phases divide the tick between them rather than overlapping.
+    /// </summary>
+    private static double LapMs(Stopwatch timer)
+    {
+        double elapsedMs = timer.Elapsed.TotalMilliseconds;
+        timer.Restart();
+
+        return elapsedMs;
     }
 
     private void CleanStalePrevious(HashSet<(int Pid, long CreateTime)> seenKeys)

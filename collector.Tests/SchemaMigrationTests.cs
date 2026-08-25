@@ -171,6 +171,56 @@ public class SchemaMigrationTests : IDisposable
     }
 
     [Fact]
+    public void Migration_AddsTheTickPhaseTableToAnExistingDatabase()
+    {
+        string path = CreateLegacyDatabase();
+
+        using (var before = Connect(path))
+            Assert.Equal(0, Scalar(before,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'collector_tick_phase'"));
+
+        using (OpenCollectorDatabase(path)) { }
+
+        using var after = Connect(path);
+
+        Assert.Equal(1, Scalar(after,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'collector_tick_phase'"));
+
+        // Nothing to backfill: an existing recording has no record of where its
+        // ticks spent their time, and inventing one would be worse than the gap.
+        Assert.Equal(0, Scalar(after, "SELECT COUNT(*) FROM collector_tick_phase"));
+    }
+
+    /// <summary>
+    /// The version 3 step creates a table, and SQLite has no way to write that so
+    /// it both tolerates a repeat and stores a definition identical to the one in
+    /// schema.sql. It is guarded in C# instead, so this covers the guard directly
+    /// rather than only through the replay test below.
+    /// </summary>
+    [Fact]
+    public void MigrationWhoseEffectIsAlreadyPresent_IsSkippedAndStillRecorded()
+    {
+        string path = CreateLegacyDatabase();
+
+        using (OpenCollectorDatabase(path)) { }
+
+        using (var conn = Connect(path))
+        {
+            // Back to a database that reports no version at all, which replays
+            // every step against a shape that already carries all of them.
+            Execute(conn, "DELETE FROM schema_version");
+
+            int reached = SchemaMigrations.Apply(conn, new CapturingLogger());
+
+            Assert.Equal(SchemaMigrations.LatestVersion, reached);
+        }
+
+        using var check = Connect(path);
+        Assert.Equal(1, Scalar(check,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'collector_tick_phase'"));
+    }
+
+    [Fact]
     public void DatabaseWithNoRecordedVersion_HasEveryMigrationReplayedSafely()
     {
         string path = CreateLegacyDatabase();

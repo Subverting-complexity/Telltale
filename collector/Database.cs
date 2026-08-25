@@ -237,7 +237,7 @@ public sealed class Database : IDisposable
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY
         );
-        INSERT INTO schema_version VALUES (2);
+        INSERT INTO schema_version VALUES (3);
 
         CREATE TABLE process_instance (
             id           INTEGER PRIMARY KEY,
@@ -351,6 +351,23 @@ public sealed class Database : IDisposable
             process_count   INTEGER,
             stored_count    INTEGER
         );
+
+        -- collector_health.sample_cost_ms is the whole tick as one number, which says
+        -- that a tick ran long but not where the time went. This table breaks the same
+        -- tick into the phases it is spent in, one row per tick, sharing the health
+        -- row's timestamp. It is a separate table rather than more columns on
+        -- collector_health because a migration can add a table whose definition is
+        -- written out in full, and cannot add a column without SQLite rewriting the
+        -- stored definition into a shape this file cannot reproduce.
+        CREATE TABLE collector_tick_phase (
+            ts                INTEGER PRIMARY KEY,
+            sampler_ms        REAL,
+            machine_sample_ms REAL,
+            identity_ms       REAL,
+            instance_ms       REAL,
+            sample_write_ms   REAL,
+            machine_write_ms  REAL
+        );
         """;
 
     public long GetOrCreateProcessInstance(int pid, long createTime, string name, string? path,
@@ -393,6 +410,99 @@ public sealed class Database : IDisposable
 
             return GetLastInsertRowIdLocked();
         }
+    }
+
+    /// <summary>
+    /// Resolves every process instance seen in one tick, creating the rows that
+    /// are new and moving <c>last_seen</c> on the rows that are not, and returns
+    /// the row id for each.
+    ///
+    /// This is <see cref="GetOrCreateProcessInstance"/> for a whole tick at once,
+    /// and it exists because calling that method per process was the reason ticks
+    /// took tens of seconds. Every statement it runs is its own implicit
+    /// transaction, so a tick covering some 670 processes asked SQLite to commit
+    /// well over a thousand times, each one a write to the log and a wait on the
+    /// gate. Here the same work is one lock and one commit.
+    /// </summary>
+    public Dictionary<(int Pid, long CreateTime), long> UpsertProcessInstances(
+        IReadOnlyCollection<ProcessInstanceUpsert> instances, long timestamp)
+    {
+        var ids = new Dictionary<(int Pid, long CreateTime), long>(instances.Count);
+        if (instances.Count == 0) return ids;
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var tx = _conn.BeginTransaction();
+
+            // Three commands prepared once and rebound per process, rather than a
+            // command built per process. The parameter objects are held so the
+            // loop assigns values instead of rebuilding a collection each time.
+            using var select = _conn.CreateCommand();
+            select.Transaction = tx;
+            select.CommandText = "SELECT id FROM process_instance WHERE pid = @pid AND create_time = @ct";
+            var sPid = select.Parameters.Add("@pid", SqliteType.Integer);
+            var sCt = select.Parameters.Add("@ct", SqliteType.Integer);
+
+            using var update = _conn.CreateCommand();
+            update.Transaction = tx;
+            update.CommandText = "UPDATE process_instance SET last_seen = @ls WHERE id = @id";
+            var uLs = update.Parameters.Add("@ls", SqliteType.Integer);
+            var uId = update.Parameters.Add("@id", SqliteType.Integer);
+
+            using var insert = _conn.CreateCommand();
+            insert.Transaction = tx;
+            insert.CommandText = """
+                INSERT INTO process_instance (pid, create_time, name, path, command_line, first_seen, last_seen)
+                VALUES (@pid, @ct, @name, @path, @cmd, @fs, @ls)
+                RETURNING id
+                """;
+            var iPid = insert.Parameters.Add("@pid", SqliteType.Integer);
+            var iCt = insert.Parameters.Add("@ct", SqliteType.Integer);
+            var iName = insert.Parameters.Add("@name", SqliteType.Text);
+            var iPath = insert.Parameters.Add("@path", SqliteType.Text);
+            var iCmd = insert.Parameters.Add("@cmd", SqliteType.Text);
+            var iFs = insert.Parameters.Add("@fs", SqliteType.Integer);
+            var iLs = insert.Parameters.Add("@ls", SqliteType.Integer);
+
+            foreach (var instance in instances)
+            {
+                var key = (instance.Pid, instance.CreateTime);
+                if (ids.ContainsKey(key)) continue;
+
+                sPid.Value = instance.Pid;
+                sCt.Value = instance.CreateTime;
+
+                var existing = select.ExecuteScalar();
+                if (existing is not null)
+                {
+                    long id = (long)existing;
+                    uLs.Value = timestamp;
+                    uId.Value = id;
+                    update.ExecuteNonQuery();
+                    ids[key] = id;
+                    continue;
+                }
+
+                iPid.Value = instance.Pid;
+                iCt.Value = instance.CreateTime;
+                iName.Value = instance.Name;
+                iPath.Value = (object?)instance.Path ?? DBNull.Value;
+                iCmd.Value = (object?)instance.CommandLine ?? DBNull.Value;
+                iFs.Value = timestamp;
+                iLs.Value = timestamp;
+
+                // RETURNING rather than last_insert_rowid(), so the id belongs to
+                // this statement and not to whatever ran most recently on the
+                // connection.
+                ids[key] = (long)insert.ExecuteScalar()!;
+            }
+
+            tx.Commit();
+        }
+
+        return ids;
     }
 
     public void WriteSampleBatch(long timestamp, List<SampleRow> rows)
@@ -482,6 +592,35 @@ public sealed class Database : IDisposable
             cmd.Parameters.AddWithValue("@cost", sampleCostMs);
             cmd.Parameters.AddWithValue("@pc", processCount);
             cmd.Parameters.AddWithValue("@sc", storedCount);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Records where one sampling tick spent its time, against the same timestamp
+    /// as the health row for that tick.
+    /// </summary>
+    public void WriteTickPhases(long timestamp, TickPhaseTimings phases)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT OR REPLACE INTO collector_tick_phase
+                    (ts, sampler_ms, machine_sample_ms, identity_ms, instance_ms,
+                     sample_write_ms, machine_write_ms)
+                VALUES (@ts, @sampler, @machineSample, @identity, @instance,
+                        @sampleWrite, @machineWrite)
+                """;
+            cmd.Parameters.AddWithValue("@ts", timestamp);
+            cmd.Parameters.AddWithValue("@sampler", phases.SamplerMs);
+            cmd.Parameters.AddWithValue("@machineSample", phases.MachineSampleMs);
+            cmd.Parameters.AddWithValue("@identity", phases.IdentityMs);
+            cmd.Parameters.AddWithValue("@instance", phases.InstanceMs);
+            cmd.Parameters.AddWithValue("@sampleWrite", phases.SampleWriteMs);
+            cmd.Parameters.AddWithValue("@machineWrite", phases.MachineWriteMs);
             cmd.ExecuteNonQuery();
         }
     }
@@ -818,6 +957,27 @@ public sealed class Database : IDisposable
         }
     }
 }
+
+/// <summary>
+/// One process instance as a tick saw it, handed to
+/// <see cref="Database.UpsertProcessInstances"/> so the whole tick resolves in a
+/// single transaction.
+/// </summary>
+public sealed record ProcessInstanceUpsert(
+    int Pid, long CreateTime, string Name, string? Path, string? CommandLine);
+
+/// <summary>
+/// Where one sampling tick spent its time. Each figure covers one phase of
+/// <c>CollectorWorker.SampleTick</c>, and together they account for the tick cost
+/// recorded alongside them in <c>collector_health</c>.
+/// </summary>
+public sealed record TickPhaseTimings(
+    double SamplerMs,
+    double MachineSampleMs,
+    double IdentityMs,
+    double InstanceMs,
+    double SampleWriteMs,
+    double MachineWriteMs);
 
 public record SampleRow(
     long InstanceId,

@@ -153,4 +153,95 @@ public class DatabaseWriteTests() : SqliteTestBase("write")
         Assert.Equal(310L, Convert.ToInt64(Scalar($"SELECT process_count FROM collector_health WHERE ts = {Ts}")));
     }
 
+    [Fact]
+    public void UpsertProcessInstances_InsertsEveryProcessTheFirstTime()
+    {
+        var ids = Db.UpsertProcessInstances(
+        [
+            new ProcessInstanceUpsert(1, 100, "a.exe", @"C:\a.exe", "a --run"),
+            new ProcessInstanceUpsert(2, 100, "b.exe", null, null),
+        ], Ts);
+
+        Assert.Equal(2, Count("process_instance"));
+        Assert.Equal(2, ids.Count);
+        Assert.NotEqual(ids[(1, 100)], ids[(2, 100)]);
+        Assert.Equal(@"C:\a.exe", Scalar("SELECT path FROM process_instance WHERE pid = 1"));
+        Assert.Equal(DBNull.Value, Scalar("SELECT path FROM process_instance WHERE pid = 2"));
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_ReturnsTheSameRowAndMovesLastSeenOnASecondTick()
+    {
+        var first = Db.UpsertProcessInstances(
+            [new ProcessInstanceUpsert(1, 100, "a.exe", null, null)], Ts);
+        var second = Db.UpsertProcessInstances(
+            [new ProcessInstanceUpsert(1, 100, "a.exe", null, null)], Ts + 5_000);
+
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Equal(first[(1, 100)], second[(1, 100)]);
+        Assert.Equal(Ts, Convert.ToInt64(Scalar("SELECT first_seen FROM process_instance")));
+        Assert.Equal(Ts + 5_000, Convert.ToInt64(Scalar("SELECT last_seen FROM process_instance")));
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_TreatsAReusedPidWithANewStartTimeAsADifferentProcess()
+    {
+        var ids = Db.UpsertProcessInstances(
+        [
+            new ProcessInstanceUpsert(4321, 100, "app.exe", null, null),
+            new ProcessInstanceUpsert(4321, 200, "other.exe", null, null),
+        ], Ts);
+
+        Assert.Equal(2, Count("process_instance"));
+        Assert.NotEqual(ids[(4321, 100)], ids[(4321, 200)]);
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_ResolvesToTheRowTheSingleProcessPathWouldHaveUsed()
+    {
+        long expected = Db.GetOrCreateProcessInstance(7, 100, "a.exe", null, null, Ts);
+
+        var ids = Db.UpsertProcessInstances(
+            [new ProcessInstanceUpsert(7, 100, "a.exe", null, null)], Ts + 5_000);
+
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Equal(expected, ids[(7, 100)]);
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_CountsARepeatedKeyWithinOneTickOnlyOnce()
+    {
+        var ids = Db.UpsertProcessInstances(
+        [
+            new ProcessInstanceUpsert(1, 100, "a.exe", null, null),
+            new ProcessInstanceUpsert(1, 100, "a.exe", null, null),
+        ], Ts);
+
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Single(ids);
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_WritesNothingWhenTheTickSawNoProcesses()
+    {
+        var ids = Db.UpsertProcessInstances([], Ts);
+
+        Assert.Empty(ids);
+        Assert.Equal(0, Count("process_instance"));
+    }
+
+    [Fact]
+    public void WriteTickPhases_PersistsAndReplacesOnTheSameTimestamp()
+    {
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6));
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(10, 20, 30, 40, 50, 60));
+
+        Assert.Equal(1, Count("collector_tick_phase"));
+        Assert.Equal(10, Real($"SELECT sampler_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(20, Real($"SELECT machine_sample_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(30, Real($"SELECT identity_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(40, Real($"SELECT instance_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(50, Real($"SELECT sample_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(60, Real($"SELECT machine_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+    }
 }

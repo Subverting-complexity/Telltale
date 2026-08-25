@@ -9,7 +9,7 @@ PRAGMA synchronous = NORMAL;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version VALUES (2);
+INSERT INTO schema_version VALUES (3);
 
 CREATE TABLE process_instance (
     id           INTEGER PRIMARY KEY,
@@ -122,4 +122,21 @@ CREATE TABLE collector_health (
     sample_cost_ms  REAL,
     process_count   INTEGER,
     stored_count    INTEGER
+);
+
+-- collector_health.sample_cost_ms is the whole tick as one number, which says
+-- that a tick ran long but not where the time went. This table breaks the same
+-- tick into the phases it is spent in, one row per tick, sharing the health
+-- row's timestamp. It is a separate table rather than more columns on
+-- collector_health because a migration can add a table whose definition is
+-- written out in full, and cannot add a column without SQLite rewriting the
+-- stored definition into a shape this file cannot reproduce.
+CREATE TABLE collector_tick_phase (
+    ts                INTEGER PRIMARY KEY,
+    sampler_ms        REAL,
+    machine_sample_ms REAL,
+    identity_ms       REAL,
+    instance_ms       REAL,
+    sample_write_ms   REAL,
+    machine_write_ms  REAL
 );

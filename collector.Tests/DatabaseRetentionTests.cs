@@ -169,4 +169,23 @@ public class DatabaseRetentionTests() : SqliteTestBase("retention")
         }
     }
 
+    /// <summary>
+    /// The phase breakdown is pruned on the health retention cutoff, not on its
+    /// own, so the two halves of a tick's health record never outlive each other.
+    /// </summary>
+    [Fact]
+    public void DeleteOldData_PrunesTheTickPhaseTableOnTheSameCutoffAsTheHealthRow()
+    {
+        Db.WriteCollectorHealth(Ts - HourMs, 1, 10, 5, 300, 100);
+        Db.WriteTickPhases(Ts - HourMs, new TickPhaseTimings(1, 2, 3, 4, 5, 6));
+        Db.WriteCollectorHealth(Ts, 1, 10, 5, 300, 100);
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6));
+
+        Db.DeleteOldData("collector_health", Ts);
+        Db.DeleteOldData("collector_tick_phase", Ts);
+
+        Assert.Equal(1, Count("collector_health"));
+        Assert.Equal(1, Count("collector_tick_phase"));
+        Assert.Equal(Ts, Convert.ToInt64(Scalar("SELECT ts FROM collector_tick_phase")));
+    }
 }
