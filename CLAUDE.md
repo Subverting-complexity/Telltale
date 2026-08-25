@@ -29,6 +29,15 @@ a windowed executable has no console to report a runtime failure to. It stays on
 the machine like everything else, and carries only what was already being logged.
 Do not widen what goes into it.
 
+`Telltale.exe` also stops a running `TelltaleCapture.exe` at startup and takes
+over the recorder lock, and answers a named handle that any process running as
+the same user can signal to stop it. Both are deliberate: the first is how the
+changeover from two executables to one happens without the user having to
+sequence it, and the second is the only way to ask a tray application to stop,
+since it has no window for a close request to reach. Neither reads or sends
+anything. Widening either one, to stop processes by some other name or to do
+more than stop on that handle, needs a reason written down here.
+
 Command lines are not stored either unless the user turns on
 `recordCommandLines`, which is off by default. When it is on, the collector
 masks anything matching a fixed set of credential patterns before writing the

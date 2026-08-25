@@ -66,7 +66,17 @@ The window tells Telltale when it opens and when it closes, and that is how Tell
 
 To have Telltale start with Windows, put a shortcut to `Telltale.exe` in your Startup folder (`shell:startup`). That is a manual step. Telltale does not install itself.
 
-To stop Telltale, right-click its icon and choose Exit, or run `Telltale.exe --quit` from a script. It stops itself when Windows shuts down or you log off, so the database is closed properly rather than being cut off mid-write. Ask before you force: a tray application has no window for `taskkill` to close politely, so `taskkill` on its own always means `/f`.
+To stop Telltale, right-click its icon and choose Exit, or run `Telltale.exe --quit` from a script. `--quit` waits until Telltale has actually gone and reports whether it worked, so a script can stop it and then replace the file without finding it locked. Telltale also stops itself when Windows shuts down or you log off, so the database is closed properly rather than being cut off mid-write.
+
+`Telltale.exe` is a windowed application, so a shell does not wait for it and does not collect its exit code. A script that needs to know the stop finished has to say so:
+
+```bat
+start /wait "" "path	o\Telltale.exe" --quit
+```
+
+In PowerShell that is `Start-Process -Wait -FilePath ... -ArgumentList '--quit'`.
+
+Ask before you force. A tray application has no window for `taskkill` to close politely, so `taskkill` without `/f` does nothing to it and `taskkill` with `/f` cuts the recorder off part way through a write. Nothing is lost when that happens, because the database recovers its write-ahead log on the next start, but the recovery is work that asking would have avoided.
 
 If a Startup shortcut still points at the old `TelltaleCapture.exe`, nothing breaks in the meantime. `Telltale.exe` stops it and takes over the recorder lock when it starts, because it is that executable's replacement and two recorders writing to one database is the thing the lock exists to prevent. Repointing the shortcut is still worth doing, so the old recorder is not started at every logon only to be stopped again.
 

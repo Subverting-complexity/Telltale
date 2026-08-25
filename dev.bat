@@ -21,6 +21,7 @@ if not exist frontend\node_modules (
 tasklist /fi "IMAGENAME eq Telltale.exe" /nh 2>nul | find /i "Telltale.exe" >nul
 if not errorlevel 1 (
     echo Stopping Telltale so the development recorder can take over...
+    set "TELLTALE_WAS_RUNNING=1"
     taskkill /f /im Telltale.exe >nul 2>&1
     ping -n 4 -w 1000 127.0.0.1 >nul 2>&1
     tasklist /fi "IMAGENAME eq Telltale.exe" /nh 2>nul | find /i "Telltale.exe" >nul
@@ -51,6 +52,11 @@ start "" msedge --app=http://localhost:5173
 echo Starting Vite dev server...
 cd frontend
 npm run dev
+if defined TELLTALE_WAS_RUNNING (
+    echo.
+    echo Telltale was stopped so this session could record. Start it again from
+    echo your Startup folder or the deploy target when you are done.
+)
 if %errorlevel% neq 0 (
     echo.
     echo Vite dev server exited with an error.

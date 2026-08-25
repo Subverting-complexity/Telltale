@@ -38,6 +38,9 @@ static class TelltaleApplication
     /// <summary>The executable Telltale replaces, and takes over the lock from.</summary>
     const string ReplacedRecorder = "TelltaleCapture.exe";
 
+    /// <summary>This executable, for the benefit of --quit.</summary>
+    const string OwnImageName = "Telltale.exe";
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -59,14 +62,8 @@ static class TelltaleApplication
 
     static int Run(string[] args)
     {
-        if (args.Any(a => string.Equals(a, QuitSwitch, StringComparison.OrdinalIgnoreCase)))
-        {
-            // Nothing listening means nothing to stop, which is the outcome the
-            // caller wanted. Reported as success so a script does not have to
-            // check whether Telltale was running before asking it to stop.
-            SecondInstanceSignal.TrySignal(QuitEventName);
-            return 0;
-        }
+        if (IsQuitRequest(args))
+            return StopRunningInstance();
 
         using var instance = new Mutex(true, InstanceMutexName, out bool createdNew);
         if (!createdNew)
@@ -193,6 +190,53 @@ static class TelltaleApplication
         {
             recorder.Dispose();
         }
+    }
+
+    /// <summary>Whether these arguments ask Telltale to stop.</summary>
+    public static bool IsQuitRequest(string[] args) =>
+        args.Any(a => string.Equals(a, QuitSwitch, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>How long --quit waits for the running instance to actually go.</summary>
+    public static readonly TimeSpan QuitTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>
+    /// Stops a running Telltale and waits until it has gone.
+    /// </summary>
+    /// <remarks>
+    /// Waiting matters more than it looks. A script that stops Telltale is usually
+    /// about to replace the executable, and returning while the process is still
+    /// alive means it finds the file locked. It also lets the caller find out
+    /// whether the stop worked, rather than being told it did regardless.
+    ///
+    /// Nothing running is success, so a script does not have to check first.
+    /// </remarks>
+    static int StopRunningInstance()
+    {
+        var stopper = new ImageNameProcessStopper();
+        if (!stopper.IsRunning(OwnImageName))
+            return 0;
+
+        // Retried, because a Telltale that has taken the instance mutex but not yet
+        // created its quit handle is starting up, not ignoring us.
+        var deadline = DateTimeOffset.UtcNow + QuitTimeout;
+        var asked = false;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (!stopper.IsRunning(OwnImageName))
+                return 0;
+
+            if (SecondInstanceSignal.TrySignal(QuitEventName))
+                asked = true;
+
+            Thread.Sleep(200);
+        }
+
+        // Still there. Say so rather than reporting a stop that did not happen: the
+        // caller is most likely about to overwrite the file.
+        Console.Error.WriteLine(asked
+            ? "Telltale was asked to stop and is still running."
+            : "Telltale is running but did not answer.");
+        return 1;
     }
 
     /// <summary>

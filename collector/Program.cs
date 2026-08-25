@@ -45,7 +45,19 @@ try
 }
 finally
 {
-    mutex.ReleaseMutex();
+    try
+    {
+        mutex.ReleaseMutex();
+    }
+    catch (ApplicationException)
+    {
+        // A mutex belongs to the thread that took it, and the await above resumes
+        // wherever the thread pool puts it, so this can be the wrong thread. It is
+        // released by disposing the handle either way, and the process is on its
+        // way out regardless. Left unhandled it turned every clean shutdown into a
+        // crash, which nothing ever saw because the shutdown was never clean.
+    }
+
     mutex.Dispose();
 }
 

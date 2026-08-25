@@ -63,6 +63,41 @@ public class QuitRequestTests
         Assert.Equal(0, Volatile.Read(ref quits));
     }
 
+    [Theory]
+    [InlineData("--quit")]
+    [InlineData("--QUIT")]
+    [InlineData("--Quit")]
+    public void The_switch_is_recognised(string argument)
+    {
+        Assert.True(TelltaleApplication.IsQuitRequest([argument]));
+        Assert.True(TelltaleApplication.IsQuitRequest(["something", argument]));
+    }
+
+    [Theory]
+    [InlineData()]
+    [InlineData("--open")]
+    [InlineData("quit")]
+    [InlineData("-quit")]
+    [InlineData("--quiet")]
+    [InlineData("--quit-later")]
+    public void Anything_else_is_not_a_request_to_stop(params string[] args)
+    {
+        // Starting Telltale by accident with something that looks a little like the
+        // switch must not stop the one that is running.
+        Assert.False(TelltaleApplication.IsQuitRequest(args));
+    }
+
+    [Fact]
+    public void It_waits_longer_than_the_recorder_takes_to_stop()
+    {
+        // A caller that stops Telltale is usually about to replace the executable,
+        // so returning before the process has gone hands them a locked file. The
+        // wait has to outlast the recorder's own shutdown allowance.
+        Assert.True(TelltaleApplication.QuitTimeout > TimeSpan.FromSeconds(10),
+            "--quit must wait longer than the ten seconds StopRecording allows the "
+            + "recorder, or it can return while Telltale is still shutting down.");
+    }
+
     [Fact]
     public void Asking_nothing_to_quit_is_success_rather_than_an_error()
     {

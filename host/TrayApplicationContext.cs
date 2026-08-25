@@ -84,13 +84,27 @@ sealed class TrayApplicationContext : ApplicationContext
     void OnSessionEnding(object sender, SessionEndingEventArgs e)
     {
         _log?.Append("Windows is ending the session. Stopping Telltale.");
-        Quit();
+
+        // Crossed onto the message loop rather than run here. Quit touches the
+        // notification icon and the watchdog timer, both of which belong to the
+        // message loop, and it ends with a request to leave that loop: posted from
+        // the SystemEvents thread, that request would arrive on the wrong queue and
+        // Telltale would carry on running.
+        //
+        // Waited for, because Windows gives an application a few seconds at
+        // shutdown and then stops waiting. Recording a clean stop is the whole
+        // point of being told at all.
+        WaitForOnMessageLoop(Quit, TimeSpan.FromSeconds(4));
     }
 
     void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
     {
-        if (e.Mode == PowerModes.Resume && !_quitting)
-            _listener.ExpectWindowBack();
+        // Raised on the thread SystemEvents keeps for the purpose, not on the
+        // message loop. Crossing over is what puts this in order with the watchdog
+        // tick, which is the thing it is racing: whichever of the two runs first
+        // after a wake decides whether the listener survives.
+        if (e.Mode == PowerModes.Resume)
+            OnMessageLoop(() => { if (!_quitting) _listener.ExpectWindowBack(); });
     }
 
     /// <summary>
@@ -109,6 +123,29 @@ sealed class TrayApplicationContext : ApplicationContext
             _marshal.BeginInvoke(action);
         else
             action();
+    }
+
+    /// <summary>
+    /// Runs something on the message loop and waits for it, giving up rather than
+    /// blocking forever if the loop is not answering.
+    /// </summary>
+    void WaitForOnMessageLoop(Action action, TimeSpan timeout)
+    {
+        if (!_marshal.IsHandleCreated || !_marshal.InvokeRequired)
+        {
+            action();
+            return;
+        }
+
+        try
+        {
+            var pending = _marshal.BeginInvoke(action);
+            pending.AsyncWaitHandle.WaitOne(timeout);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            // The loop has already gone, which is the outcome we were asking for.
+        }
     }
 
     /// <summary>
