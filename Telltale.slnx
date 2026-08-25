@@ -5,6 +5,12 @@
   <Folder Name="/collector/">
     <Project Path="collector/Collector.csproj" />
   </Folder>
+  <Folder Name="/host/">
+    <Project Path="host/Telltale.csproj" />
+  </Folder>
+  <Folder Name="/host.Tests/">
+    <Project Path="host.Tests/Host.Tests.csproj" />
+  </Folder>
   <Folder Name="/viewer.Tests/">
     <Project Path="viewer.Tests/Viewer.Tests.csproj" />
   </Folder>

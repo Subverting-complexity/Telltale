@@ -28,6 +28,27 @@ public sealed partial class TelltaleConfig
     /// default and the collector only logs that it is available.
     /// </summary>
     public bool VacuumOnStartup { get; set; }
+
+    /// <summary>
+    /// The loopback port the Telltale window is served on. Zero lets the operating
+    /// system pick one.
+    /// </summary>
+    /// <remarks>
+    /// The recorder never reads this. It lives here because telltale.json is the
+    /// one file a user edits, and modelling it twice would mean two validation
+    /// paths reporting the same mistake differently. The viewer executable does not
+    /// read it either, so nothing about the boundary between the two projects
+    /// changes: only the host, which composes both, acts on it.
+    ///
+    /// The default sits below 49152, where the Windows dynamic port range starts,
+    /// so a transient outbound socket cannot claim it first, and it is not the
+    /// default for any common development server. It is not reserved, so the host
+    /// still has to cope with the port being unavailable.
+    /// </remarks>
+    public int ViewerPort { get; set; } = DefaultViewerPort;
+
+    /// <summary>The value <see cref="ViewerPort"/> takes when telltale.json is silent.</summary>
+    public const int DefaultViewerPort = 41821;
     public ThresholdConfig Thresholds { get; set; } = new();
 
     public string ResolvedDatabasePath =>
@@ -96,6 +117,11 @@ public sealed partial class TelltaleConfig
 
         if (RollupIntervalMinutes < 1 || RollupIntervalMinutes > 60)
             errors.Add("rollupIntervalMinutes must be between 1 and 60.");
+
+        // Zero is allowed and means "let the operating system choose". Anything
+        // below 1024 needs privileges Telltale does not have and should not want.
+        if (ViewerPort != 0 && (ViewerPort < 1024 || ViewerPort > 65535))
+            errors.Add("viewerPort must be 0, or between 1024 and 65535.");
 
         // Each tier has to retain data for at least as long as the tier feeding it.
         // A shorter tier would be asked to promote or delete data the tier below has

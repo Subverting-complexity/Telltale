@@ -9,6 +9,7 @@
   "healthRetentionDays": 7,
   "rollupIntervalMinutes": 5,
   "vacuumOnStartup": false,
+  "viewerPort": 41821,
   "thresholds": {
     "cpuPct": 0.0,
     "privateMemoryMb": 0.0
