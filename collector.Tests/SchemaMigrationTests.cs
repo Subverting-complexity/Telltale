@@ -268,7 +268,7 @@ public class SchemaMigrationTests : IDisposable
         Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(check));
 
         using var fresh = Connect(OpenCollectorDatabase(NewDbPath()).Path);
-        Assert.Equal(Shape(fresh), Shape(check));
+        AssertShapesEqual(Shape(fresh), Shape(check), "fresh vs no-version replay");
     }
 
     [Fact]
@@ -294,11 +294,12 @@ public class SchemaMigrationTests : IDisposable
         using var fresh = Connect(freshDb.Path);
         using var fromSchemaFile = Connect(schemaFilePath);
 
-        // All three routes to a current database must agree, statement for
-        // statement: the collector creating one, schema.sql creating one, and an
-        // old one being migrated up.
-        Assert.Equal(Shape(fresh), Shape(migrated));
-        Assert.Equal(Shape(fresh), Shape(fromSchemaFile));
+        string freshShape = Shape(fresh);
+        string migratedShape = Shape(migrated);
+        string schemaFileShape = Shape(fromSchemaFile);
+
+        AssertShapesEqual(freshShape, migratedShape, "fresh vs migrated");
+        AssertShapesEqual(freshShape, schemaFileShape, "fresh vs schema.sql");
 
         Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(migrated));
         Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(fresh));
@@ -502,6 +503,24 @@ public class SchemaMigrationTests : IDisposable
             $"INSERT INTO applied_order (step) VALUES ({version})");
 
 
+    private static void AssertShapesEqual(string expected, string actual, string comparison)
+    {
+        if (expected == actual) return;
+
+        var expectedLines = expected.Split('\n');
+        var actualLines = actual.Split('\n');
+
+        for (int i = 0; i < Math.Max(expectedLines.Length, actualLines.Length); i++)
+        {
+            string? e = i < expectedLines.Length ? expectedLines[i] : null;
+            string? a = i < actualLines.Length ? actualLines[i] : null;
+            if (e != a)
+                Assert.Fail($"Shape mismatch ({comparison}) at line {i + 1}.\n"
+                    + $"Expected: {e ?? "(missing)"}\n"
+                    + $"Actual:   {a ?? "(missing)"}");
+        }
+    }
+
     /// <summary>
     /// Every object in the database, as the text that created it. Comparing this
     /// between two databases is what proves they are the same shape.
@@ -596,7 +615,11 @@ public class SchemaMigrationTests : IDisposable
 
     private static SqliteConnection Connect(string path)
     {
-        var conn = new SqliteConnection($"Data Source={path}");
+        var conn = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Pooling = false,
+        }.ToString());
         conn.Open();
 
         return conn;
