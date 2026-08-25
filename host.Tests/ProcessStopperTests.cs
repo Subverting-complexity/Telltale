@@ -124,19 +124,21 @@ public class ProcessStopperTests : IDisposable
         Assert.True(stopper.Stop(_imageName, TimeSpan.FromSeconds(30)));
         var took = DateTime.UtcNow - started;
 
-        Assert.True(took < TimeSpan.FromSeconds(10),
+        // Measured against the grace period itself rather than a round number, so
+        // that spending it still fails this even if it is shortened later.
+        Assert.True(took < ImageNameProcessStopper.GracePeriod,
             $"Stopping a process with no window took {took.TotalSeconds:F1}s, which "
-            + "means the grace period was spent waiting for a close request that "
-            + "was never accepted.");
+            + "is at least the grace period. That means it was spent waiting for a "
+            + "close request nothing had accepted.");
     }
 
     [Fact]
-    public void It_reports_success_when_the_process_is_gone_even_if_it_had_to_force_it()
+    public void It_reports_success_after_forcing_a_process()
     {
-        // The force phase gets a deadline of its own. Reusing the one the asking
-        // phase spent left it with no time to see the process go, so a successful
-        // stop was reported as a failure and the caller gave up on a machine where
-        // nothing was in its way any more.
+        // Covers the ordinary forced stop. It does not prove the force phase gets a
+        // deadline of its own, which is what stopped a successful kill being
+        // reported as a failure: showing that needs a process that lingers in the
+        // process table after being killed, and nothing here can arrange one.
         Start();
         var stopper = new ImageNameProcessStopper();
 

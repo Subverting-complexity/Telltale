@@ -159,8 +159,12 @@ sealed class ImageNameProcessStopper : IProcessStopper
 
             return [.. matches];
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException
+                                      or System.ComponentModel.Win32Exception)
         {
+            // Enumerating processes can fail outright. Reporting nothing running is
+            // wrong but recoverable; letting it out of --quit would open a dialog
+            // on a script that asked a question.
             return [];
         }
     }
@@ -178,7 +182,6 @@ sealed class ImageNameProcessStopper : IProcessStopper
         }
         catch (Exception ex) when (ex is InvalidOperationException
                                       or NotSupportedException
-                                      or AggregateException
                                       or System.ComponentModel.Win32Exception)
         {
             return false;
