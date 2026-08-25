@@ -67,15 +67,15 @@ public sealed class MachineSampler : IDisposable
 
         InitNetCounters();
 
-        _cpuCounter?.NextValue();
-        _memAvailCounter?.NextValue();
-        _commitCounter?.NextValue();
-        _hardFaultCounter?.NextValue();
-        _diskReadCounter?.NextValue();
-        _diskWriteCounter?.NextValue();
-        _diskIdleCounter?.NextValue();
+        ReadCounter(_cpuCounter);
+        ReadCounter(_memAvailCounter);
+        ReadCounter(_commitCounter);
+        ReadCounter(_hardFaultCounter);
+        ReadCounter(_diskReadCounter);
+        ReadCounter(_diskWriteCounter);
+        ReadCounter(_diskIdleCounter);
         if (_netCounters != null)
-            foreach (var c in _netCounters) c.NextValue();
+            foreach (var c in _netCounters) ReadCounter(c);
     }
 
     private PerformanceCounter? TryCreateCounter(string categoryEnglish, string counterEnglish,

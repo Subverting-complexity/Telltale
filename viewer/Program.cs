@@ -744,17 +744,7 @@ try
     {
         var url = app.Urls.FirstOrDefault() ?? "http://localhost:5111";
         if (!app.Environment.IsDevelopment())
-        {
-            try
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = url,
-                    UseShellExecute = true
-                });
-            }
-            catch { }
-        }
+            LaunchBrowser(url);
         Console.WriteLine($"Telltale viewer started at {url}");
     });
 
@@ -768,6 +758,40 @@ finally
 
 static TierPlan PlanTiers(SqliteConnection conn, long from, long to, bool isMachine)
     => TierSelection.Plan(from, to, isMachine, TierCoverageReader.Read(conn, isMachine));
+
+/// <summary>
+/// Opens the viewer in a standalone window that does not share tabs or taskbar
+/// grouping with the user's normal browser session. Falls back to the default
+/// browser when Edge is not available.
+/// </summary>
+static void LaunchBrowser(string url)
+{
+    string[] browsers = ["msedge", "chrome"];
+    foreach (var browser in browsers)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = browser,
+                Arguments = $"--app={url}",
+                UseShellExecute = true
+            });
+            return;
+        }
+        catch { }
+    }
+
+    try
+    {
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true
+        });
+    }
+    catch { }
+}
 
 /// <summary>Binds the slice bounds a tier source reads between.</summary>
 static void AddTierBounds(SqliteCommand cmd, TierSource source)
