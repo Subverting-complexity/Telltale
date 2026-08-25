@@ -66,7 +66,10 @@ export const CPU_OF_ALL_CORES = 'CPU % of all cores';
  */
 export function formatCpuOfAllCores(pct: number | null, logicalProcessors: number): string {
   if (pct === null) return '-';
-  if (logicalProcessors < 1) return formatCpu(pct);
+
+  // Written as a negated lower bound so a NaN core count falls back too. A
+  // straight `< 1` is false for NaN, which would divide and render "NaN%".
+  if (!(logicalProcessors >= 1)) return formatCpu(pct);
 
   return formatCpu(pct / logicalProcessors);
 }

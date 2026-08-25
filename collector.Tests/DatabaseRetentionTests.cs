@@ -177,9 +177,9 @@ public class DatabaseRetentionTests() : SqliteTestBase("retention")
     public void DeleteOldData_PrunesTheTickPhaseTableOnTheSameCutoffAsTheHealthRow()
     {
         Db.WriteCollectorHealth(Ts - HourMs, 1, 10, 5, 300, 100);
-        Db.WriteTickPhases(Ts - HourMs, new TickPhaseTimings(1, 2, 3, 4, 5, 6));
+        Db.WriteTickPhases(Ts - HourMs, new TickPhaseTimings(1, 2, 3, 4, 5, 6, 7));
         Db.WriteCollectorHealth(Ts, 1, 10, 5, 300, 100);
-        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6));
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6, 7));
 
         Db.DeleteOldData("collector_health", Ts);
         Db.DeleteOldData("collector_tick_phase", Ts);

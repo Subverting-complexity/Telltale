@@ -369,6 +369,13 @@ describe('formatCpuOfAllCores', () => {
     expect(formatCpuOfAllCores(null, 16)).toBe('-');
   });
 
+  it('leaves the figure alone when the core count is not a number', () => {
+    // The health endpoint always sends a number, but a negated lower bound is
+    // what makes that not matter: NaN < 1 is false, so a plain comparison would
+    // divide and render "NaN%".
+    expect(formatCpuOfAllCores(50, Number.NaN)).toBe('50.0%');
+  });
+
   it('leaves the figure on its recorded scale rather than inflating it', () => {
     // A core count of zero would divide to infinity, so the recorded per core
     // figure is shown unchanged instead.

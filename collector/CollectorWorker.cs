@@ -59,7 +59,23 @@ public sealed class CollectorWorker : BackgroundService
         // which is a share of one core, into a share of the whole machine, and
         // reading the live count instead is wrong as soon as a capture is opened
         // anywhere but the machine it was made on.
-        _db.WriteMachineInfo(Environment.ProcessorCount);
+        // Guarded like the machine sampler above, and for the same reason. This is
+        // the first write of the run, so it is the one most likely to meet a full
+        // disk or a locked file, and an unhandled exception in a BackgroundService
+        // stops the host by default. That would take the tray icon and the viewer
+        // window down with it, over one informational row the viewer already has a
+        // fallback for.
+        try
+        {
+            _db.WriteMachineInfo(Environment.ProcessorCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Could not record this machine's processor count. The viewer will "
+                + "fall back to the processor count of whichever machine reads the "
+                + "capture, which is only correct while that is this one.");
+        }
 
         _elapsedTimer.Start();
 
@@ -95,12 +111,19 @@ public sealed class CollectorWorker : BackgroundService
         var machineSample = _machineSampler.Sample();
         double machineSampleMs = LapMs(phase);
 
-        // The tick's distinct process instances, gathered before the loop so every
-        // one whose identity is not yet known can be looked up in a single batch
-        // rather than one query at a time.
+        // The tick's distinct process instances, gathered before anything else so
+        // every one whose identity is not yet known can be looked up in a single
+        // batch rather than one query at a time. A pid can appear twice in one
+        // snapshot, so the distinct snapshots are kept here and every step below
+        // works from them rather than deduplicating the raw list again each time.
         var seenKeys = new HashSet<(int Pid, long CreateTime)>(snapshots.Count);
+        var distinct = new List<ProcessSnapshot>(snapshots.Count);
+
         foreach (var snap in snapshots)
-            seenKeys.Add((snap.Pid, snap.CreateTimeTicks));
+        {
+            if (seenKeys.Add((snap.Pid, snap.CreateTimeTicks)))
+                distinct.Add(snap);
+        }
 
         _identities.Resolve(seenKeys);
         double identityMs = LapMs(phase);
@@ -109,35 +132,34 @@ public sealed class CollectorWorker : BackgroundService
         // reason the identities above are: asking per process meant a separate
         // commit per process, and a tick covering some 670 of them spent tens of
         // seconds waiting on them one after another.
-        var upserts = new List<ProcessInstanceUpsert>(seenKeys.Count);
-        var queued = new HashSet<(int, long)>(seenKeys.Count);
-
-        foreach (var snap in snapshots)
-        {
-            var snapKey = (snap.Pid, snap.CreateTimeTicks);
-            if (!queued.Add(snapKey)) continue;
-
-            var snapIdentity = _identities.For(snapKey);
-            upserts.Add(new ProcessInstanceUpsert(
-                snap.Pid, snap.CreateTimeTicks, snap.Name,
-                snapIdentity.Path, snapIdentity.CommandLine));
-        }
-
-        var instanceIds = _db.UpsertProcessInstances(upserts, timestamp);
-        double instanceMs = LapMs(phase);
-
-        var rows = new List<SampleRow>(snapshots.Count);
-        var handled = new HashSet<(int, long)>(seenKeys.Count);
+        var rows = new List<SampleRow>(distinct.Count);
+        double instanceMs;
+        double rowBuildMs;
 
         try
         {
-            foreach (var snap in snapshots)
+            var upserts = new List<ProcessInstanceUpsert>(distinct.Count);
+
+            foreach (var snap in distinct)
+            {
+                var upsertIdentity = _identities.For((snap.Pid, snap.CreateTimeTicks));
+                upserts.Add(new ProcessInstanceUpsert(
+                    snap.Pid, snap.CreateTimeTicks, snap.Name,
+                    upsertIdentity.Path, upsertIdentity.CommandLine));
+            }
+
+            var instanceIds = _db.UpsertProcessInstances(upserts, timestamp);
+            instanceMs = LapMs(phase);
+
+            foreach (var snap in distinct)
             {
                 var key = (snap.Pid, snap.CreateTimeTicks);
-                if (!handled.Add(key)) continue;
 
-                // Absent only if the upsert could not place the row, which it
-                // reports by leaving the key out rather than by guessing an id.
+                // Defensive, and unreachable today: the upsert returns an id for
+                // every key it is handed, and throws rather than returning a
+                // partial map. It is here so that if it ever does report a row it
+                // could not place, this tick drops that process rather than
+                // pairing its sample with an id belonging to something else.
                 if (!instanceIds.TryGetValue(key, out long instanceId)) continue;
 
                 double? cpuPct = null;
@@ -171,12 +193,15 @@ public sealed class CollectorWorker : BackgroundService
                         snap.ThreadCount, snap.HandleCount));
                 }
             }
+
+            rowBuildMs = LapMs(phase);
         }
         finally
         {
-            // Pruning runs even when a row fails part way through. Without this a
-            // tick that throws leaves both maps holding processes that have already
-            // gone, and they only clear on the next tick that gets all the way down.
+            // Pruning runs even when the tick fails part way through, including
+            // inside the instance upsert above. Without this a tick that throws
+            // leaves both maps holding processes that have already gone, and they
+            // only clear on the next tick that gets all the way down.
             CleanStalePrevious(seenKeys);
             _identities.Prune(seenKeys);
         }
@@ -195,8 +220,17 @@ public sealed class CollectorWorker : BackgroundService
         // up to the cost recorded beside them.
         double sampleCostMs = sw.Elapsed.TotalMilliseconds;
 
+        // Named rather than positional. Seven doubles in a row is a shape where two
+        // of them swapped still compiles, still passes, and answers the question
+        // this table exists to ask with the wrong phase named.
         _db.WriteTickPhases(timestamp, new TickPhaseTimings(
-            samplerMs, machineSampleMs, identityMs, instanceMs, sampleWriteMs, machineWriteMs));
+            SamplerMs: samplerMs,
+            MachineSampleMs: machineSampleMs,
+            IdentityMs: identityMs,
+            InstanceMs: instanceMs,
+            RowBuildMs: rowBuildMs,
+            SampleWriteMs: sampleWriteMs,
+            MachineWriteMs: machineWriteMs));
 
         RecordHealth(timestamp, sampleCostMs, snapshots.Count, rows.Count);
         sw.Stop();

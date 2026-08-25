@@ -56,7 +56,11 @@ describe('ProcessDetail instances table', () => {
     renderGroup();
 
     expect(await screen.findByText('2.1 GB')).toBeInTheDocument();
-    expect(screen.queryByText('2167.2 GB')).not.toBeInTheDocument();
+
+    // What the defect actually rendered. Issue #97 quoted 2167.2 GB, which is
+    // slightly out: formatSize(2_223_000) is 2170.9 GB. Asserting the real
+    // figure keeps this a guard rather than a line that can never fail.
+    expect(screen.queryByText('2170.9 GB')).not.toBeInTheDocument();
   });
 
   it('says which denominator its CPU column is a share of', async () => {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getAlerts, getBaselines } from './api';
 import type { AlertProcess, BaselineData } from './types';
-import { formatCpu, formatSize, formatIo, formatDateTime } from './utils';
+import { formatSize, formatIo, formatDateTime, formatCpuOfAllCores, CPU_OF_ALL_CORES } from './utils';
 
 interface AlertsProps {
   logicalProcessors: number;
@@ -182,12 +182,12 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
                   </th>
                   <th scope="col">
                     <button className="sort-btn" onClick={() => toggleSort('avgCpu')}>
-                      Avg CPU{sortIcon('avgCpu')}
+                      Avg {CPU_OF_ALL_CORES}{sortIcon('avgCpu')}
                     </button>
                   </th>
                   <th scope="col">
                     <button className="sort-btn" onClick={() => toggleSort('peakCpu')}>
-                      Peak CPU{sortIcon('peakCpu')}
+                      Peak {CPU_OF_ALL_CORES}{sortIcon('peakCpu')}
                     </button>
                   </th>
                   <th scope="col">
@@ -211,8 +211,11 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
               <tbody>
                 {sortedAlerts.map(alert => {
                   const hasAnomaly = anomalies.some(a => a.name === alert.name);
+                  // Kept as a number for the threshold classes below, which
+                  // compare against a share of the whole machine. The figures
+                  // shown go through formatCpuOfAllCores so there is one
+                  // conversion rather than one per call site.
                   const normAvgCpu = alert.avgCpuPct / logicalProcessors;
-                  const normPeakCpu = alert.peakCpuPct / logicalProcessors;
                   return (
                     <tr
                       key={alert.name}
@@ -234,10 +237,10 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
                       </td>
                       <td>
                         <span className={`alert-value ${normAvgCpu > 50 ? 'high' : normAvgCpu > 10 ? 'medium' : ''}`}>
-                          {formatCpu(normAvgCpu)}
+                          {formatCpuOfAllCores(alert.avgCpuPct, logicalProcessors)}
                         </span>
                       </td>
-                      <td>{formatCpu(normPeakCpu)}</td>
+                      <td>{formatCpuOfAllCores(alert.peakCpuPct, logicalProcessors)}</td>
                       <td>
                         <span className={`alert-value ${alert.peakMemoryMb > 2048 ? 'high' : alert.peakMemoryMb > 500 ? 'medium' : ''}`}>
                           {formatSize(alert.peakMemoryMb)}
@@ -295,12 +298,12 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
                     <td>{anomaly.metric}</td>
                     <td>
                       {anomaly.metric === 'CPU'
-                        ? formatCpu(anomaly.current / logicalProcessors)
+                        ? formatCpuOfAllCores(anomaly.current, logicalProcessors)
                         : formatSize(anomaly.current)}
                     </td>
                     <td>
                       {anomaly.metric === 'CPU'
-                        ? formatCpu(anomaly.average / logicalProcessors)
+                        ? formatCpuOfAllCores(anomaly.average, logicalProcessors)
                         : formatSize(anomaly.average)}
                     </td>
                     <td>

@@ -323,6 +323,7 @@ public static class SchemaMigrations
             machine_sample_ms REAL,
             identity_ms       REAL,
             instance_ms       REAL,
+            row_build_ms      REAL,
             sample_write_ms   REAL,
             machine_write_ms  REAL
         );

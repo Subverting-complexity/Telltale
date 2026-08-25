@@ -32,11 +32,23 @@ public class RecordedProcessorCountTests
     }
 
     [Fact]
+    public async Task Health_FallsBackToThisMachineWhenNoCountWasRecorded()
+    {
+        // The table is there and empty, which is what a database migrated up to
+        // version 4 looks like until the collector next starts.
+        using var factory = new RecordedMachineFactory(null);
+        using var client = factory.CreateClient();
+
+        Assert.Equal(Environment.ProcessorCount, await ReadLogicalProcessors(client));
+    }
+
+    [Fact]
     public async Task Health_FallsBackToThisMachineWhenTheRecordingPredatesTheTable()
     {
-        // A capture made before machine_info existed carries no answer, and the
-        // machine reading it is the only one available.
-        using var factory = new RecordedMachineFactory(null);
+        // A capture made before machine_info existed has no table at all, which
+        // is a different branch in the endpoint from the empty table above. The
+        // machine reading it is the only answer available either way.
+        using var factory = new RecordedMachineFactory(null, dropMachineInfo: true);
         using var client = factory.CreateClient();
 
         Assert.Equal(Environment.ProcessorCount, await ReadLogicalProcessors(client));
@@ -67,11 +79,12 @@ public class RecordedProcessorCountTests
     /// </summary>
     private sealed class RecordedMachineFactory : TelltaleTestFactory
     {
-        public RecordedMachineFactory(int? logicalProcessors) : base(CreateDb(logicalProcessors))
+        public RecordedMachineFactory(int? logicalProcessors, bool dropMachineInfo = false)
+            : base(CreateDb(logicalProcessors, dropMachineInfo))
         {
         }
 
-        private static string CreateDb(int? logicalProcessors)
+        private static string CreateDb(int? logicalProcessors, bool dropMachineInfo)
         {
             var dir = Path.Combine(Path.GetTempPath(), $"telltale-cores-{Guid.NewGuid():N}");
             Directory.CreateDirectory(dir);
@@ -98,6 +111,15 @@ public class RecordedProcessorCountTests
                     "INSERT INTO machine_info (id, logical_processors) VALUES (1, @count)";
                 insert.Parameters.AddWithValue("@count", count);
                 insert.ExecuteNonQuery();
+            }
+
+            if (dropMachineInfo)
+            {
+                // Reproduces a capture recorded before version 4 without keeping a
+                // second copy of the old schema in step with this one.
+                using var drop = conn.CreateCommand();
+                drop.CommandText = "DROP TABLE machine_info";
+                drop.ExecuteNonQuery();
             }
 
             return path;

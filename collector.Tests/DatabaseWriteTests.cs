@@ -233,16 +233,20 @@ public class DatabaseWriteTests() : SqliteTestBase("write")
     [Fact]
     public void WriteTickPhases_PersistsAndReplacesOnTheSameTimestamp()
     {
-        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6));
-        Db.WriteTickPhases(Ts, new TickPhaseTimings(10, 20, 30, 40, 50, 60));
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6, 7));
+
+        // Distinct values per phase, so a column wired to the wrong parameter
+        // fails here rather than passing on a coincidence.
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(10, 20, 30, 40, 50, 60, 70));
 
         Assert.Equal(1, Count("collector_tick_phase"));
         Assert.Equal(10, Real($"SELECT sampler_ms FROM collector_tick_phase WHERE ts = {Ts}"));
         Assert.Equal(20, Real($"SELECT machine_sample_ms FROM collector_tick_phase WHERE ts = {Ts}"));
         Assert.Equal(30, Real($"SELECT identity_ms FROM collector_tick_phase WHERE ts = {Ts}"));
         Assert.Equal(40, Real($"SELECT instance_ms FROM collector_tick_phase WHERE ts = {Ts}"));
-        Assert.Equal(50, Real($"SELECT sample_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
-        Assert.Equal(60, Real($"SELECT machine_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(50, Real($"SELECT row_build_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(60, Real($"SELECT sample_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(70, Real($"SELECT machine_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
     }
 
     /// <summary>
