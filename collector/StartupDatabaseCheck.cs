@@ -68,6 +68,8 @@ public static class StartupDatabaseCheck
 
         If the file cannot be opened, check that no other program has it open, that
         the drive it is on is available, and that this account can write to that
-        folder. To record somewhere else instead, set databasePath in telltale.json.
+        folder.
+
+        To record somewhere else instead, set databasePath in telltale.json.
         """;
 }

@@ -365,10 +365,15 @@ public class SchemaMigrationTests : IDisposable
         // way; only the shape shows the half applied table left behind.
         //
         // Verified by mutation: removing the transaction from Apply fails this
-        // test. So does removing the cmd.Transaction assignment, for a separate
-        // reason worth knowing, which is that Microsoft.Data.Sqlite requires a
-        // command to carry the connection pending transaction and raises
-        // InvalidOperationException rather than SqliteException when it does not.
+        // test.
+        //
+        // Removing only the cmd.Transaction assignment does not, and this has
+        // been checked rather than reasoned about, twice, because it reads like
+        // an omission and invites correction. On Microsoft.Data.Sqlite 10.0.11,
+        // the version pinned in Directory.Packages.props, a transaction belongs
+        // to the connection, so BeginTransaction covers every command on it and
+        // the rollback still happens. The assignment stays as a statement of
+        // intent, not because anything here depends on it.
         Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(conn));
         Assert.Equal(shapeBefore, Shape(conn));
     }
