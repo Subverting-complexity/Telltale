@@ -752,73 +752,11 @@ public sealed class Database : IDisposable
 
             if (isMachine && !isReRollup)
             {
-                cmd.CommandText = $"""
-                    WITH last_total AS (
-                        SELECT bucket_ts, memory_total_mb
-                        FROM (
-                            SELECT (ts / @bucket) * @bucket AS bucket_ts, memory_total_mb,
-                                   ROW_NUMBER() OVER (
-                                       PARTITION BY ts / @bucket ORDER BY ts DESC) AS rn
-                            FROM {sourceTable}
-                            WHERE ts < @cutoff)
-                        WHERE rn = 1)
-                    INSERT INTO {targetTable}
-                        (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
-                         commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
-                         disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
-                    SELECT (s.ts / @bucket) * @bucket,
-                           AVG(s.cpu_pct), MAX(s.cpu_pct), AVG(s.memory_avail_mb),
-                           MAX(lt.memory_total_mb),
-                           MAX(s.commit_mb), SUM(s.hard_faults),
-                           AVG(s.disk_read_ms), AVG(s.disk_write_ms),
-                           AVG(s.disk_busy_pct), MAX(s.disk_busy_pct),
-                           AVG(s.net_kbps), AVG(s.gpu_busy_pct), COUNT(*)
-                    FROM {sourceTable} s
-                    LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
-                    WHERE s.ts < @cutoff
-                      AND NOT EXISTS (
-                          SELECT 1 FROM {targetTable} t
-                          WHERE t.ts = (s.ts / @bucket) * @bucket)
-                    GROUP BY s.ts / @bucket
-                    """;
+                cmd.CommandText = BuildMachineRawRollupSql(sourceTable, targetTable);
             }
             else if (isMachine && isReRollup)
             {
-                cmd.CommandText = $"""
-                    WITH last_total AS (
-                        SELECT bucket_ts, memory_total_mb
-                        FROM (
-                            SELECT (ts / @bucket) * @bucket AS bucket_ts, memory_total_mb,
-                                   ROW_NUMBER() OVER (
-                                       PARTITION BY ts / @bucket ORDER BY ts DESC) AS rn
-                            FROM {sourceTable}
-                            WHERE ts < @cutoff)
-                        WHERE rn = 1)
-                    INSERT INTO {targetTable}
-                        (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
-                         commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
-                         disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
-                    SELECT (s.ts / @bucket) * @bucket,
-                           {WeightedAvg("s.cpu_pct_avg", "s.sample_count")},
-                           MAX(s.cpu_pct_max),
-                           {WeightedAvg("s.memory_avail_mb_avg", "s.sample_count")},
-                           MAX(lt.memory_total_mb),
-                           MAX(s.commit_mb_max), SUM(s.hard_faults_total),
-                           {WeightedAvg("s.disk_read_ms_avg", "s.sample_count")},
-                           {WeightedAvg("s.disk_write_ms_avg", "s.sample_count")},
-                           {WeightedAvg("s.disk_busy_pct_avg", "s.sample_count")},
-                           MAX(s.disk_busy_pct_max),
-                           {WeightedAvg("s.net_kbps_avg", "s.sample_count")},
-                           {WeightedAvg("s.gpu_busy_pct_avg", "s.sample_count")},
-                           SUM(s.sample_count)
-                    FROM {sourceTable} s
-                    LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
-                    WHERE s.ts < @cutoff
-                      AND NOT EXISTS (
-                          SELECT 1 FROM {targetTable} t
-                          WHERE t.ts = (s.ts / @bucket) * @bucket)
-                    GROUP BY s.ts / @bucket
-                    """;
+                cmd.CommandText = BuildMachineReRollupSql(sourceTable, targetTable);
             }
             else if (!isMachine && !isReRollup)
             {
@@ -893,6 +831,74 @@ public sealed class Database : IDisposable
     private static string WeightedAvg(string column, string weight) =>
         $"SUM({column} * {weight}) / " +
         $"NULLIF(SUM(CASE WHEN {column} IS NULL THEN 0 ELSE {weight} END), 0)";
+
+    internal static string BuildMachineRawRollupSql(string sourceTable, string targetTable) =>
+        $"""
+        WITH last_total AS (
+            SELECT bucket_ts, memory_total_mb
+            FROM (
+                SELECT (ts / @bucket) * @bucket AS bucket_ts, memory_total_mb,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ts / @bucket ORDER BY ts DESC) AS rn
+                FROM {sourceTable}
+                WHERE ts < @cutoff)
+            WHERE rn = 1)
+        INSERT INTO {targetTable}
+            (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+             commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+        SELECT (s.ts / @bucket) * @bucket,
+               AVG(s.cpu_pct), MAX(s.cpu_pct), AVG(s.memory_avail_mb),
+               MAX(lt.memory_total_mb),
+               MAX(s.commit_mb), SUM(s.hard_faults),
+               AVG(s.disk_read_ms), AVG(s.disk_write_ms),
+               AVG(s.disk_busy_pct), MAX(s.disk_busy_pct),
+               AVG(s.net_kbps), AVG(s.gpu_busy_pct), COUNT(*)
+        FROM {sourceTable} s
+        LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
+        WHERE s.ts < @cutoff
+          AND NOT EXISTS (
+              SELECT 1 FROM {targetTable} t
+              WHERE t.ts = (s.ts / @bucket) * @bucket)
+        GROUP BY s.ts / @bucket
+        """;
+
+    internal static string BuildMachineReRollupSql(string sourceTable, string targetTable) =>
+        $"""
+        WITH last_total AS (
+            SELECT bucket_ts, memory_total_mb
+            FROM (
+                SELECT (ts / @bucket) * @bucket AS bucket_ts, memory_total_mb,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ts / @bucket ORDER BY ts DESC) AS rn
+                FROM {sourceTable}
+                WHERE ts < @cutoff)
+            WHERE rn = 1)
+        INSERT INTO {targetTable}
+            (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+             commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+        SELECT (s.ts / @bucket) * @bucket,
+               {WeightedAvg("s.cpu_pct_avg", "s.sample_count")},
+               MAX(s.cpu_pct_max),
+               {WeightedAvg("s.memory_avail_mb_avg", "s.sample_count")},
+               MAX(lt.memory_total_mb),
+               MAX(s.commit_mb_max), SUM(s.hard_faults_total),
+               {WeightedAvg("s.disk_read_ms_avg", "s.sample_count")},
+               {WeightedAvg("s.disk_write_ms_avg", "s.sample_count")},
+               {WeightedAvg("s.disk_busy_pct_avg", "s.sample_count")},
+               MAX(s.disk_busy_pct_max),
+               {WeightedAvg("s.net_kbps_avg", "s.sample_count")},
+               {WeightedAvg("s.gpu_busy_pct_avg", "s.sample_count")},
+               SUM(s.sample_count)
+        FROM {sourceTable} s
+        LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
+        WHERE s.ts < @cutoff
+          AND NOT EXISTS (
+              SELECT 1 FROM {targetTable} t
+              WHERE t.ts = (s.ts / @bucket) * @bucket)
+        GROUP BY s.ts / @bucket
+        """;
 
     /// <summary>
     /// Rounds a timestamp down to the start of the bucket containing it. C# integer
