@@ -46,25 +46,21 @@ An approved PR squash-merges and its branch is deleted, with no human step.
 
 Both enforcement layers are active. GitHub enforces the CI gate through
 branch protection on `main` (required checks: `Backend tests`,
-`Frontend tests`), and `require-ci-before-merge: true` makes the skill wait
-for a green run rather than queueing a merge that GitHub would hold anyway.
+`Frontend tests`, `Review complete`), and `require-ci-before-merge: true` makes
+the skill wait for a green run rather than queueing a merge that GitHub would
+hold anyway.
 
 `bypass-ci-on-billing-failure` is `true`: if the only thing blocking an
 approved PR is a GitHub Actions billing or account failure, and the local
 quality gate passed on that commit, the merge proceeds. A genuine test,
 build, or lint failure is never bypassed.
 
-**This setting and the review gate below pull against each other, and you
-should know which way before you need it.** The bypass works by merging with
-admin rights, past branch protection. Enabling **Include administrators**,
-which the review gate requires, is exactly what stops admin rights doing that.
-So once both are set, a billing outage strands every approved PR with no
-automated way through, in a repository that otherwise runs unattended.
-
-That is the intended trade: the review gate is worth more than the bypass,
-because a billing outage is visible and rare while a premature merge is silent.
-The manual way through a billing outage is to turn **Include administrators**
-off, merge, and turn it back on. Nothing automates that, deliberately.
+This bypass still works, because **Include administrators** is deliberately
+off. See the review gate below for why. If that decision is ever reversed, the
+bypass stops working, since it operates by merging with admin rights past
+branch protection and admin enforcement is exactly what prevents that. The
+manual way through a billing outage would then be to turn admin enforcement
+off, merge, and turn it back on, which nothing automates.
 
 `bypass-ci-when-no-pipeline` is `false` and must stay so — this repo has an
 active workflow, and the two bypass settings are mutually exclusive.
@@ -86,18 +82,36 @@ failing check would leave an approved pull request that received a fix push
 blocked forever with nothing able to re-run it. Re-running the check by hand
 does not help either, because a re-run replays the same event.
 
-Two settings in branch protection on `main` make it real, and the file is inert
-without them:
+One setting in branch protection on `main` makes it real, and the file is inert
+without it:
 
-| Setting | Why |
-| --- | --- |
-| `Review complete` listed in required status checks | GitHub waits for every required check before completing a merge, queued or direct. This is what makes the label binding. |
-| **Include administrators** enabled | The agent merges as an account with admin on this repository, and a required check does not block an admin merge while admin enforcement is off. This is not a theoretical bypass: the review skill's own merge step retries with `gh pr merge --admin` when branch protection refuses, so without this the gate is defeated automatically, with nobody choosing to defeat it. |
+| Setting | State | Why |
+| --- | --- | --- |
+| `Review complete` listed in required status checks | **Enabled** | GitHub's auto-merge waits for every required check before completing a merge, whatever admin enforcement says. This is what makes the label binding, and it is the setting that carries the guarantee. |
+| **Include administrators** (`enforce_admins`) | **Deliberately off** | Would additionally close the direct `gh pr merge --admin` path. Judged not worth its cost here. Reasoning below. |
 
-Adding only the required check still closes the `gh pr merge --auto` path,
-because GitHub's auto-merge waits for required checks whatever admin
-enforcement says. It leaves the direct-merge path open, and the direct path is
-the one #72 took.
+**Why admin enforcement is off, decided 2026-08-25.** The guarantee this repo
+wants is narrow: nothing merges *while a review is still running*. The required
+check delivers that on its own. During a review the pull request carries
+`claude-reviewing`, which is not an approval, so `Review complete` is red and an
+armed auto-merge waits.
+
+The remaining path admin enforcement would close is the review skill's own
+`gh pr merge --admin` retry, and tracing when that fires shows it does not
+breach the guarantee. The skill reaches it only after its review has finished
+and it has applied `claude-approved`, in the seconds before the gate job
+re-runs. The review is complete by then; the merge is merely ahead of the
+check confirming it.
+
+What is given up: nothing prevents some *other* process calling
+`gh pr merge --admin` on a pull request mid-review. The review skill will not,
+but the `execute` skill has its own merge path, and any process running as an
+admin account could. That residual risk was accepted knowingly, against the
+cost of admin enforcement, which is losing every manual override including the
+billing-outage escape hatch above.
+
+If a premature merge ever happens again by a route the required check does not
+cover, this is the decision to revisit first.
 
 **If a pull request is ever stuck** carrying `claude-approved` with a red
 `Review complete`, the recovery is to remove the label and re-apply it, which
@@ -113,6 +127,15 @@ assumed. It merged five minutes after opening, carrying `claude-reviewing`, with
 no verdict recorded, while two reviewers were still running and the claim ref
 was held. The findings that review had already produced were lost from the merge
 and had to be reapplied separately in PR #79.
+
+**PR #79 is the second worked example, and the reason the table above now
+records state as well as intent.** Adding the workflow was not enough: the
+required status check was never actually added to branch protection, so the job
+ran, reported, and was ignored for as long as it existed. #79 merged carrying
+`claude-needs-re-review` with `Review complete` red, and its re-review ran
+against an already-merged pull request. Both incidents had correct
+documentation and wrong configuration, which is why this section names what is
+switched on rather than only what should be. See #85.
 
 ## Hard Non-Compliance Gates
 
