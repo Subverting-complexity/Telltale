@@ -31,7 +31,13 @@ static class DefaultBrowser
             if (command?.GetValue(null) is not string shellOpen)
                 return null;
 
-            return AppWindowLauncher.ParseShellOpenCommand(shellOpen);
+            var executable = AppWindowLauncher.ParseShellOpenCommand(shellOpen);
+
+            // A bare name here would be resolved by the shell's search order, which
+            // includes the current directory before the system ones. The registry
+            // value is a full path in every normal case, so anything else is not
+            // worth launching on the strength of.
+            return executable is not null && Path.IsPathRooted(executable) ? executable : null;
         }
         catch (Exception ex) when (ex is System.Security.SecurityException
                                       or UnauthorizedAccessException

@@ -8,9 +8,19 @@
  * screen. The page is therefore the only thing that knows, and this is how it
  * says so: a ping while it is open, and one message on the way out.
  *
- * The standalone viewer executable does not serve these paths and answers 404.
- * That is expected and ignored, because a viewer with no listener to shut down
- * has nothing to do with the answer.
+ * Two things travel with each message. A token, which Telltale put in the URL it
+ * opened this window on, and which no other page can read. And an id for this
+ * window, so that closing one window does not stop the server under another one
+ * that is still open.
+ *
+ * Without the token any page the user happened to have open in another tab could
+ * post to the closing endpoint and take this window's server away, or poll the
+ * ping endpoint and hold it open for exactly the hours it is meant to be shut.
+ * Neither needs to read a reply to work, so a browser sends both without asking
+ * permission first.
+ *
+ * The standalone viewer executable does not serve these paths and opens no
+ * window of its own, so there is no token, and this does nothing at all.
  */
 
 /** How often an open window says it is still there. */
@@ -20,6 +30,10 @@ const PING_PATH = '/api/session/ping';
 const CLOSE_PATH = '/api/session/closed';
 
 export interface KeepaliveOptions {
+  /** The token Telltale put in this window's URL. Absent means do nothing. */
+  token?: string | null;
+  /** Identifies this window. Defaults to a fresh random id per page load. */
+  windowId?: string;
   /** Sends a one-way POST that expects no reply. */
   send?: (path: string) => void;
   /** Subscribes to the page going away, and returns the unsubscribe. */
@@ -34,19 +48,47 @@ export interface KeepaliveOptions {
  * is not the same event as the window going away.
  */
 export function startSessionKeepalive(options: KeepaliveOptions = {}): () => void {
+  const token = options.token !== undefined ? options.token : tokenFromUrl();
+  if (!token) return () => {};
+
+  const windowId = options.windowId ?? newWindowId();
   const send = options.send ?? sendOneWay;
   const onPageHide = options.onPageHide ?? subscribeToPageHide;
 
+  const query = `?s=${encodeURIComponent(token)}&c=${encodeURIComponent(windowId)}`;
+
   // Sent immediately as well as on the interval, so a window that opens and is
   // closed again inside the first interval has still been seen.
-  send(PING_PATH);
-  const timer = setInterval(() => send(PING_PATH), PING_INTERVAL_MS);
-  const stopListening = onPageHide(() => send(CLOSE_PATH));
+  send(PING_PATH + query);
+  const timer = setInterval(() => send(PING_PATH + query), PING_INTERVAL_MS);
+  const stopListening = onPageHide(() => send(CLOSE_PATH + query));
 
   return () => {
     clearInterval(timer);
     stopListening();
   };
+}
+
+/** Reads the token Telltale put in the URL it opened this window on. */
+function tokenFromUrl(): string | null {
+  if (typeof location === 'undefined') return null;
+  try {
+    return new URLSearchParams(location.search).get('s');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A fresh id for this page load.
+ *
+ * It only has to be different from the other windows Telltale has open, so a
+ * random value is enough and `randomUUID` is not worth requiring: it is missing
+ * on any browser serving this page over plain http without a secure context.
+ */
+function newWindowId(): string {
+  const random = Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}-${random}`;
 }
 
 /**
@@ -61,8 +103,8 @@ function sendOneWay(path: string): void {
     return;
   }
 
-  // A failure here means the standalone viewer, or an application that has
-  // already gone. Neither is something this page can do anything about.
+  // A failure here means an application that has already gone, which is not
+  // something this page can do anything about.
   void fetch(path, { method: 'POST', keepalive: true }).catch(() => {});
 }
 

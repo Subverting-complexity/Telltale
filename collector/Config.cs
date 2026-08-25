@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Telltale.Collector;
@@ -51,6 +52,19 @@ public sealed partial class TelltaleConfig
     public const int DefaultViewerPort = 41821;
     public ThresholdConfig Thresholds { get; set; } = new();
 
+    /// <summary>
+    /// Why telltale.json could not be read, or null when there was nothing wrong.
+    /// </summary>
+    /// <remarks>
+    /// Recorded rather than thrown. A malformed file used to leave an unhandled
+    /// JsonException, which the console build turned into a stack trace and the
+    /// windowed build turned into nothing at all: the application simply did not
+    /// appear. Validation reports it like any other configuration mistake, and the
+    /// values fall back to the defaults so nothing runs on a half-read file.
+    /// </remarks>
+    [JsonIgnore]
+    public string? LoadError { get; private set; }
+
     public string ResolvedDatabasePath =>
         DatabasePath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -62,17 +76,48 @@ public sealed partial class TelltaleConfig
         if (!File.Exists(configPath))
             configPath = Path.Combine(Environment.CurrentDirectory, "telltale.json");
 
+        return LoadFrom(configPath);
+    }
+
+    /// <summary>Reads one named configuration file.</summary>
+    /// <remarks>
+    /// Separate from <see cref="Load"/> so that where the file is found and what
+    /// happens when it cannot be read are two things rather than one. Only the
+    /// second is worth testing, and testing it through <see cref="Load"/> would
+    /// mean moving the process's working directory around.
+    /// </remarks>
+    public static TelltaleConfig LoadFrom(string configPath)
+    {
         if (!File.Exists(configPath))
             return new TelltaleConfig();
 
-        var json = File.ReadAllText(configPath);
-        var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-        return JsonSerializer.Deserialize<TelltaleConfig>(json, options) ?? new TelltaleConfig();
+        try
+        {
+            var json = File.ReadAllText(configPath);
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            return JsonSerializer.Deserialize<TelltaleConfig>(json, options) ?? new TelltaleConfig();
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
+        {
+            return new TelltaleConfig
+            {
+                LoadError = $"{configPath} could not be read: {ex.Message}",
+            };
+        }
     }
 
     public List<string> Validate()
     {
         var errors = new List<string>();
+
+        // Reported first and on its own: every value below is a default that was
+        // used because the file could not be read, so listing them as well would
+        // bury the one thing that is actually wrong.
+        if (LoadError is not null)
+        {
+            errors.Add(LoadError);
+            return errors;
+        }
 
         // Checked here because nowhere else can report it. IsInSyncFolder calls
         // Path.GetFullPath, which throws on an empty or malformed path, and the

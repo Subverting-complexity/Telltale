@@ -74,8 +74,17 @@ sealed class SecondInstanceSignal : IDisposable
     public void Dispose()
     {
         _stopping.Set();
-        _listener?.Join(TimeSpan.FromSeconds(2));
-        _requested.Dispose();
-        _stopping.Dispose();
+
+        // The handles are freed only once the waiting thread has definitely
+        // stopped using them. Disposing them while it is still in WaitAny would
+        // throw ObjectDisposedException on a background thread, which takes the
+        // whole process down during what is meant to be a clean shutdown. Both
+        // handles are released by the operating system when the process exits, so
+        // leaking them for the last moments of its life costs nothing.
+        if (_listener is null || _listener.Join(TimeSpan.FromSeconds(2)))
+        {
+            _requested.Dispose();
+            _stopping.Dispose();
+        }
     }
 }

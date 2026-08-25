@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -12,7 +13,7 @@ namespace Telltale.App;
 
 /// <summary>
 /// The HTTP listener that serves the Telltale window, started when the window is
-/// opened and stopped when it goes away.
+/// opened and stopped when the last one goes away.
 /// </summary>
 /// <remarks>
 /// The recorder runs all day. The listener must not. Merging the two executables
@@ -31,6 +32,12 @@ sealed class ViewerListener : IAsyncDisposable
     /// </remarks>
     public static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(90);
 
+    /// <summary>How long the last window must stay gone before the listener stops.</summary>
+    public static readonly TimeSpan Settle = TimeSpan.FromSeconds(5);
+
+    /// <summary>How long to wait for a first window that never arrives.</summary>
+    public static readonly TimeSpan StartupGrace = TimeSpan.FromSeconds(60);
+
     readonly string _databasePath;
     readonly int _preferredPort;
     readonly RollingLogFile? _log;
@@ -46,13 +53,24 @@ sealed class ViewerListener : IAsyncDisposable
         _log = log;
     }
 
-    /// <summary>The address the window is served on, or null when nothing is listening.</summary>
+    /// <summary>The address being served, or null when nothing is listening.</summary>
     public string? Url { get; private set; }
+
+    /// <summary>
+    /// The address to open a window on, which carries this listener's token.
+    /// </summary>
+    /// <remarks>
+    /// The token is what stops any other page the user has open from driving the
+    /// session endpoints. It is not a secret worth protecting beyond that: it lives
+    /// only as long as this listener, it authorises nothing but "this window is
+    /// open" and "this window has gone", and it is on loopback throughout.
+    /// </remarks>
+    public string? WindowUrl { get; private set; }
 
     public bool IsRunning => _app is not null;
 
-    /// <summary>Whether the window has gone away and the listener should be stopped.</summary>
-    public bool WindowHasGone() => _session?.ShouldStop() ?? false;
+    /// <summary>Whether every window has gone and the listener should be stopped.</summary>
+    public bool EveryWindowHasGone() => _session?.ShouldStop() ?? false;
 
     /// <summary>
     /// Starts listening, or returns the address already being served.
@@ -65,23 +83,24 @@ sealed class ViewerListener : IAsyncDisposable
     /// </remarks>
     public async Task<string> StartAsync(CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        // ConfigureAwait(false) throughout, here and in every await below. These
+        // are called from the message loop, and a continuation captured against it
+        // never runs once Application.Run has returned. That would leave this gate
+        // held forever and hang the shutdown that is waiting on it.
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (Url is not null)
-            {
-                _session!.Touch();
-                return Url;
-            }
+            if (WindowUrl is not null)
+                return WindowUrl;
 
             try
             {
-                return await StartOnAsync(_preferredPort, cancellationToken);
+                return await StartOnAsync(_preferredPort, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (_preferredPort != 0 && IsPortUnavailable(ex))
             {
                 _log?.Append($"Port {_preferredPort} is not available, letting Windows choose one.");
-                return await StartOnAsync(0, cancellationToken);
+                return await StartOnAsync(0, cancellationToken).ConfigureAwait(false);
             }
         }
         finally
@@ -92,7 +111,7 @@ sealed class ViewerListener : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
             if (_app is null)
@@ -102,17 +121,18 @@ sealed class ViewerListener : IAsyncDisposable
             _app = null;
             _session = null;
             Url = null;
+            WindowUrl = null;
 
             try
             {
-                await app.StopAsync();
+                await app.StopAsync().ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {
                 // Already on its way down.
             }
 
-            await app.DisposeAsync();
+            await app.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
@@ -122,7 +142,8 @@ sealed class ViewerListener : IAsyncDisposable
 
     async Task<string> StartOnAsync(int port, CancellationToken cancellationToken)
     {
-        var session = new SessionTracker(IdleTimeout);
+        var session = new SessionTracker(IdleTimeout, Settle, StartupGrace);
+        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
         var webRoot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
         Directory.CreateDirectory(webRoot);
 
@@ -133,9 +154,10 @@ sealed class ViewerListener : IAsyncDisposable
         });
 
         // Loopback only, asserted here rather than inherited from a Kestrel
-        // default. AllowedHosts is set for the same reason: the shipped viewer
-        // carried it in appsettings.json, and this host has no appsettings.json to
-        // carry it in.
+        // default. AllowedHosts is set the same way: an appsettings.json does
+        // arrive in this application's output, carried along by the viewer project
+        // reference, but a security property that matters this much should not
+        // depend on a file this project neither owns nor declares.
         builder.WebHost.UseUrls($"http://{ViewerDefaults.LoopbackAddress}:{port}");
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -146,56 +168,83 @@ sealed class ViewerListener : IAsyncDisposable
         if (_log is not null)
             builder.Logging.AddProvider(new FileLoggerProvider(_log));
 
-        // Same reason as the recorder: the lifetime's console banner is written
-        // for a console, and this application has none.
-        builder.Services.Configure<Microsoft.Extensions.Hosting.ConsoleLifetimeOptions>(
+        // Request logging is filtered out for the same reason. A request line
+        // carries its query string, and /api/processes and /api/process-group put
+        // a search term and a process name there, so at Information every one of
+        // those would be written to a file this application promises is safe.
+        builder.Logging.AddFilter("Microsoft.AspNetCore", LogLevel.Warning);
+
+        // The lifetime's console banner is written for a console, and this
+        // application has none.
+        builder.Services.Configure<ConsoleLifetimeOptions>(
             options => options.SuppressStatusMessages = true);
 
         var app = builder.Build();
 
-        // Registered before anything that can answer, so every request counts as
-        // the window still being there. The session endpoints are excluded because
-        // one of them is the window saying it has gone.
-        app.Use(async (context, next) =>
-        {
-            if (!context.Request.Path.StartsWithSegments("/api/session"))
-                session.Touch();
-            await next(context);
-        });
-
         app.MapTelltaleApi(_databasePath);
 
-        // Only the single-process build maps these. The viewer executable does not,
-        // because it has no listener lifetime to manage, and the page treats a 404
-        // from them as "nothing to tell".
-        app.MapPost("/api/session/ping", () =>
-        {
-            session.Touch();
-            return Results.NoContent();
-        });
+        // Only the single-process build maps these, and only a page holding this
+        // listener's token can reach them. Without the token any page the user has
+        // open in another tab could post to the close endpoint and take the window
+        // out from under them, or poll the ping endpoint and hold the socket open
+        // for the hours this design exists to close it. Neither needs to read the
+        // response to work, so a browser sends both without asking us first.
+        app.MapPost("/api/session/ping", (HttpRequest request) =>
+            ForWindow(request, token, id => { session.Ping(id); }));
 
-        app.MapPost("/api/session/closed", () =>
-        {
-            session.MarkClosed();
-            return Results.NoContent();
-        });
+        app.MapPost("/api/session/closed", (HttpRequest request) =>
+            ForWindow(request, token, id => { session.Close(id); }));
 
         try
         {
-            await app.StartAsync(cancellationToken);
+            await app.StartAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
-            await app.DisposeAsync();
+            await app.DisposeAsync().ConfigureAwait(false);
             throw;
         }
 
-        _app = app;
-        _session = session;
-        Url = app.Urls.FirstOrDefault()
+        var url = app.Urls.FirstOrDefault()
             ?? $"http://{ViewerDefaults.LoopbackAddress}:{port}";
-        _log?.Append($"Telltale window listening on {Url}");
-        return Url;
+
+        _session = session;
+        Url = url;
+        WindowUrl = $"{url}/?s={token}";
+        // Assigned last: everything above has to be in place before IsRunning can
+        // report true, or a caller could act on a half-built listener.
+        _app = app;
+
+        _log?.Append($"Telltale window listening on {url}");
+        return WindowUrl;
+    }
+
+    /// <summary>
+    /// Runs <paramref name="action"/> for the window named in the request, if the
+    /// request carries this listener's token.
+    /// </summary>
+    /// <returns>
+    /// Not Found when the token is wrong or the window is not named. Not Forbidden:
+    /// there is nothing to be gained by confirming to a caller that guessed wrong
+    /// that it had found the right endpoint.
+    /// </returns>
+    static IResult ForWindow(HttpRequest request, string token, Action<string> action)
+    {
+        string? presented = request.Query["s"];
+        string? windowId = request.Query["c"];
+
+        if (string.IsNullOrEmpty(presented) || string.IsNullOrEmpty(windowId))
+            return Results.NotFound();
+
+        if (!CryptographicOperations.FixedTimeEquals(
+                System.Text.Encoding.UTF8.GetBytes(presented),
+                System.Text.Encoding.UTF8.GetBytes(token)))
+        {
+            return Results.NotFound();
+        }
+
+        action(windowId);
+        return Results.NoContent();
     }
 
     /// <summary>
@@ -225,7 +274,7 @@ sealed class ViewerListener : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await StopAsync();
+        await StopAsync().ConfigureAwait(false);
         _gate.Dispose();
     }
 }

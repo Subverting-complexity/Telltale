@@ -82,9 +82,11 @@ sealed class TrayApplicationContext : ApplicationContext
     /// Starts the listener if it is not already running, and opens the window on it.
     /// </summary>
     /// <remarks>
-    /// Safe to call while a window is already open. The browser gets a second
-    /// request for the same address and brings forward the window it already has,
-    /// which is what someone launching Telltale a second time is asking for.
+    /// Safe to call while a window is already open. What the browser does with a
+    /// second --app request for the same address is its own business: it may focus
+    /// the window it has or open another one, and either is a reasonable answer to
+    /// someone asking for the window. A second window is tracked separately, so
+    /// closing one does not stop the listener under the other.
     /// </remarks>
     public async void OpenWindow()
     {
@@ -94,12 +96,12 @@ sealed class TrayApplicationContext : ApplicationContext
         _opening = true;
         try
         {
-            var url = await _listener.StartAsync();
-            if (!AppWindowLauncher.Open(url, DefaultBrowser.ExecutablePath()))
+            var windowUrl = await _listener.StartAsync();
+            if (!AppWindowLauncher.Open(windowUrl, DefaultBrowser.ExecutablePath()))
             {
                 _icon.ShowBalloonTip(
                     10_000, "Telltale",
-                    $"No browser could be started. Open {url} to see your data.",
+                    $"No browser could be started. Open {windowUrl} to see your data.",
                     ToolTipIcon.Warning);
             }
         }
@@ -118,13 +120,13 @@ sealed class TrayApplicationContext : ApplicationContext
 
     async void StopListenerIfWindowHasGone()
     {
-        if (_quitting || !_listener.IsRunning || !_listener.WindowHasGone())
+        if (_quitting || !_listener.IsRunning || !_listener.EveryWindowHasGone())
             return;
 
         try
         {
             await _listener.StopAsync();
-            _log?.Append("Telltale window closed, listener stopped.");
+            _log?.Append("Every Telltale window closed, listener stopped.");
         }
         catch (Exception ex)
         {

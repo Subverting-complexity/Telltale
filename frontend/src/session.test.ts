@@ -6,13 +6,19 @@ describe('session keepalive', () => {
   let pageHideListener: (() => void) | null;
   let unsubscribed: boolean;
 
-  const options = () => ({
+  const options = (extra: Record<string, unknown> = {}) => ({
+    token: 'TOKEN123',
+    windowId: 'window-a',
     send: (path: string) => { sent.push(path); },
     onPageHide: (listener: () => void) => {
       pageHideListener = listener;
       return () => { unsubscribed = true; };
     },
+    ...extra,
   });
+
+  const ping = '/api/session/ping?s=TOKEN123&c=window-a';
+  const closed = '/api/session/closed?s=TOKEN123&c=window-a';
 
   beforeEach(() => {
     sent = [];
@@ -30,7 +36,7 @@ describe('session keepalive', () => {
     // have been seen, or the listener shuts down under a live page.
     startSessionKeepalive(options());
 
-    expect(sent).toEqual(['/api/session/ping']);
+    expect(sent).toEqual([ping]);
   });
 
   it('keeps saying so while the window stays open', () => {
@@ -38,12 +44,7 @@ describe('session keepalive', () => {
 
     vi.advanceTimersByTime(PING_INTERVAL_MS * 3);
 
-    expect(sent).toEqual([
-      '/api/session/ping',
-      '/api/session/ping',
-      '/api/session/ping',
-      '/api/session/ping',
-    ]);
+    expect(sent).toEqual([ping, ping, ping, ping]);
   });
 
   it('sends one closing message when the page goes away', () => {
@@ -52,7 +53,36 @@ describe('session keepalive', () => {
 
     pageHideListener?.();
 
-    expect(sent).toEqual(['/api/session/closed']);
+    expect(sent).toEqual([closed]);
+  });
+
+  it('identifies this window on every message', () => {
+    // Without an id per window, closing one window would stop the server under
+    // another one that is still open.
+    startSessionKeepalive(options({ windowId: 'window-b' }));
+    pageHideListener?.();
+
+    expect(sent).toEqual([
+      '/api/session/ping?s=TOKEN123&c=window-b',
+      '/api/session/closed?s=TOKEN123&c=window-b',
+    ]);
+  });
+
+  it('carries the token Telltale put in the URL', () => {
+    startSessionKeepalive(options({ token: 'a b&c=d' }));
+
+    expect(sent).toEqual(['/api/session/ping?s=a%20b%26c%3Dd&c=window-a']);
+  });
+
+  it('does nothing at all without a token', () => {
+    // This is the standalone viewer, which serves no session endpoints and has
+    // no listener lifetime to manage. Pinging it would be noise.
+    const stop = startSessionKeepalive(options({ token: null }));
+
+    vi.advanceTimersByTime(PING_INTERVAL_MS * 5);
+    stop();
+
+    expect(sent).toEqual([]);
   });
 
   it('stops pinging once it has been stopped', () => {
@@ -85,7 +115,7 @@ describe('session keepalive', () => {
     expect(sent).toEqual([]);
 
     vi.advanceTimersByTime(1);
-    expect(sent).toEqual(['/api/session/ping']);
+    expect(sent).toEqual([ping]);
   });
 
   it('pings well inside the timeout the application uses', () => {
