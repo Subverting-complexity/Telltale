@@ -52,12 +52,67 @@ for a green run rather than queueing a merge that GitHub would hold anyway.
 `bypass-ci-on-billing-failure` is `true`: if the only thing blocking an
 approved PR is a GitHub Actions billing or account failure, and the local
 quality gate passed on that commit, the merge proceeds. A genuine test,
-build, or lint failure is never bypassed. Note that branch protection is
-still in force, so a billing bypass only completes if the merging account
-has admin rights on the repo.
+build, or lint failure is never bypassed.
+
+**This setting and the review gate below pull against each other, and you
+should know which way before you need it.** The bypass works by merging with
+admin rights, past branch protection. Enabling **Include administrators**,
+which the review gate requires, is exactly what stops admin rights doing that.
+So once both are set, a billing outage strands every approved PR with no
+automated way through, in a repository that otherwise runs unattended.
+
+That is the intended trade: the review gate is worth more than the bypass,
+because a billing outage is visible and rare while a premature merge is silent.
+The manual way through a billing outage is to turn **Include administrators**
+off, merge, and turn it back on. Nothing automates that, deliberately.
 
 `bypass-ci-when-no-pipeline` is `false` and must stay so — this repo has an
 active workflow, and the two bypass settings are mutually exclusive.
+
+### The review gate
+
+Auto-merge stays on. What is not allowed is a merge landing before the review
+has finished, and `.github/workflows/review-gate.yml` is what enforces that.
+
+The job is called `Review complete`. It reads the pull request's labels live
+rather than from the event payload, and passes only while `claude-approved` is
+among them.
+
+**A push retires the verdict.** On a new commit the job withdraws
+`claude-approved`, applies `claude-needs-re-review`, and fails. Withdrawing the
+label rather than only failing the check is what keeps the state recoverable:
+re-applying a label a pull request already carries fires no event, so a merely
+failing check would leave an approved pull request that received a fix push
+blocked forever with nothing able to re-run it. Re-running the check by hand
+does not help either, because a re-run replays the same event.
+
+Two settings in branch protection on `main` make it real, and the file is inert
+without them:
+
+| Setting | Why |
+| --- | --- |
+| `Review complete` listed in required status checks | GitHub waits for every required check before completing a merge, queued or direct. This is what makes the label binding. |
+| **Include administrators** enabled | The agent merges as an account with admin on this repository, and a required check does not block an admin merge while admin enforcement is off. This is not a theoretical bypass: the review skill's own merge step retries with `gh pr merge --admin` when branch protection refuses, so without this the gate is defeated automatically, with nobody choosing to defeat it. |
+
+Adding only the required check still closes the `gh pr merge --auto` path,
+because GitHub's auto-merge waits for required checks whatever admin
+enforcement says. It leaves the direct-merge path open, and the direct path is
+the one #72 took.
+
+**If a pull request is ever stuck** carrying `claude-approved` with a red
+`Review complete`, the recovery is to remove the label and re-apply it, which
+fires the event the job needs. Closing and reopening the pull request also
+works, since `reopened` is in the trigger list.
+
+This was added because the ordering had been held only by convention. A claim
+ref under `refs/claims/` and a review-state label are both invisible to a merge,
+so any process calling `gh pr merge` succeeded as soon as CI went green.
+
+PR #72 is the worked example, and the reason this is written down rather than
+assumed. It merged five minutes after opening, carrying `claude-reviewing`, with
+no verdict recorded, while two reviewers were still running and the claim ref
+was held. The findings that review had already produced were lost from the merge
+and had to be reapplied separately in PR #79.
 
 ## Hard Non-Compliance Gates
 
@@ -82,6 +137,14 @@ Any of these force a `Changes Requested` verdict regardless of other findings.
   deliberate decision, not an override here.
 - A migration with no test proving that a failure part way through rolls it back
   and leaves the recorded schema version untouched.
+- Any change to `.github/workflows/review-gate.yml`. For a `pull_request` event
+  the workflow runs from the head branch's own copy of the file, so a pull
+  request that edits the gate changes the gate that judges it. Deleting it fails
+  closed, because a required check that never reports blocks the merge, but a
+  diff that weakens the job body would report green on itself. This needs human
+  sign-off, and it matters more than it looks: a review agent told to fix a
+  failing required check could otherwise "fix" a red `Review complete` by
+  editing the thing that produced it.
 
 ## Tech Stack Review Rules
 

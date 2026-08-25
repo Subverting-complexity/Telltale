@@ -1,0 +1,113 @@
+name: Review gate
+
+# Stops a pull request merging while its review is still in flight.
+#
+# Auto-merge on approval is deliberate here. An approved pull request should go
+# in on its own once the tests are green, with no human step. What must not
+# happen is a merge landing before any reviewer has finished with it.
+#
+# Until this existed, nothing prevented that. The ordering was held only by
+# convention inside the agent workflow: a claim ref under refs/claims/, and a
+# review-state label. Neither is consulted by a merge. Branch protection asked
+# only for the two test jobs, so any process calling `gh pr merge` succeeded the
+# moment CI went green, and an enqueued `gh pr merge --auto` did the same thing
+# on GitHub's own schedule.
+#
+# PR #72 is the worked example. It merged five minutes after opening, carrying
+# claude-reviewing, with no verdict recorded, while two reviewers were still
+# running. The review findings it had already collected were lost from that
+# merge and had to be reapplied in PR #79.
+#
+# TWO SETTINGS ARE LOAD BEARING, and this file does nothing on its own without
+# them. Both live in branch protection on main:
+#
+#   1. This job ("Review complete") must be added to the required status checks.
+#   2. "Include administrators" must be on. The agent merges as an account with
+#      admin on this repository, and a required check does not block an admin
+#      merge while admin enforcement is off. This is not a theoretical bypass:
+#      the review skill's own merge step retries with `gh pr merge --admin` when
+#      branch protection refuses, so without this setting the gate is defeated
+#      automatically, with nobody choosing to defeat it.
+#
+# Adding only the required check still closes the `--auto` path, because
+# GitHub's auto-merge waits for required checks whatever admin enforcement says.
+# It leaves the direct-merge path open, and the direct path is the one #72 took.
+#
+# See docs/review.config.md, which is where both settings and the recovery
+# procedure are written down.
+
+on:
+  pull_request:
+    branches: [main]
+    # `edited` covers a base branch changed to main, which is the documented
+    # flow for a story chained off another story's branch.
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited, ready_for_review]
+
+# Runs queue rather than cancel. The job writes labels, so cancelling one part
+# way could leave the state half changed, and each run reads the live labels
+# anyway, so the last to finish reports the truth regardless.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review-state:
+    name: Review complete
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      ACTION: ${{ github.event.action }}
+    steps:
+      - name: Withdraw an approval that the new commits have outdated
+        if: github.event.action == 'synchronize'
+        run: |
+          # A verdict applies to the code the reviewer read, so a push retires
+          # it. Withdrawing the label rather than only failing the check is what
+          # makes the state recoverable: re-applying a label a pull request
+          # already carries fires no event, so without this an approved pull
+          # request that received a fix push would fail this check forever, with
+          # nothing left to re-run it.
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+          case ",${LABELS}," in
+            *,claude-approved,*)
+              echo "Withdrawing claude-approved: it was given to code that is no longer the head commit."
+              gh pr edit "$PR" --repo "$REPO" \
+                --remove-label claude-approved --add-label claude-needs-re-review
+              ;;
+            *)
+              echo "Not approved, so there is no verdict to withdraw."
+              ;;
+          esac
+
+      - name: Require a finished review
+        run: |
+          # Read live rather than from the event payload. The payload is a
+          # snapshot from when the event fired, and reconciling a verdict emits
+          # a removal and an addition, so a payload could describe a state that
+          # has already been superseded by the time this runs.
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+          echo "Labels on this pull request: ${LABELS:-none}"
+
+          # Belt and braces alongside the withdrawal above. If that step could
+          # not write the label, for any reason, a push still blocks the merge
+          # rather than riding in on the previous verdict.
+          if [ "$ACTION" = "synchronize" ]; then
+            echo "::error::New commits were pushed, so any earlier approval no longer applies to this code. The approval has been withdrawn and the merge stays blocked until the review runs again."
+            exit 1
+          fi
+
+          case ",${LABELS}," in
+            *,claude-approved,*)
+              echo "Review finished and approved. Merging is allowed."
+              exit 0
+              ;;
+          esac
+
+          echo "::error::This pull request has not been approved. Merging stays blocked until a review sets claude-approved. Current labels: ${LABELS:-none}."
+          exit 1
