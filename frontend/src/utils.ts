@@ -38,6 +38,42 @@ export function formatCpu(pct: number | null): string {
   return `${pct.toFixed(2)}%`;
 }
 
+/**
+ * Heading for a CPU figure exactly as the collector recorded it: processor time
+ * used over time elapsed, as a share of a single core. A process spread across
+ * four cores reads 400%.
+ *
+ * The two headings below exist because the dashboard shows both kinds side by
+ * side, and a percentage that does not say what it is a percentage of cannot be
+ * compared with the one next to it.
+ */
+export const CPU_OF_ONE_CORE = 'CPU % of one core';
+
+/**
+ * Heading for a CPU figure divided by the core count of the machine that was
+ * recorded, so it is a share of everything that machine can do and stops at
+ * 100%. This is the scale the machine gauge has always used.
+ */
+export const CPU_OF_ALL_CORES = 'CPU % of all cores';
+
+/**
+ * Converts a stored per core CPU figure into a share of the whole machine.
+ *
+ * `logicalProcessors` is the core count of the machine the recording was made
+ * on, which the viewer reads from the recording itself. A count below one cannot
+ * be divided by sensibly, so the figure is left on its recorded scale rather
+ * than turned into something larger than the truth.
+ */
+export function formatCpuOfAllCores(pct: number | null, logicalProcessors: number): string {
+  if (pct === null) return '-';
+
+  // Written as a negated lower bound so a NaN core count falls back too. A
+  // straight `< 1` is false for NaN, which would divide and render "NaN%".
+  if (!(logicalProcessors >= 1)) return formatCpu(pct);
+
+  return formatCpu(pct / logicalProcessors);
+}
+
 export function formatIo(kb: number | null): string {
   if (kb === null) return '-';
   if (kb >= 1048576) return `${(kb / 1048576).toFixed(1)} GB`;

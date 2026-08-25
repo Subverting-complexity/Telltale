@@ -19,7 +19,7 @@ public static class SchemaMigrations
     /// migration is added below, and change <c>schema.sql</c> to match, so a
     /// database created from scratch and one migrated up end at the same shape.
     /// </summary>
-    public const int LatestVersion = 2;
+    public const int LatestVersion = 4;
 
     /// <summary>
     /// One step, taking a database from the version before it to
@@ -27,13 +27,51 @@ public static class SchemaMigrations
     /// of its own: the real list holds a single entry that succeeds, which can
     /// demonstrate neither rollback nor ordering.
     /// </summary>
-    public sealed record Migration(int Version, string Description, string Sql);
+    /// <param name="IsAlreadyApplied">
+    /// Asked, before <paramref name="Sql"/> runs, whether the database already
+    /// carries this step's effect. A step that says yes is skipped and recorded
+    /// as reached, which is what lets a migration whose statements cannot be
+    /// written to survive a second run be replayed safely anyway.
+    ///
+    /// SQLite has no conditional form of <c>ALTER TABLE</c> or <c>CREATE TABLE</c>
+    /// that both tolerates a repeat and leaves the definition it stores identical
+    /// to the one in <c>schema.sql</c>. <c>IF NOT EXISTS</c> gives the first and
+    /// loses the second, and the shape of a migrated database is compared against
+    /// a fresh one statement by statement. Asking in C# gives both.
+    ///
+    /// Null means the statements are safe to run again on their own, which is how
+    /// the rollup merge in version 2 is written.
+    /// </param>
+    public sealed record Migration(
+        int Version,
+        string Description,
+        string Sql,
+        Func<SqliteConnection, bool>? IsAlreadyApplied = null);
 
     private static readonly IReadOnlyList<Migration> Ordered =
     [
         new(2, "merge duplicate process rollup rows and make (ts, instance_id) unique",
             MergeDuplicateProcessRollupsSql),
+        new(3, "record how long each phase of a sampling tick takes",
+            AddTickPhaseTableSql,
+            conn => HasTable(conn, "collector_tick_phase")),
+        new(4, "record the logical processor count of the machine being recorded",
+            AddMachineInfoTableSql,
+            conn => HasTable(conn, "machine_info")),
     ];
+
+    /// <summary>
+    /// Whether <paramref name="table"/> exists. Used as a migration's
+    /// <see cref="Migration.IsAlreadyApplied"/> check when the step creates one.
+    /// </summary>
+    private static bool HasTable(SqliteConnection conn, string table)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @name";
+        cmd.Parameters.AddWithValue("@name", table);
+
+        return cmd.ExecuteScalar() is not null;
+    }
 
     /// <summary>
     /// Reads the version a database is currently at. Zero means the version has
@@ -119,8 +157,16 @@ public static class SchemaMigrations
             {
                 cmd.Transaction = tx;
 
-                cmd.CommandText = migration.Sql;
-                cmd.ExecuteNonQuery();
+                // Asked inside the transaction, so a step cannot be judged against
+                // a database some other writer changes before its statements run.
+                // A step that is already carried still records its version below:
+                // the point of the migration is the shape, not the statements, and
+                // the shape is already there.
+                if (migration.IsAlreadyApplied?.Invoke(conn) != true)
+                {
+                    cmd.CommandText = migration.Sql;
+                    cmd.ExecuteNonQuery();
+                }
 
                 cmd.CommandText = "INSERT OR IGNORE INTO schema_version (version) VALUES (@version)";
                 cmd.Parameters.AddWithValue("@version", migration.Version);
@@ -257,5 +303,51 @@ public static class SchemaMigrations
         DROP INDEX IF EXISTS ix_s10m_ts;
         DROP INDEX IF EXISTS ux_s10m_ts_inst;
         CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
+        """;
+
+    /// <summary>
+    /// Version 3. Adds the table that records where a sampling tick spent its
+    /// time. Existing rows in <c>collector_health</c> keep their whole tick cost
+    /// and simply have no breakdown, which is the truth about them.
+    ///
+    /// Written out in full rather than with <c>IF NOT EXISTS</c> so the definition
+    /// SQLite stores is character for character the one in <c>schema.sql</c>, and a
+    /// migrated database is provably the same shape as a fresh one. Running it a
+    /// second time is prevented by the step's
+    /// <see cref="Migration.IsAlreadyApplied"/> check instead.
+    /// </summary>
+    private const string AddTickPhaseTableSql = """
+        CREATE TABLE collector_tick_phase (
+            ts                INTEGER PRIMARY KEY,
+            sampler_ms        REAL,
+            machine_sample_ms REAL,
+            identity_ms       REAL,
+            instance_ms       REAL,
+            row_build_ms      REAL,
+            sample_write_ms   REAL,
+            machine_write_ms  REAL
+        );
+        """;
+
+    /// <summary>
+    /// Version 4. Adds the table holding the logical processor count of the
+    /// machine being recorded, so the viewer can convert a per process CPU figure
+    /// using the count the recording was made on rather than the count of whatever
+    /// machine is reading it.
+    ///
+    /// The table is left empty here. Backfilling it would mean writing this
+    /// machine's core count against a recording that may have been made on
+    /// another, and a viewer that finds no row falls back to the live count, which
+    /// is exactly what it did before this table existed. An empty table is
+    /// therefore the honest state until the collector next starts and fills it in.
+    ///
+    /// Written out in full rather than with IF NOT EXISTS, for the reason given on
+    /// the version 3 step.
+    /// </summary>
+    private const string AddMachineInfoTableSql = """
+        CREATE TABLE machine_info (
+            id                 INTEGER PRIMARY KEY CHECK (id = 1),
+            logical_processors INTEGER NOT NULL
+        );
         """;
 }

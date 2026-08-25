@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, Fragment } from 'react';
 import { getHeatmap } from './api';
 import type { HeatmapBucket } from './types';
-import { formatSize, formatRate } from './utils';
+import { formatSize, formatRate, CPU_OF_ALL_CORES } from './utils';
 
 interface HeatmapViewProps {
   from: number;
@@ -12,7 +12,7 @@ interface HeatmapViewProps {
 type HeatmapMetric = 'cpu' | 'memory' | 'disk' | 'network';
 
 const METRICS: { key: HeatmapMetric; label: string; hue: number; format: (v: number) => string }[] = [
-  { key: 'cpu', label: 'CPU %', hue: 220, format: v => `${v.toFixed(1)}%` },
+  { key: 'cpu', label: CPU_OF_ALL_CORES, hue: 220, format: v => `${v.toFixed(1)}%` },
   { key: 'memory', label: 'Memory', hue: 150, format: v => formatSize(v) },
   { key: 'disk', label: 'Disk %', hue: 40, format: v => `${v.toFixed(1)}%` },
   { key: 'network', label: 'Network', hue: 270, format: v => formatRate(v) },

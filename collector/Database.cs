@@ -237,7 +237,7 @@ public sealed class Database : IDisposable
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY
         );
-        INSERT INTO schema_version VALUES (2);
+        INSERT INTO schema_version VALUES (4);
 
         CREATE TABLE process_instance (
             id           INTEGER PRIMARY KEY,
@@ -295,6 +295,20 @@ public sealed class Database : IDisposable
         CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
         CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
 
+        -- The machine the recording was made on. One row, rewritten whenever the
+        -- collector starts, because a recording describes one machine.
+        --
+        -- logical_processors is here so the viewer can convert a per process CPU figure
+        -- without asking the machine it happens to be running on. Every cpu_pct in
+        -- sample and its rollups is a share of one core, so a process spread over four
+        -- of them reads 400, while the machine gauge is a share of all of them and stops
+        -- at 100. Converting between the two needs this number, and reading it live is
+        -- wrong the moment a capture is opened somewhere else.
+        CREATE TABLE machine_info (
+            id                 INTEGER PRIMARY KEY CHECK (id = 1),
+            logical_processors INTEGER NOT NULL
+        );
+
         CREATE TABLE machine (
             ts              INTEGER PRIMARY KEY,
             cpu_pct         REAL,
@@ -343,6 +357,12 @@ public sealed class Database : IDisposable
             sample_count        INTEGER
         );
 
+        -- What the recorder cost the machine, one row per tick. cpu_pct is the
+        -- collector's own CPU on the same scale as sample.cpu_pct, a share of one core
+        -- rather than of the whole machine, and it is null when no rate could be
+        -- measured, which is the case on the first tick of a run. Both figures cover the
+        -- whole of Telltale.exe, which is the recorder plus the viewer window when it is
+        -- open, because they are one process.
         CREATE TABLE collector_health (
             ts              INTEGER PRIMARY KEY,
             cpu_pct         REAL,
@@ -351,8 +371,49 @@ public sealed class Database : IDisposable
             process_count   INTEGER,
             stored_count    INTEGER
         );
+
+        -- collector_health.sample_cost_ms is the whole tick as one number, which says
+        -- that a tick ran long but not where the time went. This table breaks the same
+        -- tick into the phases it is spent in, one row per tick, sharing the health
+        -- row's timestamp. The phases do not overlap and together they account for the
+        -- tick, so each column can be read as its share of the cost beside it:
+        --
+        --   sampler_ms         enumerating every running process
+        --   machine_sample_ms  reading the machine wide performance counters
+        --   identity_ms        finding the tick's distinct processes and resolving
+        --                      the paths of any not seen before
+        --   instance_ms        resolving a database row id for each process
+        --   row_build_ms       working out each process's CPU and I/O since last tick
+        --   sample_write_ms    writing the tick's sample rows, and forgetting the
+        --                      processes that have since gone
+        --   machine_write_ms   writing the tick's machine row
+        --
+        -- It is a separate table rather than more columns on collector_health because a
+        -- migration can add a table whose definition is written out in full, and cannot
+        -- add a column without SQLite rewriting the stored definition into a shape this
+        -- file cannot reproduce.
+        CREATE TABLE collector_tick_phase (
+            ts                INTEGER PRIMARY KEY,
+            sampler_ms        REAL,
+            machine_sample_ms REAL,
+            identity_ms       REAL,
+            instance_ms       REAL,
+            row_build_ms      REAL,
+            sample_write_ms   REAL,
+            machine_write_ms  REAL
+        );
         """;
 
+    /// <summary>
+    /// Resolves one process instance row, creating it if it is new.
+    ///
+    /// The sampling loop does not call this: it resolves a whole tick at once
+    /// through <see cref="UpsertProcessInstances"/>, because doing it a row at a
+    /// time was what made a tick take tens of seconds. This is kept as the
+    /// single-row statement of the same behaviour, and the batch path is tested
+    /// against it, so a change to one that does not match the other fails. It has
+    /// no production caller by design rather than by neglect.
+    /// </summary>
     public long GetOrCreateProcessInstance(int pid, long createTime, string name, string? path,
         string? commandLine, long timestamp)
     {
@@ -393,6 +454,99 @@ public sealed class Database : IDisposable
 
             return GetLastInsertRowIdLocked();
         }
+    }
+
+    /// <summary>
+    /// Resolves every process instance seen in one tick, creating the rows that
+    /// are new and moving <c>last_seen</c> on the rows that are not, and returns
+    /// the row id for each.
+    ///
+    /// This is <see cref="GetOrCreateProcessInstance"/> for a whole tick at once,
+    /// and it exists because calling that method per process was the reason ticks
+    /// took tens of seconds. Every statement it runs is its own implicit
+    /// transaction, so a tick covering some 670 processes asked SQLite to commit
+    /// well over a thousand times, each one a write to the log and a wait on the
+    /// gate. Here the same work is one lock and one commit.
+    /// </summary>
+    public Dictionary<(int Pid, long CreateTime), long> UpsertProcessInstances(
+        IReadOnlyCollection<ProcessInstanceUpsert> instances, long timestamp)
+    {
+        var ids = new Dictionary<(int Pid, long CreateTime), long>(instances.Count);
+        if (instances.Count == 0) return ids;
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var tx = _conn.BeginTransaction();
+
+            // Three commands prepared once and rebound per process, rather than a
+            // command built per process. The parameter objects are held so the
+            // loop assigns values instead of rebuilding a collection each time.
+            using var select = _conn.CreateCommand();
+            select.Transaction = tx;
+            select.CommandText = "SELECT id FROM process_instance WHERE pid = @pid AND create_time = @ct";
+            var sPid = select.Parameters.Add("@pid", SqliteType.Integer);
+            var sCt = select.Parameters.Add("@ct", SqliteType.Integer);
+
+            using var update = _conn.CreateCommand();
+            update.Transaction = tx;
+            update.CommandText = "UPDATE process_instance SET last_seen = @ls WHERE id = @id";
+            var uLs = update.Parameters.Add("@ls", SqliteType.Integer);
+            var uId = update.Parameters.Add("@id", SqliteType.Integer);
+
+            using var insert = _conn.CreateCommand();
+            insert.Transaction = tx;
+            insert.CommandText = """
+                INSERT INTO process_instance (pid, create_time, name, path, command_line, first_seen, last_seen)
+                VALUES (@pid, @ct, @name, @path, @cmd, @fs, @ls)
+                RETURNING id
+                """;
+            var iPid = insert.Parameters.Add("@pid", SqliteType.Integer);
+            var iCt = insert.Parameters.Add("@ct", SqliteType.Integer);
+            var iName = insert.Parameters.Add("@name", SqliteType.Text);
+            var iPath = insert.Parameters.Add("@path", SqliteType.Text);
+            var iCmd = insert.Parameters.Add("@cmd", SqliteType.Text);
+            var iFs = insert.Parameters.Add("@fs", SqliteType.Integer);
+            var iLs = insert.Parameters.Add("@ls", SqliteType.Integer);
+
+            foreach (var instance in instances)
+            {
+                var key = (instance.Pid, instance.CreateTime);
+                if (ids.ContainsKey(key)) continue;
+
+                sPid.Value = instance.Pid;
+                sCt.Value = instance.CreateTime;
+
+                var existing = select.ExecuteScalar();
+                if (existing is not null)
+                {
+                    long id = (long)existing;
+                    uLs.Value = timestamp;
+                    uId.Value = id;
+                    update.ExecuteNonQuery();
+                    ids[key] = id;
+                    continue;
+                }
+
+                iPid.Value = instance.Pid;
+                iCt.Value = instance.CreateTime;
+                iName.Value = instance.Name;
+                iPath.Value = (object?)instance.Path ?? DBNull.Value;
+                iCmd.Value = (object?)instance.CommandLine ?? DBNull.Value;
+                iFs.Value = timestamp;
+                iLs.Value = timestamp;
+
+                // RETURNING rather than last_insert_rowid(), so the id belongs to
+                // this statement and not to whatever ran most recently on the
+                // connection.
+                ids[key] = (long)insert.ExecuteScalar()!;
+            }
+
+            tx.Commit();
+        }
+
+        return ids;
     }
 
     public void WriteSampleBatch(long timestamp, List<SampleRow> rows)
@@ -464,7 +618,13 @@ public sealed class Database : IDisposable
         }
     }
 
-    public void WriteCollectorHealth(long timestamp, double cpuPct, double privateMb,
+    /// <param name="cpuPct">
+    /// The collector's own CPU as a share of one core, or null when no rate could
+    /// be measured, which is the case on the first tick of a run. Null is written
+    /// as null: this column read a hardcoded zero for its whole life before, and a
+    /// zero nobody measured is the thing that made it useless.
+    /// </param>
+    public void WriteCollectorHealth(long timestamp, double? cpuPct, double privateMb,
         double sampleCostMs, int processCount, int storedCount)
     {
         lock (_gate)
@@ -477,11 +637,70 @@ public sealed class Database : IDisposable
                 VALUES (@ts, @cpu, @pm, @cost, @pc, @sc)
                 """;
             cmd.Parameters.AddWithValue("@ts", timestamp);
-            cmd.Parameters.AddWithValue("@cpu", cpuPct);
+            cmd.Parameters.AddWithValue("@cpu", (object?)cpuPct ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@pm", privateMb);
             cmd.Parameters.AddWithValue("@cost", sampleCostMs);
             cmd.Parameters.AddWithValue("@pc", processCount);
             cmd.Parameters.AddWithValue("@sc", storedCount);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Records the machine the capture is being made on. Called once at startup,
+    /// and it replaces whatever was there, because the row describes the machine
+    /// rather than a moment in the recording.
+    ///
+    /// A capture that spans a change to the machine, a virtual machine given more
+    /// cores between runs, ends up describing the machine as it was on the last
+    /// start. Recording the count against every sample would be exact and would
+    /// cost a column on the largest table in the database to answer a question
+    /// almost nobody has.
+    /// </summary>
+    public void WriteMachineInfo(int logicalProcessors)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(logicalProcessors, 1);
+
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT OR REPLACE INTO machine_info (id, logical_processors)
+                VALUES (1, @count)
+                """;
+            cmd.Parameters.AddWithValue("@count", logicalProcessors);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>
+    /// Records where one sampling tick spent its time, against the same timestamp
+    /// as the health row for that tick.
+    /// </summary>
+    public void WriteTickPhases(long timestamp, TickPhaseTimings phases)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT OR REPLACE INTO collector_tick_phase
+                    (ts, sampler_ms, machine_sample_ms, identity_ms, instance_ms,
+                     row_build_ms, sample_write_ms, machine_write_ms)
+                VALUES (@ts, @sampler, @machineSample, @identity, @instance,
+                        @rowBuild, @sampleWrite, @machineWrite)
+                """;
+            cmd.Parameters.AddWithValue("@ts", timestamp);
+            cmd.Parameters.AddWithValue("@sampler", phases.SamplerMs);
+            cmd.Parameters.AddWithValue("@machineSample", phases.MachineSampleMs);
+            cmd.Parameters.AddWithValue("@identity", phases.IdentityMs);
+            cmd.Parameters.AddWithValue("@instance", phases.InstanceMs);
+            cmd.Parameters.AddWithValue("@rowBuild", phases.RowBuildMs);
+            cmd.Parameters.AddWithValue("@sampleWrite", phases.SampleWriteMs);
+            cmd.Parameters.AddWithValue("@machineWrite", phases.MachineWriteMs);
             cmd.ExecuteNonQuery();
         }
     }
@@ -818,6 +1037,28 @@ public sealed class Database : IDisposable
         }
     }
 }
+
+/// <summary>
+/// One process instance as a tick saw it, handed to
+/// <see cref="Database.UpsertProcessInstances"/> so the whole tick resolves in a
+/// single transaction.
+/// </summary>
+public sealed record ProcessInstanceUpsert(
+    int Pid, long CreateTime, string Name, string? Path, string? CommandLine);
+
+/// <summary>
+/// Where one sampling tick spent its time. Each figure covers one phase of
+/// <c>CollectorWorker.SampleTick</c>, and together they account for the tick cost
+/// recorded alongside them in <c>collector_health</c>.
+/// </summary>
+public sealed record TickPhaseTimings(
+    double SamplerMs,
+    double MachineSampleMs,
+    double IdentityMs,
+    double InstanceMs,
+    double RowBuildMs,
+    double SampleWriteMs,
+    double MachineWriteMs);
 
 public record SampleRow(
     long InstanceId,

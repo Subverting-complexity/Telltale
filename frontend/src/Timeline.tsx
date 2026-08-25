@@ -3,7 +3,7 @@ import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import type { TimelinePoint, ProcessPoint, ThresholdConfig } from './types';
 import { DataTable, timelineColumns, processColumns } from './DataTable';
-import { formatSize, formatRate, computeMovingAverage, computeMean, computeLinearFit } from './utils';
+import { formatSize, formatRate, computeMovingAverage, computeMean, computeLinearFit, CPU_OF_ONE_CORE, CPU_OF_ALL_CORES } from './utils';
 
 interface TimelineProps {
   data: TimelinePoint[];
@@ -195,7 +195,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
       ) : (
         <div className="charts-grid">
           <ChartPanel
-            title="CPU %"
+            title={CPU_OF_ALL_CORES}
             data={data}
             seriesKey="cpuPct"
             color={CHART_COLORS.cpu}
@@ -285,7 +285,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
       ) : (
         <div className="charts-grid">
           <ChartPanel
-            title="CPU %"
+            title={CPU_OF_ONE_CORE}
             data={data}
             seriesKey="cpuPct"
             color={CHART_COLORS.cpu}

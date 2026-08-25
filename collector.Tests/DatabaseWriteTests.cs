@@ -153,4 +153,154 @@ public class DatabaseWriteTests() : SqliteTestBase("write")
         Assert.Equal(310L, Convert.ToInt64(Scalar($"SELECT process_count FROM collector_health WHERE ts = {Ts}")));
     }
 
+    [Fact]
+    public void UpsertProcessInstances_InsertsEveryProcessTheFirstTime()
+    {
+        var ids = Db.UpsertProcessInstances(
+        [
+            new ProcessInstanceUpsert(1, 100, "a.exe", @"C:\a.exe", "a --run"),
+            new ProcessInstanceUpsert(2, 100, "b.exe", null, null),
+        ], Ts);
+
+        Assert.Equal(2, Count("process_instance"));
+        Assert.Equal(2, ids.Count);
+        Assert.NotEqual(ids[(1, 100)], ids[(2, 100)]);
+        Assert.Equal(@"C:\a.exe", Scalar("SELECT path FROM process_instance WHERE pid = 1"));
+        Assert.Equal(DBNull.Value, Scalar("SELECT path FROM process_instance WHERE pid = 2"));
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_ReturnsTheSameRowAndMovesLastSeenOnASecondTick()
+    {
+        var first = Db.UpsertProcessInstances(
+            [new ProcessInstanceUpsert(1, 100, "a.exe", null, null)], Ts);
+        var second = Db.UpsertProcessInstances(
+            [new ProcessInstanceUpsert(1, 100, "a.exe", null, null)], Ts + 5_000);
+
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Equal(first[(1, 100)], second[(1, 100)]);
+        Assert.Equal(Ts, Convert.ToInt64(Scalar("SELECT first_seen FROM process_instance")));
+        Assert.Equal(Ts + 5_000, Convert.ToInt64(Scalar("SELECT last_seen FROM process_instance")));
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_TreatsAReusedPidWithANewStartTimeAsADifferentProcess()
+    {
+        var ids = Db.UpsertProcessInstances(
+        [
+            new ProcessInstanceUpsert(4321, 100, "app.exe", null, null),
+            new ProcessInstanceUpsert(4321, 200, "other.exe", null, null),
+        ], Ts);
+
+        Assert.Equal(2, Count("process_instance"));
+        Assert.NotEqual(ids[(4321, 100)], ids[(4321, 200)]);
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_ResolvesToTheRowTheSingleProcessPathWouldHaveUsed()
+    {
+        long expected = Db.GetOrCreateProcessInstance(7, 100, "a.exe", null, null, Ts);
+
+        var ids = Db.UpsertProcessInstances(
+            [new ProcessInstanceUpsert(7, 100, "a.exe", null, null)], Ts + 5_000);
+
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Equal(expected, ids[(7, 100)]);
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_CountsARepeatedKeyWithinOneTickOnlyOnce()
+    {
+        var ids = Db.UpsertProcessInstances(
+        [
+            new ProcessInstanceUpsert(1, 100, "a.exe", null, null),
+            new ProcessInstanceUpsert(1, 100, "a.exe", null, null),
+        ], Ts);
+
+        Assert.Equal(1, Count("process_instance"));
+        Assert.Single(ids);
+    }
+
+    [Fact]
+    public void UpsertProcessInstances_WritesNothingWhenTheTickSawNoProcesses()
+    {
+        var ids = Db.UpsertProcessInstances([], Ts);
+
+        Assert.Empty(ids);
+        Assert.Equal(0, Count("process_instance"));
+    }
+
+    [Fact]
+    public void WriteTickPhases_PersistsAndReplacesOnTheSameTimestamp()
+    {
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6, 7));
+
+        // Distinct values per phase, so a column wired to the wrong parameter
+        // fails here rather than passing on a coincidence.
+        Db.WriteTickPhases(Ts, new TickPhaseTimings(10, 20, 30, 40, 50, 60, 70));
+
+        Assert.Equal(1, Count("collector_tick_phase"));
+        Assert.Equal(10, Real($"SELECT sampler_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(20, Real($"SELECT machine_sample_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(30, Real($"SELECT identity_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(40, Real($"SELECT instance_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(50, Real($"SELECT row_build_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(60, Real($"SELECT sample_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+        Assert.Equal(70, Real($"SELECT machine_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
+    }
+
+    /// <summary>
+    /// The first tick of a run has one reading of the collector's processor time
+    /// and needs two, so there is no rate to record. That has to reach the column
+    /// as null: writing zero is what made this field useless before issue #93,
+    /// because a reader cannot tell an idle recorder from an unmeasured one.
+    /// </summary>
+    [Fact]
+    public void WriteCollectorHealth_StoresAnUnmeasuredCpuAsNullRatherThanZero()
+    {
+        Db.WriteCollectorHealth(Ts, null, 40.0, 12.0, 300, 120);
+
+        Assert.Equal(1, Count("collector_health", "cpu_pct IS NULL"));
+    }
+
+    [Fact]
+    public void WriteCollectorHealth_StoresAMeasuredCpuOfZeroAsZero()
+    {
+        Db.WriteCollectorHealth(Ts, 0.0, 40.0, 12.0, 300, 120);
+
+        Assert.Equal(1, Count("collector_health", "cpu_pct = 0"));
+    }
+
+    [Fact]
+    public void WriteMachineInfo_RecordsTheCoreCountAsASingleRow()
+    {
+        Db.WriteMachineInfo(16);
+
+        Assert.Equal(1, Count("machine_info"));
+        Assert.Equal(16L, Convert.ToInt64(Scalar("SELECT logical_processors FROM machine_info")));
+    }
+
+    [Fact]
+    public void WriteMachineInfo_ReplacesTheRowRatherThanAddingASecond()
+    {
+        // The row describes the machine, not a moment in the recording, so a
+        // second start with a different count corrects it instead of appending.
+        Db.WriteMachineInfo(16);
+        Db.WriteMachineInfo(32);
+
+        Assert.Equal(1, Count("machine_info"));
+        Assert.Equal(32L, Convert.ToInt64(Scalar("SELECT logical_processors FROM machine_info")));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void WriteMachineInfo_RefusesACountNothingCouldBeDividedBy(int count)
+    {
+        // Every use of this number is a division, so a zero or negative count
+        // recorded here would come back as an infinity or a sign flip much later
+        // and much further away.
+        Assert.Throws<ArgumentOutOfRangeException>(() => Db.WriteMachineInfo(count));
+        Assert.Equal(0, Count("machine_info"));
+    }
 }

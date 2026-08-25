@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { getProcessDetail, getProcessGroup, getProcesses } from './api';
 import type { ProcessDetailResponse, ProcessGroupResponse, ProcessInstanceRow, ThresholdConfig } from './types';
 import { ProcessTimeline } from './Timeline';
-import { formatDateTime, formatElapsed, formatSize, formatCpu, formatIo } from './utils';
+import { formatDateTime, formatElapsed, formatSize, formatCpu, formatIo, CPU_OF_ONE_CORE } from './utils';
 
 interface ProcessDetailProps {
   type: 'instance' | 'group';
@@ -121,7 +121,7 @@ export function ProcessDetail({
                     <th scope="col" style={{ textAlign: 'left' }}>Path</th>
                     <th scope="col">
                       <button className="sort-btn" onClick={() => toggleInstanceSort('cpu')}>
-                        CPU %{sortIcon('cpu')}
+                        {CPU_OF_ONE_CORE}{sortIcon('cpu')}
                       </button>
                     </th>
                     <th scope="col">

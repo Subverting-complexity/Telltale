@@ -105,6 +105,11 @@ public sealed class RollupWorker : BackgroundService
         long healthCutoff = now - (long)TimeSpan.FromDays(_config.HealthRetentionDays).TotalMilliseconds;
         _db.DeleteOldData("collector_health", healthCutoff);
 
+        // The phase breakdown is part of the same health record, one row per tick
+        // against the same timestamp, so it keeps and loses its rows together with
+        // the summary rather than outliving it.
+        _db.DeleteOldData("collector_tick_phase", healthCutoff);
+
         _db.DeleteOrphanedProcessInstances();
 
         _db.EnforceSizeLimit(_config.MaxDatabaseSizeMb * 1024L * 1024L);

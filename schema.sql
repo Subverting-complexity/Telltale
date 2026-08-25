@@ -9,7 +9,7 @@ PRAGMA synchronous = NORMAL;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version VALUES (2);
+INSERT INTO schema_version VALUES (4);
 
 CREATE TABLE process_instance (
     id           INTEGER PRIMARY KEY,
@@ -67,6 +67,20 @@ CREATE TABLE sample_10m (
 CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
 CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
 
+-- The machine the recording was made on. One row, rewritten whenever the
+-- collector starts, because a recording describes one machine.
+--
+-- logical_processors is here so the viewer can convert a per process CPU figure
+-- without asking the machine it happens to be running on. Every cpu_pct in
+-- sample and its rollups is a share of one core, so a process spread over four
+-- of them reads 400, while the machine gauge is a share of all of them and stops
+-- at 100. Converting between the two needs this number, and reading it live is
+-- wrong the moment a capture is opened somewhere else.
+CREATE TABLE machine_info (
+    id                 INTEGER PRIMARY KEY CHECK (id = 1),
+    logical_processors INTEGER NOT NULL
+);
+
 CREATE TABLE machine (
     ts              INTEGER PRIMARY KEY,
     cpu_pct         REAL,
@@ -115,6 +129,12 @@ CREATE TABLE machine_10m (
     sample_count        INTEGER
 );
 
+-- What the recorder cost the machine, one row per tick. cpu_pct is the
+-- collector's own CPU on the same scale as sample.cpu_pct, a share of one core
+-- rather than of the whole machine, and it is null when no rate could be
+-- measured, which is the case on the first tick of a run. Both figures cover the
+-- whole of Telltale.exe, which is the recorder plus the viewer window when it is
+-- open, because they are one process.
 CREATE TABLE collector_health (
     ts              INTEGER PRIMARY KEY,
     cpu_pct         REAL,
@@ -122,4 +142,35 @@ CREATE TABLE collector_health (
     sample_cost_ms  REAL,
     process_count   INTEGER,
     stored_count    INTEGER
+);
+
+-- collector_health.sample_cost_ms is the whole tick as one number, which says
+-- that a tick ran long but not where the time went. This table breaks the same
+-- tick into the phases it is spent in, one row per tick, sharing the health
+-- row's timestamp. The phases do not overlap and together they account for the
+-- tick, so each column can be read as its share of the cost beside it:
+--
+--   sampler_ms         enumerating every running process
+--   machine_sample_ms  reading the machine wide performance counters
+--   identity_ms        finding the tick's distinct processes and resolving
+--                      the paths of any not seen before
+--   instance_ms        resolving a database row id for each process
+--   row_build_ms       working out each process's CPU and I/O since last tick
+--   sample_write_ms    writing the tick's sample rows, and forgetting the
+--                      processes that have since gone
+--   machine_write_ms   writing the tick's machine row
+--
+-- It is a separate table rather than more columns on collector_health because a
+-- migration can add a table whose definition is written out in full, and cannot
+-- add a column without SQLite rewriting the stored definition into a shape this
+-- file cannot reproduce.
+CREATE TABLE collector_tick_phase (
+    ts                INTEGER PRIMARY KEY,
+    sampler_ms        REAL,
+    machine_sample_ms REAL,
+    identity_ms       REAL,
+    instance_ms       REAL,
+    row_build_ms      REAL,
+    sample_write_ms   REAL,
+    machine_write_ms  REAL
 );

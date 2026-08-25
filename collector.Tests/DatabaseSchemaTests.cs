@@ -22,8 +22,9 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
 
     private static readonly string[] ExpectedTables =
     [
-        "collector_health", "machine", "machine_10m", "machine_1m",
-        "process_instance", "sample", "sample_10m", "sample_1m", "schema_version",
+        "collector_health", "collector_tick_phase", "machine", "machine_10m", "machine_1m",
+        "machine_info", "process_instance", "sample", "sample_10m", "sample_1m",
+        "schema_version",
     ];
 
     private static readonly string[] ExpectedIndexes =

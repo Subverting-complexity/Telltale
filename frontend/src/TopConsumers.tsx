@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import type { ProcessGroupRow } from './types';
-import { formatSize, formatIo, categoriseProcess } from './utils';
+import { formatSize, formatIo, categoriseProcess, formatCpuOfAllCores } from './utils';
 import type { ProcessCategory } from './utils';
 
 interface TopConsumersProps {
@@ -45,7 +45,7 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
       const value = metric === 'cpu' ? p.cpuPct / logicalProcessors
         : metric === 'memory' ? p.privateMb
         : p.ioKb;
-      const label = metric === 'cpu' ? `${value.toFixed(1)}%`
+      const label = metric === 'cpu' ? formatCpuOfAllCores(p.cpuPct, logicalProcessors)
         : metric === 'memory' ? formatSize(p.privateMb)
         : formatIo(p.ioKb);
       return {
@@ -60,7 +60,8 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
 
   if (filtered.length === 0) return null;
 
-  const metricLabel = metric === 'cpu' ? 'CPU usage' : metric === 'memory' ? 'memory usage' : 'I/O activity';
+  const metricLabel = metric === 'cpu' ? 'CPU, as a share of all cores'
+    : metric === 'memory' ? 'memory usage' : 'I/O activity';
 
   return (
     <section className="top-consumers" aria-label="Top resource consumers">

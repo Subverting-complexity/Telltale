@@ -12,6 +12,13 @@ public sealed class CollectorWorker : BackgroundService
     private readonly ProcessIdentityResolver _identities;
 
     private readonly Dictionary<(int Pid, long CreateTime), PreviousSample> _previous = new();
+
+    /// <summary>
+    /// The collector's own processor time and the stopwatch reading it was taken
+    /// at, from the previous tick. Null until the first health row has been
+    /// written, because a rate needs two readings and the first tick has one.
+    /// </summary>
+    private (long CpuTicks, long ElapsedTicks)? _previousSelf;
     private readonly Stopwatch _elapsedTimer = new();
     private readonly TickOverrunMonitor _overruns = new();
 
@@ -47,6 +54,30 @@ public sealed class CollectorWorker : BackgroundService
                 + "disk, network) will be missing from this recording.");
         }
 
+        // Recorded once, because it describes the machine rather than a moment in
+        // the recording. The viewer needs it to turn a per process CPU figure,
+        // which is a share of one core, into a share of the whole machine, and
+        // reading the live count instead is wrong as soon as a capture is opened
+        // anywhere but the machine it was made on.
+
+        // Guarded like the machine sampler above, and for the same reason. This is
+        // the first write of the run, so it is the one most likely to meet a full
+        // disk or a locked file, and an unhandled exception in a BackgroundService
+        // stops the host by default. That would take the tray icon and the viewer
+        // window down with it, over one informational row the viewer already has a
+        // fallback for.
+        try
+        {
+            _db.WriteMachineInfo(Environment.ProcessorCount);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Could not record this machine's processor count. The viewer will "
+                + "fall back to the processor count of whichever machine reads the "
+                + "capture, which is only correct while that is this one.");
+        }
+
         _elapsedTimer.Start();
 
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_config.IntervalSeconds));
@@ -70,33 +101,67 @@ public sealed class CollectorWorker : BackgroundService
         long elapsedTicks = _elapsedTimer.ElapsedTicks;
         long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        var snapshots = _sampler.Sample();
-        var machineSample = _machineSampler.Sample();
+        // Every phase of the tick is timed separately. sample_cost_ms says only
+        // that a tick ran long; these say which part of it did, which is the
+        // difference between knowing there is a problem and knowing where it is.
+        var phase = Stopwatch.StartNew();
 
-        // The tick's distinct process instances, gathered before the loop so every
-        // one whose identity is not yet known can be looked up in a single batch
-        // rather than one query at a time.
+        var snapshots = _sampler.Sample();
+        double samplerMs = LapMs(phase);
+
+        var machineSample = _machineSampler.Sample();
+        double machineSampleMs = LapMs(phase);
+
+        // The tick's distinct process instances, gathered before anything else so
+        // every one whose identity is not yet known can be looked up in a single
+        // batch rather than one query at a time. A pid can appear twice in one
+        // snapshot, so the distinct snapshots are kept here and every step below
+        // works from them rather than deduplicating the raw list again each time.
         var seenKeys = new HashSet<(int Pid, long CreateTime)>(snapshots.Count);
+        var distinct = new List<ProcessSnapshot>(snapshots.Count);
+
         foreach (var snap in snapshots)
-            seenKeys.Add((snap.Pid, snap.CreateTimeTicks));
+        {
+            if (seenKeys.Add((snap.Pid, snap.CreateTimeTicks)))
+                distinct.Add(snap);
+        }
 
         _identities.Resolve(seenKeys);
+        double identityMs = LapMs(phase);
 
-        var rows = new List<SampleRow>(snapshots.Count);
-        var handled = new HashSet<(int, long)>(seenKeys.Count);
+        // The row ids are resolved for the whole tick in one call, for the same
+        // reason the identities above are: asking per process meant a separate
+        // commit per process, and a tick covering some 670 of them spent tens of
+        // seconds waiting on them one after another.
+        var rows = new List<SampleRow>(distinct.Count);
+        double instanceMs;
+        double rowBuildMs;
 
         try
         {
-            foreach (var snap in snapshots)
+            var upserts = new List<ProcessInstanceUpsert>(distinct.Count);
+
+            foreach (var snap in distinct)
+            {
+                var upsertIdentity = _identities.For((snap.Pid, snap.CreateTimeTicks));
+                upserts.Add(new ProcessInstanceUpsert(
+                    snap.Pid, snap.CreateTimeTicks, snap.Name,
+                    upsertIdentity.Path, upsertIdentity.CommandLine));
+            }
+
+            var instanceIds = _db.UpsertProcessInstances(upserts, timestamp);
+            instanceMs = LapMs(phase);
+
+            foreach (var snap in distinct)
             {
                 var key = (snap.Pid, snap.CreateTimeTicks);
-                if (!handled.Add(key)) continue;
 
-                var identity = _identities.For(key);
-
-                long instanceId = _db.GetOrCreateProcessInstance(
-                    snap.Pid, snap.CreateTimeTicks, snap.Name, identity.Path, identity.CommandLine,
-                    timestamp);
+                // Defensive, and unreachable today: the upsert returns an id for
+                // every key it is handed, and throws rather than returning a
+                // partial map. It is here so that if it ever does report a row it
+                // could not place, this tick drops that process rather than
+                // pairing its sample with an id belonging to something else.
+                if (!instanceIds.TryGetValue(key, out long instanceId)) continue;
 
                 double? cpuPct = null;
                 double? ioKb = null;
@@ -104,13 +169,7 @@ public sealed class CollectorWorker : BackgroundService
                 if (_previous.TryGetValue(key, out var prev))
                 {
                     long cpuDelta = (snap.KernelTime + snap.UserTime) - (prev.KernelTime + prev.UserTime);
-                    long ticksDelta = elapsedTicks - prev.ElapsedTicks;
-
-                    if (ticksDelta > 0 && cpuDelta >= 0)
-                    {
-                        double elapsedSec = (double)ticksDelta / Stopwatch.Frequency;
-                        cpuPct = (cpuDelta / 10_000_000.0) / elapsedSec * 100.0;
-                    }
+                    cpuPct = CpuRate.PercentOfOneCore(cpuDelta, elapsedTicks - prev.ElapsedTicks);
 
                     long totalIo = snap.IoReadBytes + snap.IoWriteBytes + snap.IoOtherBytes;
                     long prevTotalIo = prev.IoReadBytes + prev.IoWriteBytes + prev.IoOtherBytes;
@@ -135,28 +194,60 @@ public sealed class CollectorWorker : BackgroundService
                         snap.ThreadCount, snap.HandleCount));
                 }
             }
+
+            rowBuildMs = LapMs(phase);
         }
         finally
         {
-            // Pruning runs even when a row fails part way through. Without this a
-            // tick that throws leaves both maps holding processes that have already
-            // gone, and they only clear on the next tick that gets all the way down.
+            // Pruning runs even when the tick fails part way through, including
+            // inside the instance upsert above. Without this a tick that throws
+            // leaves both maps holding processes that have already gone, and they
+            // only clear on the next tick that gets all the way down.
             CleanStalePrevious(seenKeys);
             _identities.Prune(seenKeys);
         }
 
         if (rows.Count > 0)
             _db.WriteSampleBatch(timestamp, rows);
+        double sampleWriteMs = LapMs(phase);
 
         _db.WriteMachineSample(timestamp, machineSample);
+        double machineWriteMs = LapMs(phase);
 
         // Read before the health write so sample_cost_ms keeps meaning what it always
         // meant, but stop the clock after it, so a tick pushed over the interval by
-        // its own health write is still counted as an overrun.
+        // its own health write is still counted as an overrun. The phase row is
+        // written after the reading too, for the same reason: the phases have to add
+        // up to the cost recorded beside them.
         double sampleCostMs = sw.Elapsed.TotalMilliseconds;
+
+        // Named rather than positional. Seven doubles in a row is a shape where two
+        // of them swapped still compiles, still passes, and answers the question
+        // this table exists to ask with the wrong phase named.
+        _db.WriteTickPhases(timestamp, new TickPhaseTimings(
+            SamplerMs: samplerMs,
+            MachineSampleMs: machineSampleMs,
+            IdentityMs: identityMs,
+            InstanceMs: instanceMs,
+            RowBuildMs: rowBuildMs,
+            SampleWriteMs: sampleWriteMs,
+            MachineWriteMs: machineWriteMs));
+
         RecordHealth(timestamp, sampleCostMs, snapshots.Count, rows.Count);
         sw.Stop();
         RecordOverrun(sw.Elapsed);
+    }
+
+    /// <summary>
+    /// Reads how long the current phase took and starts the clock for the next
+    /// one, so the phases divide the tick between them rather than overlapping.
+    /// </summary>
+    private static double LapMs(Stopwatch timer)
+    {
+        double elapsedMs = timer.Elapsed.TotalMilliseconds;
+        timer.Restart();
+
+        return elapsedMs;
     }
 
     private void CleanStalePrevious(HashSet<(int Pid, long CreateTime)> seenKeys)
@@ -166,10 +257,32 @@ public sealed class CollectorWorker : BackgroundService
             _previous.Remove(k);
     }
 
+    /// <summary>
+    /// Writes the row that answers "is the recorder itself the thing slowing this
+    /// machine down". The CPU figure is measured exactly as every other process's
+    /// is: processor time used since the previous tick, over the wall clock time
+    /// between the two readings, against the same stopwatch the sampling loop
+    /// uses. It is therefore on the same denominator as <c>sample.cpu_pct</c>, a
+    /// share of one core, and not of the whole machine.
+    /// </summary>
     private void RecordHealth(long timestamp, double sampleCostMs, int processCount, int storedCount)
     {
-        var self = Process.GetCurrentProcess();
-        double cpuPct = 0;
+        // Disposed rather than left to the finaliser. This runs once a tick, and
+        // each call opens a handle to the process it describes.
+        using var self = Process.GetCurrentProcess();
+
+        long cpuTicks = self.PrivilegedProcessorTime.Ticks + self.UserProcessorTime.Ticks;
+        long elapsedTicks = _elapsedTimer.ElapsedTicks;
+
+        // Nothing rather than zero on the first tick, and on the reading after a
+        // stopwatch or counter that went backwards. Zero is a measurement, and
+        // writing one where none was taken is what this field did before.
+        double? cpuPct = _previousSelf is { } previous
+            ? CpuRate.PercentOfOneCore(cpuTicks - previous.CpuTicks, elapsedTicks - previous.ElapsedTicks)
+            : null;
+
+        _previousSelf = (cpuTicks, elapsedTicks);
+
         double privateMb = self.PrivateMemorySize64 / (1024.0 * 1024.0);
 
         _db.WriteCollectorHealth(timestamp, cpuPct, privateMb, sampleCostMs, processCount, storedCount);
