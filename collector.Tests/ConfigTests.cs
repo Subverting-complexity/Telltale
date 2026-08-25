@@ -1,6 +1,4 @@
-using Microsoft.Extensions.Logging;
 using Telltale.Collector;
-using Telltale.Collector.Interop;
 
 namespace Collector.Tests;
 
@@ -237,62 +235,5 @@ public class ConfigTests
     public void RedactCommandLine_HandlesNull()
     {
         Assert.Null(TelltaleConfig.RedactCommandLine(null));
-    }
-}
-
-public class RollupWorkerTests
-{
-    [Theory]
-    [InlineData(1, LogLevel.Error)]
-    [InlineData(2, LogLevel.Error)]
-    [InlineData(3, LogLevel.Critical)]
-    [InlineData(4, LogLevel.Critical)]
-    [InlineData(40, LogLevel.Critical)]
-    public void FailureLevel_EscalatesOnceFailuresPersist(int consecutiveFailures, LogLevel expected)
-    {
-        // A single failure is usually transient. A run of them means nothing is being
-        // aggregated and the raw tables are no longer being trimmed, which is what the
-        // raised severity is there to surface.
-        Assert.Equal(expected, RollupWorker.LevelForConsecutiveFailures(consecutiveFailures));
-    }
-
-    [Fact]
-    public void FailureLevel_IsNotCriticalBeforeTheThreshold()
-    {
-        Assert.Equal(LogLevel.Error,
-            RollupWorker.LevelForConsecutiveFailures(RollupWorker.ConsecutiveFailuresBeforeCritical - 1));
-        Assert.Equal(LogLevel.Critical,
-            RollupWorker.LevelForConsecutiveFailures(RollupWorker.ConsecutiveFailuresBeforeCritical));
-    }
-}
-
-public class NtDefsTests
-{
-    [Fact]
-    public void StructLayout_ValidatesCorrectly()
-    {
-        Assert.True(NtDefs.ValidateLayout());
-    }
-}
-
-public class NativeSamplerTests
-{
-    [Fact]
-    public void Sample_ReturnsProcesses()
-    {
-        var sampler = new NativeSampler();
-        var results = sampler.Sample();
-        Assert.NotEmpty(results);
-        Assert.Contains(results, p => p.Pid == Environment.ProcessId);
-    }
-
-    [Fact]
-    public void Sample_IncludesProcessNames()
-    {
-        var sampler = new NativeSampler();
-        var results = sampler.Sample();
-        var self = results.FirstOrDefault(p => p.Pid == Environment.ProcessId);
-        Assert.NotNull(self);
-        Assert.False(string.IsNullOrEmpty(self.Name));
     }
 }

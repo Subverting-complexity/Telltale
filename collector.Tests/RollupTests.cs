@@ -230,7 +230,4 @@ public class RollupTests : SqliteTestBase
         VALUES ({ts}, 50.0, 60.0, 8000, 16000, 12000, 0, 1.0, 2.0, 30.0, 40.0, 1000, NULL, 1)
         """);
 
-    private int Count(string table, string? where = null) =>
-        (int)(long)Scalar($"SELECT COUNT(*) FROM {table}" + (where is null ? "" : $" WHERE {where}"))!;
-
 }
