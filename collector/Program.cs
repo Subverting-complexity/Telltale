@@ -62,17 +62,26 @@ try
     var logger = host.Services.GetRequiredService<ILogger<Program>>();
     logger.LogInformation("Telltale collector starting. Database: {Path}", config.ResolvedDatabasePath);
 
+    // Opened here rather than left to whichever hosted service resolves it
+    // first. Migrations then run at a known point instead of inside the startup
+    // of whichever worker happened to win, and the check below gets its answer
+    // before anything has started recording.
     Database database;
     try
     {
         database = host.Services.GetRequiredService<Database>();
     }
-    catch (Exception ex)
+    catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
     {
+        // A locked, corrupt, unreachable or unwritable file. Without this the
+        // exception leaves host startup before logging is running, so the
+        // process dies with nothing said about which file failed or why, and
+        // does it again on every start. Anything outside these three is a bug
+        // rather than a broken database, and still gets to surface as one.
         Console.Error.WriteLine(StartupDatabaseCheck.DescribeOpenFailure(config.ResolvedDatabasePath, ex));
         host.Dispose();
-        PauseOnError();
-        return 1;
+        Environment.Exit(1);
+        return;
     }
 
     string? refusal = StartupDatabaseCheck.RefusalForNewerDatabase(
