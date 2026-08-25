@@ -26,6 +26,25 @@ public class DatabaseLifecycleTests() : SqliteTestBase("lifecycle")
     }
 
     [Fact]
+    public void Dispose_ReleasesTheDatabaseFileAndItsSidecars()
+    {
+        // The collector opens its connection with pooling off so that disposing it
+        // closes the file rather than parking the handle in a pool. Everything that
+        // used to reach for SqliteConnection.ClearAllPools to get the file back now
+        // relies on this, including the startup refusal path, which must not leave
+        // -wal and -shm beside a database it has declined to touch (#91).
+        Db.Dispose();
+
+        Assert.False(File.Exists(DbPath + "-wal"), "the write ahead log should have been removed");
+        Assert.False(File.Exists(DbPath + "-shm"), "the shared memory file should have been removed");
+
+        // Deleting the database itself is the stronger claim: on Windows this
+        // throws while any handle to the file is still open.
+        File.Delete(DbPath);
+        Assert.False(File.Exists(DbPath));
+    }
+
+    [Fact]
     public void UseAfterDispose_SaysSoRatherThanFailingOpaquely()
     {
         Db.Dispose();
