@@ -103,328 +103,310 @@ try
 
     app.MapGet("/api/timeline", (long from, long to) =>
     {
-        using var conn = OpenDb();
-        var plan = PlanTiers(conn, from, to, isMachine: true);
-        TierSource source = TierSql.Source(plan, isMachine: true);
-
-        using var cmd = conn.CreateCommand();
-
-        // Raw-only ranges stay unaggregated, as they were before tier selection
-        // learned to span tiers, but only up to TierSelection.MaxRawOnlyPoints.
-        // Tiers are now chosen by which ones hold data rather than by how old the
-        // range is, so a single raw tier can serve a far wider window than the old
-        // rule allowed, and without that bound a week-long raw-only range would
-        // return every 5 second row it holds.
-        //
-        // A mixed bucket is at least as wide as the coarsest tier's interval, but
-        // the bucket grid is anchored to the epoch while the tier changes over at
-        // whatever instant the raw table happens to start. The one bucket holding
-        // that instant therefore straddles both tiers, so it is weighted like any
-        // other aggregate rather than trusted to be single-tier.
-        if (!plan.ServesFullResolution && plan.Bucket > 0)
+        try
         {
-            cmd.CommandText = $"""
-                SELECT (ts / @bucket) * @bucket as ts,
-                       {TierSql.WeightedAvg("cpu_pct", "cpu_pct")},
-                       {TierSql.WeightedAvg("memory_avail_mb", "memory_avail_mb")},
-                       MAX(commit_mb) as commit_mb, SUM(hard_faults) as hard_faults,
-                       {TierSql.WeightedAvg("disk_read_ms", "disk_read_ms")},
-                       {TierSql.WeightedAvg("disk_write_ms", "disk_write_ms")},
-                       memory_total_mb,
-                       {TierSql.WeightedAvg("disk_busy_pct", "disk_busy_pct")},
-                       {TierSql.WeightedAvg("net_kbps", "net_kbps")},
-                       {TierSql.WeightedAvg("gpu_busy_pct", "gpu_busy_pct")}
-                FROM {source.Sql} WHERE ts >= @from AND ts <= @to
-                GROUP BY ts / @bucket ORDER BY ts
-                """;
-            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
-        }
-        else
-        {
-            cmd.CommandText = $"""
-                SELECT ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
-                       disk_read_ms, disk_write_ms, memory_total_mb, disk_busy_pct, net_kbps, gpu_busy_pct
-                FROM {source.Sql} WHERE ts >= @from AND ts <= @to ORDER BY ts
-                """;
-        }
+            using var conn = OpenDb();
+            using var checkCmd = conn.CreateCommand();
+            checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine'";
+            if (checkCmd.ExecuteScalar() == null)
+                return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
 
-        AddTierBounds(cmd, source);
-        cmd.Parameters.AddWithValue("@from", from);
-        cmd.Parameters.AddWithValue("@to", to);
+            var result = TimelineQuery.Execute(conn, from, to);
 
-        var points = new List<object>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            points.Add(new
+            var points = result.Points.Select(p => new
             {
-                ts = reader.GetInt64(0),
-                cpuPct = reader.IsDBNull(1) ? null : (double?)reader.GetDouble(1),
-                memoryAvailMb = reader.IsDBNull(2) ? null : (double?)reader.GetDouble(2),
-                commitMb = reader.IsDBNull(3) ? null : (double?)reader.GetDouble(3),
-                hardFaults = reader.IsDBNull(4) ? null : (int?)reader.GetInt32(4),
-                diskReadMs = reader.IsDBNull(5) ? null : (double?)reader.GetDouble(5),
-                diskWriteMs = reader.IsDBNull(6) ? null : (double?)reader.GetDouble(6),
-                memoryTotalMb = reader.IsDBNull(7) ? null : (double?)reader.GetDouble(7),
-                diskBusyPct = reader.IsDBNull(8) ? null : (double?)reader.GetDouble(8),
-                netKbps = reader.IsDBNull(9) ? null : (double?)reader.GetDouble(9),
-                gpuBusyPct = reader.IsDBNull(10) ? null : (double?)reader.GetDouble(10),
+                ts = p.Ts,
+                cpuPct = p.CpuPct,
+                memoryAvailMb = p.MemoryAvailMb,
+                commitMb = p.CommitMb,
+                hardFaults = p.HardFaults,
+                diskReadMs = p.DiskReadMs,
+                diskWriteMs = p.DiskWriteMs,
+                memoryTotalMb = p.MemoryTotalMb,
+                diskBusyPct = p.DiskBusyPct,
+                netKbps = p.NetKbps,
+                gpuBusyPct = p.GpuBusyPct,
             });
-        }
 
-        return Results.Json(new { resolution = plan.Resolution, points }, jsonOptions);
+            return Results.Json(new { resolution = result.Resolution, points }, jsonOptions);
+        }
+        catch (SqliteException)
+        {
+            return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
+        }
     });
 
     app.MapGet("/api/processes", (long from, long to, int? limit, string? sort, string? q, bool? group) =>
     {
-        using var conn = OpenDb();
         bool grouped = group ?? true;
-        int take = Math.Clamp(limit ?? 50, 1, 500);
-
-        var plan = PlanTiers(conn, from, to, isMachine: false);
-        TierSource source = TierSql.Source(plan, isMachine: false);
-        using var cmd = conn.CreateCommand();
-
-        if (grouped)
+        try
         {
-            // The group is totalled across its instances at each instant, then those
-            // totals are averaged over time. Scaling by weight happens on the inner
-            // total, so an instance present for only part of a rollup bucket
-            // contributes the share of the bucket it was actually there for.
-            string weightedCpu = TierSql.AvgOfWeightedTotalsExpr("sub.ts_cpu_weighted", "sub.ts_weight");
-            string sortExpr = sort switch
+            using var conn = OpenDb();
+            int take = Math.Clamp(limit ?? 50, 1, 500);
+    
+            var plan = PlanTiers(conn, from, to, isMachine: false);
+            TierSource source = TierSql.Source(plan, isMachine: false);
+            using var cmd = conn.CreateCommand();
+    
+            if (grouped)
             {
-                "memory" => "MAX(sub.ts_mem)",
-                "io" => "SUM(sub.ts_io)",
-                "name" => "sub.name",
-                _ => weightedCpu
-            };
+                // The group is totalled across its instances at each instant, then those
+                // totals are averaged over time. Scaling by weight happens on the inner
+                // total, so an instance present for only part of a rollup bucket
+                // contributes the share of the bucket it was actually there for.
+                string weightedCpu = TierSql.AvgOfWeightedTotalsExpr("sub.ts_cpu_weighted", "sub.ts_weight");
+                string sortExpr = sort switch
+                {
+                    "memory" => "MAX(sub.ts_mem)",
+                    "io" => "SUM(sub.ts_io)",
+                    "name" => "sub.name",
+                    _ => weightedCpu
+                };
+                cmd.CommandText = $"""
+                    SELECT sub.name,
+                           {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "avg_cpu_pct")},
+                           MAX(sub.ts_mem) as peak_private_mb,
+                           SUM(sub.ts_io) as total_io_kb,
+                           MAX(sub.inst_cnt) as instance_count,
+                           (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = sub.name AND pi2.path IS NOT NULL LIMIT 1) as path
+                    FROM (
+                        SELECT pi.name,
+                               {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
+                               SUM(s.private_mb) as ts_mem,
+                               SUM(s.io_kb) as ts_io,
+                               COUNT(DISTINCT s.instance_id) as inst_cnt,
+                               {TierSql.InstantWeight("s.weight")} as ts_weight
+                        FROM {source.Sql} s
+                        JOIN process_instance pi ON pi.id = s.instance_id
+                        WHERE s.ts >= @from AND s.ts <= @to
+                        {(q != null ? "AND pi.name LIKE @q" : "")}
+                        GROUP BY pi.name, s.ts
+                    ) sub
+                    GROUP BY sub.name
+                    ORDER BY {sortExpr} DESC
+                    LIMIT @limit
+                    """;
+            }
+            else
+            {
+                string sortExpr = sort switch
+                {
+                    "memory" => $"MAX(s.private_mb)",
+                    "io" => $"SUM(s.io_kb)",
+                    "name" => "pi.name",
+                    _ => TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight")
+                };
+                cmd.CommandText = $"""
+                    SELECT pi.id, pi.pid, pi.name, pi.path,
+                           {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu_pct", "s.weight")},
+                           MAX(s.private_mb) as peak_private_mb,
+                           SUM(s.io_kb) as total_io_kb
+                    FROM {source.Sql} s
+                    JOIN process_instance pi ON pi.id = s.instance_id
+                    WHERE s.ts >= @from AND s.ts <= @to
+                    {(q != null ? "AND pi.name LIKE @q" : "")}
+                    GROUP BY pi.id
+                    ORDER BY {sortExpr} DESC
+                    LIMIT @limit
+                    """;
+            }
+    
+            AddTierBounds(cmd, source);
+            cmd.Parameters.AddWithValue("@from", from);
+            cmd.Parameters.AddWithValue("@to", to);
+            cmd.Parameters.AddWithValue("@limit", take);
+            if (q != null) cmd.Parameters.AddWithValue("@q", $"%{q}%");
+    
+            var results = new List<object>();
+            using var reader = cmd.ExecuteReader();
+    
+            if (grouped)
+            {
+                while (reader.Read())
+                {
+                    results.Add(new
+                    {
+                        name = reader.GetString(0),
+                        cpuPct = reader.IsDBNull(1) ? 0.0 : reader.GetDouble(1),
+                        privateMb = reader.IsDBNull(2) ? 0.0 : reader.GetDouble(2),
+                        ioKb = reader.IsDBNull(3) ? 0.0 : reader.GetDouble(3),
+                        instanceCount = reader.GetInt32(4),
+                        path = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    });
+                }
+            }
+            else
+            {
+                while (reader.Read())
+                {
+                    results.Add(new
+                    {
+                        id = reader.GetInt64(0),
+                        pid = reader.GetInt32(1),
+                        name = reader.GetString(2),
+                        path = reader.IsDBNull(3) ? null : reader.GetString(3),
+                        cpuPct = reader.IsDBNull(4) ? 0.0 : reader.GetDouble(4),
+                        privateMb = reader.IsDBNull(5) ? 0.0 : reader.GetDouble(5),
+                        ioKb = reader.IsDBNull(6) ? 0.0 : reader.GetDouble(6),
+                    });
+                }
+            }
+    
+            return Results.Json(new { grouped, processes = results }, jsonOptions);
+        }
+        catch (SqliteException)
+        {
+            return Results.Json(new { grouped, processes = Array.Empty<object>() }, jsonOptions);
+        }
+    });
+
+    app.MapGet("/api/process/{id:long}", (long id, long from, long to) =>
+    {
+        try
+        {
+            using var conn = OpenDb();
+            var plan = PlanTiers(conn, from, to, isMachine: false);
+            TierSource source = TierSql.Source(plan, isMachine: false);
+    
+            using var cmd = conn.CreateCommand();
+            if (plan.Bucket > 0)
+            {
+                cmd.CommandText = $"""
+                    SELECT (s.ts / @bucket) * @bucket as ts,
+                           {TierSql.WeightedAvg("s.cpu_pct", "cpu_pct", "s.weight")},
+                           MAX(s.private_mb) as private_mb,
+                           MAX(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb
+                    FROM {source.Sql} s
+                    WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
+                    GROUP BY s.ts / @bucket ORDER BY ts
+                    """;
+                cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
+            }
+            else
+            {
+                cmd.CommandText = $"""
+                    SELECT s.ts, s.cpu_pct as cpu_pct, s.private_mb as private_mb,
+                           s.working_set_mb as working_set_mb, s.io_kb as io_kb
+                    FROM {source.Sql} s
+                    WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
+                    ORDER BY s.ts
+                    """;
+            }
+    
+            AddTierBounds(cmd, source);
+            cmd.Parameters.AddWithValue("@id", id);
+            cmd.Parameters.AddWithValue("@from", from);
+            cmd.Parameters.AddWithValue("@to", to);
+    
+            var points = new List<object>();
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                points.Add(new
+                {
+                    ts = reader.GetInt64(0),
+                    cpuPct = reader.IsDBNull(1) ? null : (double?)reader.GetDouble(1),
+                    privateMb = reader.IsDBNull(2) ? null : (double?)reader.GetDouble(2),
+                    workingSetMb = reader.IsDBNull(3) ? null : (double?)reader.GetDouble(3),
+                    ioKb = reader.IsDBNull(4) ? null : (double?)reader.GetDouble(4),
+                });
+            }
+    
+            using var infoCmd = conn.CreateCommand();
+            infoCmd.CommandText = "SELECT pid, name, path, command_line, first_seen, last_seen FROM process_instance WHERE id = @id";
+            infoCmd.Parameters.AddWithValue("@id", id);
+            using var infoReader = infoCmd.ExecuteReader();
+    
+            object? info = null;
+            if (infoReader.Read())
+            {
+                info = new
+                {
+                    pid = infoReader.GetInt32(0),
+                    name = infoReader.GetString(1),
+                    path = infoReader.IsDBNull(2) ? null : infoReader.GetString(2),
+                    commandLine = infoReader.IsDBNull(3) ? null : infoReader.GetString(3),
+                    firstSeen = infoReader.GetInt64(4),
+                    lastSeen = infoReader.GetInt64(5),
+                };
+            }
+    
+            return Results.Json(new { info, resolution = plan.Resolution, points }, jsonOptions);
+        }
+        catch (SqliteException)
+        {
+            return Results.Json(new { info = (object?)null, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
+        }
+    });
+
+    app.MapGet("/api/process-group/{name}", (string name, long from, long to) =>
+    {
+        try
+        {
+            using var conn = OpenDb();
+            var plan = PlanTiers(conn, from, to, isMachine: false);
+            TierSource source = TierSql.Source(plan, isMachine: false);
+    
+            long effectiveBucket = plan.Bucket > 0 ? plan.Bucket : 5000;
+    
+            using var cmd = conn.CreateCommand();
+    
+            // Total the group at each instant first, then combine those totals across
+            // the bucket, the same shape /api/processes uses. Summing rows directly
+            // over a bucket would scale with how many rows the bucket happens to
+            // hold, which differs between tiers and would step at the boundary.
+            // The bucket holding the tier changeover draws from both tiers, so the
+            // totals are weighted by the span each instant covers.
             cmd.CommandText = $"""
-                SELECT sub.name,
-                       {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "avg_cpu_pct")},
-                       MAX(sub.ts_mem) as peak_private_mb,
-                       SUM(sub.ts_io) as total_io_kb,
-                       MAX(sub.inst_cnt) as instance_count,
-                       (SELECT pi2.path FROM process_instance pi2 WHERE pi2.name = sub.name AND pi2.path IS NOT NULL LIMIT 1) as path
+                SELECT (sub.ts / @bucket) * @bucket as ts,
+                       {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "cpu_pct")},
+                       {TierSql.AvgOfWeightedTotals("sub.ts_mem_weighted", "sub.ts_weight", "private_mb")},
+                       {TierSql.AvgOfWeightedTotals("sub.ts_ws_weighted", "sub.ts_weight", "working_set_mb")},
+                       SUM(sub.ts_io) as io_kb,
+                       MAX(sub.inst_cnt) as instance_count
                 FROM (
-                    SELECT pi.name,
+                    SELECT s.ts,
                            {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
-                           SUM(s.private_mb) as ts_mem,
+                           {TierSql.WeightedTotal("s.private_mb", "ts_mem_weighted", "s.weight")},
+                           {TierSql.WeightedTotal("s.working_set_mb", "ts_ws_weighted", "s.weight")},
                            SUM(s.io_kb) as ts_io,
                            COUNT(DISTINCT s.instance_id) as inst_cnt,
                            {TierSql.InstantWeight("s.weight")} as ts_weight
                     FROM {source.Sql} s
                     JOIN process_instance pi ON pi.id = s.instance_id
-                    WHERE s.ts >= @from AND s.ts <= @to
-                    {(q != null ? "AND pi.name LIKE @q" : "")}
-                    GROUP BY pi.name, s.ts
+                    WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
+                    GROUP BY s.ts
                 ) sub
-                GROUP BY sub.name
-                ORDER BY {sortExpr} DESC
-                LIMIT @limit
+                GROUP BY sub.ts / @bucket ORDER BY ts
                 """;
-        }
-        else
-        {
-            string sortExpr = sort switch
-            {
-                "memory" => $"MAX(s.private_mb)",
-                "io" => $"SUM(s.io_kb)",
-                "name" => "pi.name",
-                _ => TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight")
-            };
-            cmd.CommandText = $"""
-                SELECT pi.id, pi.pid, pi.name, pi.path,
-                       {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu_pct", "s.weight")},
-                       MAX(s.private_mb) as peak_private_mb,
-                       SUM(s.io_kb) as total_io_kb
-                FROM {source.Sql} s
-                JOIN process_instance pi ON pi.id = s.instance_id
-                WHERE s.ts >= @from AND s.ts <= @to
-                {(q != null ? "AND pi.name LIKE @q" : "")}
-                GROUP BY pi.id
-                ORDER BY {sortExpr} DESC
-                LIMIT @limit
-                """;
-        }
-
-        AddTierBounds(cmd, source);
-        cmd.Parameters.AddWithValue("@from", from);
-        cmd.Parameters.AddWithValue("@to", to);
-        cmd.Parameters.AddWithValue("@limit", take);
-        if (q != null) cmd.Parameters.AddWithValue("@q", $"%{q}%");
-
-        var results = new List<object>();
-        using var reader = cmd.ExecuteReader();
-
-        if (grouped)
-        {
+    
+            AddTierBounds(cmd, source);
+            cmd.Parameters.AddWithValue("@bucket", effectiveBucket);
+            cmd.Parameters.AddWithValue("@name", name);
+            cmd.Parameters.AddWithValue("@from", from);
+            cmd.Parameters.AddWithValue("@to", to);
+    
+            var points = new List<object>();
+            using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                results.Add(new
+                points.Add(new
                 {
-                    name = reader.GetString(0),
-                    cpuPct = reader.IsDBNull(1) ? 0.0 : reader.GetDouble(1),
-                    privateMb = reader.IsDBNull(2) ? 0.0 : reader.GetDouble(2),
-                    ioKb = reader.IsDBNull(3) ? 0.0 : reader.GetDouble(3),
-                    instanceCount = reader.GetInt32(4),
-                    path = reader.IsDBNull(5) ? null : reader.GetString(5),
+                    ts = reader.GetInt64(0),
+                    cpuPct = reader.IsDBNull(1) ? null : (double?)reader.GetDouble(1),
+                    privateMb = reader.IsDBNull(2) ? null : (double?)reader.GetDouble(2),
+                    workingSetMb = reader.IsDBNull(3) ? null : (double?)reader.GetDouble(3),
+                    ioKb = reader.IsDBNull(4) ? null : (double?)reader.GetDouble(4),
+                    instanceCount = reader.GetInt32(5),
                 });
             }
+    
+            return Results.Json(new { name, resolution = plan.Resolution, points }, jsonOptions);
         }
-        else
+        catch (SqliteException)
         {
-            while (reader.Read())
-            {
-                results.Add(new
-                {
-                    id = reader.GetInt64(0),
-                    pid = reader.GetInt32(1),
-                    name = reader.GetString(2),
-                    path = reader.IsDBNull(3) ? null : reader.GetString(3),
-                    cpuPct = reader.IsDBNull(4) ? 0.0 : reader.GetDouble(4),
-                    privateMb = reader.IsDBNull(5) ? 0.0 : reader.GetDouble(5),
-                    ioKb = reader.IsDBNull(6) ? 0.0 : reader.GetDouble(6),
-                });
-            }
+            return Results.Json(new { name, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
         }
-
-        return Results.Json(new { grouped, processes = results }, jsonOptions);
-    });
-
-    app.MapGet("/api/process/{id:long}", (long id, long from, long to) =>
-    {
-        using var conn = OpenDb();
-        var plan = PlanTiers(conn, from, to, isMachine: false);
-        TierSource source = TierSql.Source(plan, isMachine: false);
-
-        using var cmd = conn.CreateCommand();
-        if (plan.Bucket > 0)
-        {
-            cmd.CommandText = $"""
-                SELECT (s.ts / @bucket) * @bucket as ts,
-                       {TierSql.WeightedAvg("s.cpu_pct", "cpu_pct", "s.weight")},
-                       MAX(s.private_mb) as private_mb,
-                       MAX(s.working_set_mb) as working_set_mb, SUM(s.io_kb) as io_kb
-                FROM {source.Sql} s
-                WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
-                GROUP BY s.ts / @bucket ORDER BY ts
-                """;
-            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
-        }
-        else
-        {
-            cmd.CommandText = $"""
-                SELECT s.ts, s.cpu_pct as cpu_pct, s.private_mb as private_mb,
-                       s.working_set_mb as working_set_mb, s.io_kb as io_kb
-                FROM {source.Sql} s
-                WHERE s.instance_id = @id AND s.ts >= @from AND s.ts <= @to
-                ORDER BY s.ts
-                """;
-        }
-
-        AddTierBounds(cmd, source);
-        cmd.Parameters.AddWithValue("@id", id);
-        cmd.Parameters.AddWithValue("@from", from);
-        cmd.Parameters.AddWithValue("@to", to);
-
-        var points = new List<object>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            points.Add(new
-            {
-                ts = reader.GetInt64(0),
-                cpuPct = reader.IsDBNull(1) ? null : (double?)reader.GetDouble(1),
-                privateMb = reader.IsDBNull(2) ? null : (double?)reader.GetDouble(2),
-                workingSetMb = reader.IsDBNull(3) ? null : (double?)reader.GetDouble(3),
-                ioKb = reader.IsDBNull(4) ? null : (double?)reader.GetDouble(4),
-            });
-        }
-
-        using var infoCmd = conn.CreateCommand();
-        infoCmd.CommandText = "SELECT pid, name, path, command_line, first_seen, last_seen FROM process_instance WHERE id = @id";
-        infoCmd.Parameters.AddWithValue("@id", id);
-        using var infoReader = infoCmd.ExecuteReader();
-
-        object? info = null;
-        if (infoReader.Read())
-        {
-            info = new
-            {
-                pid = infoReader.GetInt32(0),
-                name = infoReader.GetString(1),
-                path = infoReader.IsDBNull(2) ? null : infoReader.GetString(2),
-                commandLine = infoReader.IsDBNull(3) ? null : infoReader.GetString(3),
-                firstSeen = infoReader.GetInt64(4),
-                lastSeen = infoReader.GetInt64(5),
-            };
-        }
-
-        return Results.Json(new { info, resolution = plan.Resolution, points }, jsonOptions);
-    });
-
-    app.MapGet("/api/process-group/{name}", (string name, long from, long to) =>
-    {
-        using var conn = OpenDb();
-        var plan = PlanTiers(conn, from, to, isMachine: false);
-        TierSource source = TierSql.Source(plan, isMachine: false);
-
-        long effectiveBucket = plan.Bucket > 0 ? plan.Bucket : 5000;
-
-        using var cmd = conn.CreateCommand();
-
-        // Total the group at each instant first, then combine those totals across
-        // the bucket, the same shape /api/processes uses. Summing rows directly
-        // over a bucket would scale with how many rows the bucket happens to
-        // hold, which differs between tiers and would step at the boundary.
-        // The bucket holding the tier changeover draws from both tiers, so the
-        // totals are weighted by the span each instant covers.
-        cmd.CommandText = $"""
-            SELECT (sub.ts / @bucket) * @bucket as ts,
-                   {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "cpu_pct")},
-                   {TierSql.AvgOfWeightedTotals("sub.ts_mem_weighted", "sub.ts_weight", "private_mb")},
-                   {TierSql.AvgOfWeightedTotals("sub.ts_ws_weighted", "sub.ts_weight", "working_set_mb")},
-                   SUM(sub.ts_io) as io_kb,
-                   MAX(sub.inst_cnt) as instance_count
-            FROM (
-                SELECT s.ts,
-                       {TierSql.WeightedTotal("s.cpu_pct", "ts_cpu_weighted", "s.weight")},
-                       {TierSql.WeightedTotal("s.private_mb", "ts_mem_weighted", "s.weight")},
-                       {TierSql.WeightedTotal("s.working_set_mb", "ts_ws_weighted", "s.weight")},
-                       SUM(s.io_kb) as ts_io,
-                       COUNT(DISTINCT s.instance_id) as inst_cnt,
-                       {TierSql.InstantWeight("s.weight")} as ts_weight
-                FROM {source.Sql} s
-                JOIN process_instance pi ON pi.id = s.instance_id
-                WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
-                GROUP BY s.ts
-            ) sub
-            GROUP BY sub.ts / @bucket ORDER BY ts
-            """;
-
-        AddTierBounds(cmd, source);
-        cmd.Parameters.AddWithValue("@bucket", effectiveBucket);
-        cmd.Parameters.AddWithValue("@name", name);
-        cmd.Parameters.AddWithValue("@from", from);
-        cmd.Parameters.AddWithValue("@to", to);
-
-        var points = new List<object>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            points.Add(new
-            {
-                ts = reader.GetInt64(0),
-                cpuPct = reader.IsDBNull(1) ? null : (double?)reader.GetDouble(1),
-                privateMb = reader.IsDBNull(2) ? null : (double?)reader.GetDouble(2),
-                workingSetMb = reader.IsDBNull(3) ? null : (double?)reader.GetDouble(3),
-                ioKb = reader.IsDBNull(4) ? null : (double?)reader.GetDouble(4),
-                instanceCount = reader.GetInt32(5),
-            });
-        }
-
-        return Results.Json(new { name, resolution = plan.Resolution, points }, jsonOptions);
     });
 
     app.MapGet("/api/alerts", (int? days) =>
@@ -509,7 +491,7 @@ try
 
             return Results.Json(new { period, alerts }, jsonOptions);
         }
-        catch
+        catch (SqliteException)
         {
             return Results.Json(new { period, alerts = Array.Empty<object>() }, jsonOptions);
         }
@@ -636,7 +618,7 @@ try
 
             return Results.Json(new { baselines }, jsonOptions);
         }
-        catch
+        catch (SqliteException)
         {
             return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
         }
@@ -717,7 +699,7 @@ try
 
             return Results.Json(new { metric, buckets }, jsonOptions);
         }
-        catch
+        catch (SqliteException)
         {
             return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
         }

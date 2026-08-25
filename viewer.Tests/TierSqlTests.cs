@@ -139,48 +139,10 @@ public class TierSqlTests : IDisposable
             cmd.Parameters.AddWithValue($"@{bound.Name}", bound.Value);
     }
 
-    /// <summary>Mirrors the /api/timeline query shape.</summary>
     List<long> QueryTimeline(long from, long to)
     {
-        var plan = Plan(from, to, isMachine: true);
-        TierSource source = TierSql.Source(plan, isMachine: true);
-
-        using var cmd = _conn.CreateCommand();
-        if (!plan.ServesFullResolution && plan.Bucket > 0)
-        {
-            cmd.CommandText = $"""
-                SELECT (ts / @bucket) * @bucket as ts,
-                       {TierSql.WeightedAvg("cpu_pct", "cpu_pct")},
-                       {TierSql.WeightedAvg("memory_avail_mb", "memory_avail_mb")},
-                       MAX(commit_mb) as commit_mb, SUM(hard_faults) as hard_faults,
-                       {TierSql.WeightedAvg("disk_read_ms", "disk_read_ms")},
-                       {TierSql.WeightedAvg("disk_write_ms", "disk_write_ms")},
-                       memory_total_mb,
-                       {TierSql.WeightedAvg("disk_busy_pct", "disk_busy_pct")},
-                       {TierSql.WeightedAvg("net_kbps", "net_kbps")},
-                       {TierSql.WeightedAvg("gpu_busy_pct", "gpu_busy_pct")}
-                FROM {source.Sql} WHERE ts >= @from AND ts <= @to
-                GROUP BY ts / @bucket ORDER BY ts
-                """;
-            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
-        }
-        else
-        {
-            cmd.CommandText = $"""
-                SELECT ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
-                       disk_read_ms, disk_write_ms, memory_total_mb, disk_busy_pct, net_kbps, gpu_busy_pct
-                FROM {source.Sql} WHERE ts >= @from AND ts <= @to ORDER BY ts
-                """;
-        }
-
-        AddBounds(cmd, source);
-        cmd.Parameters.AddWithValue("@from", from);
-        cmd.Parameters.AddWithValue("@to", to);
-
-        var timestamps = new List<long>();
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read()) timestamps.Add(reader.GetInt64(0));
-        return timestamps;
+        var result = TimelineQuery.Execute(_conn, from, to);
+        return result.Points.Select(p => p.Ts).ToList();
     }
 
     /// <summary>
