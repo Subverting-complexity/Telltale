@@ -111,75 +111,24 @@ try
             if (checkCmd.ExecuteScalar() == null)
                 return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
 
-            var plan = PlanTiers(conn, from, to, isMachine: true);
-            TierSource source = TierSql.Source(plan, isMachine: true);
+            var result = TimelineQuery.Execute(conn, from, to);
 
-            using var cmd = conn.CreateCommand();
-
-            // Raw-only ranges stay unaggregated, as they were before tier selection
-            // learned to span tiers, but only up to TierSelection.MaxRawOnlyPoints.
-            // Tiers are now chosen by which ones hold data rather than by how old the
-            // range is, so a single raw tier can serve a far wider window than the old
-            // rule allowed, and without that bound a week-long raw-only range would
-            // return every 5 second row it holds.
-            //
-            // A mixed bucket is at least as wide as the coarsest tier's interval, but
-            // the bucket grid is anchored to the epoch while the tier changes over at
-            // whatever instant the raw table happens to start. The one bucket holding
-            // that instant therefore straddles both tiers, so it is weighted like any
-            // other aggregate rather than trusted to be single-tier.
-            if (!plan.ServesFullResolution && plan.Bucket > 0)
+            var points = result.Points.Select(p => new
             {
-                cmd.CommandText = $"""
-                    SELECT (ts / @bucket) * @bucket as ts,
-                           {TierSql.WeightedAvg("cpu_pct", "cpu_pct")},
-                           {TierSql.WeightedAvg("memory_avail_mb", "memory_avail_mb")},
-                           MAX(commit_mb) as commit_mb, SUM(hard_faults) as hard_faults,
-                           {TierSql.WeightedAvg("disk_read_ms", "disk_read_ms")},
-                           {TierSql.WeightedAvg("disk_write_ms", "disk_write_ms")},
-                           memory_total_mb,
-                           {TierSql.WeightedAvg("disk_busy_pct", "disk_busy_pct")},
-                           {TierSql.WeightedAvg("net_kbps", "net_kbps")},
-                           {TierSql.WeightedAvg("gpu_busy_pct", "gpu_busy_pct")}
-                    FROM {source.Sql} WHERE ts >= @from AND ts <= @to
-                    GROUP BY ts / @bucket ORDER BY ts
-                    """;
-                cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
-            }
-            else
-            {
-                cmd.CommandText = $"""
-                    SELECT ts, cpu_pct, memory_avail_mb, commit_mb, hard_faults,
-                           disk_read_ms, disk_write_ms, memory_total_mb, disk_busy_pct, net_kbps, gpu_busy_pct
-                    FROM {source.Sql} WHERE ts >= @from AND ts <= @to ORDER BY ts
-                    """;
-            }
+                ts = p.Ts,
+                cpuPct = p.CpuPct,
+                memoryAvailMb = p.MemoryAvailMb,
+                commitMb = p.CommitMb,
+                hardFaults = p.HardFaults,
+                diskReadMs = p.DiskReadMs,
+                diskWriteMs = p.DiskWriteMs,
+                memoryTotalMb = p.MemoryTotalMb,
+                diskBusyPct = p.DiskBusyPct,
+                netKbps = p.NetKbps,
+                gpuBusyPct = p.GpuBusyPct,
+            });
 
-            AddTierBounds(cmd, source);
-            cmd.Parameters.AddWithValue("@from", from);
-            cmd.Parameters.AddWithValue("@to", to);
-
-            var points = new List<object>();
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                points.Add(new
-                {
-                    ts = reader.GetInt64(0),
-                    cpuPct = reader.IsDBNull(1) ? null : (double?)reader.GetDouble(1),
-                    memoryAvailMb = reader.IsDBNull(2) ? null : (double?)reader.GetDouble(2),
-                    commitMb = reader.IsDBNull(3) ? null : (double?)reader.GetDouble(3),
-                    hardFaults = reader.IsDBNull(4) ? null : (int?)reader.GetInt32(4),
-                    diskReadMs = reader.IsDBNull(5) ? null : (double?)reader.GetDouble(5),
-                    diskWriteMs = reader.IsDBNull(6) ? null : (double?)reader.GetDouble(6),
-                    memoryTotalMb = reader.IsDBNull(7) ? null : (double?)reader.GetDouble(7),
-                    diskBusyPct = reader.IsDBNull(8) ? null : (double?)reader.GetDouble(8),
-                    netKbps = reader.IsDBNull(9) ? null : (double?)reader.GetDouble(9),
-                    gpuBusyPct = reader.IsDBNull(10) ? null : (double?)reader.GetDouble(10),
-                });
-            }
-
-            return Results.Json(new { resolution = plan.Resolution, points }, jsonOptions);
+            return Results.Json(new { resolution = result.Resolution, points }, jsonOptions);
         }
         catch (SqliteException)
         {
