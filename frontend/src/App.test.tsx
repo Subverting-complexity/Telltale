@@ -86,6 +86,31 @@ describe('App and the wipe dialog', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  it('does not let the page move the day out from under the dialog', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('button', { name: 'Delete recorded data' }));
+    await user.click(await screen.findByRole('radio', { name: /The whole day being viewed/ }));
+
+    const named = screen.getByText(/everything recorded on/).textContent;
+
+    // The page's arrow key shortcuts listen on the window, so with focus on a
+    // dialog button they used to step the view to the previous day underneath
+    // the dialog, and the day about to be deleted moved with it. The
+    // confirmation would then be naming a day the person never chose.
+    await user.keyboard('{ArrowLeft}{ArrowLeft}');
+
+    expect(screen.getByText(/everything recorded on/).textContent).toBe(named);
+
+    await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+
+    const today = new Date();
+    const from = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    await waitFor(() =>
+      expect(wipeCapture).toHaveBeenCalledWith(expect.objectContaining({ from })));
+  });
+
   it('asks to delete the day it is showing', async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -95,12 +95,17 @@ static class CaptureWipeEndpoint
                 : wipe.Range(body.From!.Value, body.To!.Value);
 
             // The one destructive thing Telltale does on request, so it leaves a
-            // trace beside the database rather than none at all. The line names a
-            // scope and two counts and nothing else, so it adds no category of
-            // information the log did not already carry.
+            // trace beside the database rather than none at all.
+            //
+            // The shape of the wipe, never the range it covered. Writing the bounds
+            // would outlive the rows and defeat the point: one of the two reasons
+            // to delete a day is that the day was private, and a log line naming it
+            // still says which day someone wanted gone, and how much was in it.
+            // What is left is what operating the thing needs, that a wipe happened
+            // and how big it was.
             log?.Append(everything
                 ? $"Wiped the whole capture: {result.RowsDeleted} rows, {result.BytesFreed} bytes freed."
-                : $"Wiped {body.From}..{body.To}: {result.RowsDeleted} rows, {result.BytesFreed} bytes freed.");
+                : $"Wiped one range: {result.RowsDeleted} rows, {result.BytesFreed} bytes freed.");
 
             return Results.Json(
                 new WipeResponse(result.RowsDeleted, result.BytesFreed), json);

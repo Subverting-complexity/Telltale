@@ -109,6 +109,14 @@ export default function App() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      // The page's own shortcuts stand down while the wipe dialog is open. The
+      // dialog is a modal on top of the page, but these listen on the window, so
+      // an arrow key pressed with focus on the Cancel button would step the view
+      // to another day underneath it, and the day the dialog is offering to
+      // delete would move with it. Escape had the same shape of problem: one
+      // press would close the dialog and pop the drill-down behind it.
+      if (wipeOpen) return;
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === 'Escape' && selectedProcess) {
@@ -157,7 +165,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedProcess]);
+  }, [selectedProcess, wipeOpen]);
 
   // Refreshed rather than read once. Deleting the earliest or the latest day
   // moves where the recording starts and ends, and the navigation is built from
@@ -235,7 +243,8 @@ export default function App() {
   const hasData = range?.min != null;
   const logicalProcessors = health?.logicalProcessors || 1;
 
-  // Built here rather than inline, because the return below is not the only one.
+  // Named rather than written inline, so the return below reads as one line and
+  // the reason the empty screen waits for it stays next to the condition.
   const wipeDialog = wipeOpen ? (
     <WipeDataDialog
       day={viewedDay(view)}

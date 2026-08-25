@@ -61,6 +61,13 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         SeedDay(Day0);
         SeedDay(Day1);
 
+        // Asserted full first. An empty table is empty after a wipe whether or not
+        // the wipe covers it, so without this the whole test passes vacuously for
+        // any history table a later migration adds and SeedDay does not write to,
+        // which is precisely the case the derived list exists to catch.
+        foreach (var table in CaptureTables())
+            Assert.True(Count(table) > 0, $"{table} was not seeded, so wiping it proves nothing.");
+
         Db.WipeAll();
 
         foreach (var table in CaptureTables())

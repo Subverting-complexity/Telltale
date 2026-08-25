@@ -67,6 +67,15 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
     return () => previous?.focus?.();
   }, []);
 
+  // Both of these take the focused control away: pressing Delete disables it
+  // while the wipe runs, and finishing unmounts it. A browser drops focus to the
+  // body when that happens, which puts it outside a dialog that has told
+  // assistive technology the rest of the page is not there. Taking it back keeps
+  // the reading order inside the dialog and puts the result in reach.
+  useEffect(() => {
+    if (!panel.current?.contains(document.activeElement)) panel.current?.focus();
+  }, [busy, done]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busy) {
@@ -79,13 +88,31 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
       // reader has just been told to ignore.
       if (event.key !== 'Tab' || !panel.current) return;
 
-      const stops = panel.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled])');
+      // Filtered on the disabled property rather than selected with :enabled, for
+      // two reasons. The property is true for a radio inside the disabled
+      // fieldset, which a delete in progress produces and the [disabled]
+      // attribute misses. And a selector list carrying a pseudo class comes back
+      // from jsdom grouped by selector rather than in document order, which puts
+      // the wrong element at each end of the ring and lets Tab out of the dialog
+      // in exactly the tests written to prove it cannot.
+      const stops = [...panel.current.querySelectorAll<HTMLButtonElement | HTMLInputElement>(
+        'button, input')].filter(stop => !stop.disabled);
       if (stops.length === 0) return;
 
       const first = stops[0];
       const last = stops[stops.length - 1];
       const active = document.activeElement;
+
+      // Focus has already left, which the two state changes on the normal path
+      // both cause: the button being pressed is disabled while the delete runs,
+      // and unmounted when it finishes, and a browser drops focus to the body
+      // either way. Without this, the next Tab is a boundary case for neither
+      // end of the ring and walks out of the dialog.
+      if (!(active instanceof Node) || !panel.current.contains(active)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
 
       if (event.shiftKey && (active === first || active === panel.current)) {
         event.preventDefault();

@@ -131,6 +131,26 @@ describe('WipeDataDialog', () => {
     }
   });
 
+  it('keeps focus inside once the delete has finished', async () => {
+    const user = userEvent.setup();
+    open();
+
+    await user.click(screen.getByRole('radio', { name: /Everything recorded so far/ }));
+    await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    await screen.findByRole('button', { name: 'Close' });
+
+    // The button that was pressed is unmounted when the delete finishes, and a
+    // browser drops focus to the body when that happens. Left there, the next
+    // Tab is a boundary case for neither end of the ring and walks straight out
+    // of a dialog that has told assistive technology the page behind it is not
+    // there, taking the result with it.
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    await user.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
   it('gives focus back to whatever had it', async () => {
     const opener = document.createElement('button');
     document.body.appendChild(opener);

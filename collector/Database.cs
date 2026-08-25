@@ -998,9 +998,11 @@ public sealed class Database : IDisposable
     /// </summary>
     /// <remarks>
     /// A rollup row is deleted when its own timestamp falls inside the range. A
-    /// bucket is stamped with the moment it starts, so a bucket that begins before
-    /// the range and runs into it is kept whole rather than half emptied. On a
-    /// calendar day boundary that only arises where the local offset is not a whole
+    /// bucket is stamped with the moment it starts, so it goes or stays whole
+    /// rather than being half emptied: one that begins before the range and runs
+    /// into it is kept, and one that begins inside the range and runs past its end
+    /// is deleted, taking up to ten minutes of the next day with it. Neither
+    /// happens on a calendar day boundary unless the local offset is not a whole
     /// ten minutes, which is a handful of timezones.
     /// </remarks>
     /// <exception cref="ArgumentException">
@@ -1088,16 +1090,43 @@ public sealed class Database : IDisposable
             if (deleted == 0)
                 return new CaptureWipeResult(0, 0);
 
-            // Vacuum, then checkpoint, which is the order RollupWorker uses and the
-            // only order that gives the space back now. The delete leaves its pages
-            // on the file's own free list, where the vacuum finds them whether or
-            // not the log has been folded in; what the vacuum cannot do is shorten
-            // the file, because in write-ahead logging mode its new, smaller page
-            // count is written to the log rather than to the file. The checkpoint
-            // is what folds that in and truncates. Reversed, the file keeps its old
-            // size until some later checkpoint happens along.
-            IncrementalVacuumLocked();
-            CheckpointLocked();
+            try
+            {
+                // Vacuum, then checkpoint, which is the order RollupWorker uses and
+                // the only order that gives the space back now. The delete leaves
+                // its pages on the file's own free list, where the vacuum finds
+                // them whether or not the log has been folded in; what the vacuum
+                // cannot do is shorten the file, because in write-ahead logging
+                // mode its new, smaller page count is written to the log rather
+                // than to the file. The checkpoint is what folds that in and
+                // truncates. Reversed, the file keeps its old size until some later
+                // checkpoint happens along.
+                IncrementalVacuumLocked();
+                CheckpointLocked();
+            }
+            catch (SqliteException ex)
+            {
+                // The rows are already gone: this is after the commit. Letting the
+                // exception out would report a wipe that succeeded as one that
+                // failed, and the person would try again and be told there was
+                // nothing there. So the delete stands, no space is claimed for it,
+                // and the reason goes to the log. RollupWorker reclaims the pages
+                // on its next cycle anyway.
+                //
+                // Deliberately not covered by a test, because the obvious way to
+                // provoke it does not. A competing writer never gets this far: the
+                // transaction above takes the write lock before the first delete
+                // and holds it through the commit, so contention fails the wipe
+                // outright, which is the honest answer and the one the endpoint
+                // turns into "busy, nothing was deleted". What is left is the
+                // narrow window after the commit, and the only ways to reach it
+                // cost thirty seconds of SQLite's busy timeout per run.
+                _logger.LogWarning(ex,
+                    "The wipe deleted {Rows} rows but could not return the freed pages "
+                    + "to the filesystem. They will be reclaimed by the next rollup cycle.",
+                    deleted);
+                return new CaptureWipeResult(deleted, 0);
+            }
 
             long sizeAfter = GetDatabaseSizeBytesLocked();
             return new CaptureWipeResult(deleted, Math.Max(0, sizeBefore - sizeAfter));
