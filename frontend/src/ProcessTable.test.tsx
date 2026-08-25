@@ -11,7 +11,7 @@ import type { ProcessGroupRow } from './types';
  */
 const LOGICAL_PROCESSORS = 16;
 
-const process: ProcessGroupRow = {
+const busyProcess: ProcessGroupRow = {
   name: 'app.exe',
   cpuPct: 151,
   privateMb: 700,
@@ -23,7 +23,7 @@ const process: ProcessGroupRow = {
 function renderTable() {
   return render(
     <ProcessTable
-      processes={[process]}
+      processes={[busyProcess]}
       logicalProcessors={LOGICAL_PROCESSORS}
       onSelectGroup={() => {}}
       onCompare={() => {}}

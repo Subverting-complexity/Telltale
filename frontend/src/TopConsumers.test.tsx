@@ -6,7 +6,7 @@ import type { ProcessGroupRow } from './types';
 /** Sixteen cores, and a process recorded at 151% of one of them: 9.44% here. */
 const LOGICAL_PROCESSORS = 16;
 
-const process: ProcessGroupRow = {
+const busyProcess: ProcessGroupRow = {
   name: 'app.exe',
   cpuPct: 151,
   privateMb: 700,
@@ -18,7 +18,7 @@ const process: ProcessGroupRow = {
 function renderPanel() {
   return render(
     <TopConsumers
-      processes={[process]}
+      processes={[busyProcess]}
       logicalProcessors={LOGICAL_PROCESSORS}
       onSelectProcess={() => {}}
       categoryFilter="all"
@@ -40,6 +40,6 @@ describe('TopConsumers CPU denominator', () => {
     renderPanel();
 
     expect(screen.getByText('9.44%')).toBeInTheDocument();
-    expect(screen.queryByText('151.0%')).not.toBeInTheDocument();
+    expect(screen.queryByText('151%')).not.toBeInTheDocument();
   });
 });
