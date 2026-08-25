@@ -71,7 +71,11 @@ function updateUrl(view: ViewState) {
   if (view.month) params.set('month', String(view.month));
   if (view.day) params.set('day', String(view.day));
   params.set('scale', view.scale);
-  window.history.replaceState(null, '', `?${params}`);
+  // Changing the date range invalidates any drill-down history entry
+  // pushed for the previous range, so the history state is reset to
+  // `null` alongside the URL — otherwise Forward could resurface a
+  // process detail view for data that's no longer the active range.
+  window.history.replaceState({ selectedProcess: null }, '', `?${params}`);
 }
 
 export default function App() {
@@ -121,16 +125,18 @@ export default function App() {
 
       if (e.key === 'Escape' && selectedProcess) {
         e.preventDefault();
-        if (selectedProcess.type === 'instance') {
-          setSelectedProcess({ type: 'group', name: selectedProcess.groupName });
-        } else {
-          setSelectedProcess(null);
-        }
+        window.history.back();
         return;
       }
 
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        if (selectedProcess) return;
+        if (selectedProcess) {
+          if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            window.history.back();
+          }
+          return;
+        }
         e.preventDefault();
         const step = e.key === 'ArrowLeft' ? -1 : 1;
         setView(v => {
@@ -183,6 +189,25 @@ export default function App() {
     setSelectedProcess(null);
     setCustomRange(null);
     setSelectedHourRange(null);
+  }, []);
+
+  // Drilling into a process (group, instance, or comparison) pushes a
+  // history entry so the browser's own Back/Forward controls, and the
+  // Escape/ArrowLeft handlers below, can step through the drill-down via
+  // `window.history.back()` instead of each juggling the previous state
+  // by hand.
+  const pushSelection = useCallback((selection: ProcessSelection | null) => {
+    window.history.pushState({ selectedProcess: selection }, '');
+    setSelectedProcess(selection);
+  }, []);
+
+  useEffect(() => {
+    function handlePopState(e: PopStateEvent) {
+      const selection = (e.state?.selectedProcess as ProcessSelection | undefined) ?? null;
+      setSelectedProcess(selection);
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   const refreshData = useCallback(() => {
@@ -301,7 +326,7 @@ export default function App() {
           names={selectedProcess.names}
           from={activeRange.from}
           to={activeRange.to}
-          onBack={() => setSelectedProcess(null)}
+          onBack={() => window.history.back()}
         />
       );
     }
@@ -314,7 +339,7 @@ export default function App() {
           groupName={selectedProcess.groupName}
           from={activeRange.from}
           to={activeRange.to}
-          onBack={() => setSelectedProcess({ type: 'group', name: selectedProcess.groupName })}
+          onBack={() => window.history.back()}
           thresholds={thresholds}
         />
       );
@@ -327,9 +352,9 @@ export default function App() {
           name={selectedProcess.name}
           from={activeRange.from}
           to={activeRange.to}
-          onBack={() => setSelectedProcess(null)}
+          onBack={() => window.history.back()}
           onSelectInstance={(id, groupName) =>
-            setSelectedProcess({ type: 'instance', id, groupName })
+            pushSelection({ type: 'instance', id, groupName })
           }
           thresholds={thresholds}
         />
@@ -340,7 +365,7 @@ export default function App() {
   }
 
   function selectProcess(name: string) {
-    setSelectedProcess({ type: 'group', name });
+    pushSelection({ type: 'group', name });
     setDashboardTab('processes');
   }
 
@@ -485,8 +510,8 @@ export default function App() {
                   <ProcessTable
                     processes={processes}
                     logicalProcessors={logicalProcessors}
-                    onSelectGroup={name => setSelectedProcess({ type: 'group', name })}
-                    onCompare={names => setSelectedProcess({ type: 'comparison', names })}
+                    onSelectGroup={name => pushSelection({ type: 'group', name })}
+                    onCompare={names => pushSelection({ type: 'comparison', names })}
                     filter={processFilter}
                     onFilterChange={setProcessFilter}
                     sortBy={processSort}
