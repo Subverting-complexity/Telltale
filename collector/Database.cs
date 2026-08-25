@@ -1081,12 +1081,23 @@ public sealed class Database : IDisposable
                 tx.Commit();
             }
 
-            // Freed pages sit in the file's own free list until something hands them
-            // back, and until the log is folded into the file most of them are not
-            // free yet. Checkpoint first, then vacuum: reversed, the vacuum finds
-            // little to release and the file stays the size it was.
-            CheckpointLocked();
+            // Nothing matched, so there is nothing this wipe freed. Skipping the
+            // housekeeping keeps the reported figure attributable: run
+            // unconditionally, it would hand back pages an earlier retention pass
+            // had freed and report them as though this wipe had done it.
+            if (deleted == 0)
+                return new CaptureWipeResult(0, 0);
+
+            // Vacuum, then checkpoint, which is the order RollupWorker uses and the
+            // only order that gives the space back now. The delete leaves its pages
+            // on the file's own free list, where the vacuum finds them whether or
+            // not the log has been folded in; what the vacuum cannot do is shorten
+            // the file, because in write-ahead logging mode its new, smaller page
+            // count is written to the log rather than to the file. The checkpoint
+            // is what folds that in and truncates. Reversed, the file keeps its old
+            // size until some later checkpoint happens along.
             IncrementalVacuumLocked();
+            CheckpointLocked();
 
             long sizeAfter = GetDatabaseSizeBytesLocked();
             return new CaptureWipeResult(deleted, Math.Max(0, sizeBefore - sizeAfter));

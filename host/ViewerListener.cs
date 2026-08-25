@@ -230,7 +230,7 @@ sealed class ViewerListener : IAsyncDisposable
         // the token too, and it only exists when there is a recorder to wipe
         // through. See CaptureWipeEndpoint.
         if (_wipe is not null)
-            app.MapCaptureWipe(_wipe, token);
+            app.MapCaptureWipe(_wipe, token, _log);
 
         try
         {

@@ -44,7 +44,7 @@ describe('WipeDataDialog', () => {
     const user = userEvent.setup();
     open();
 
-    await user.click(screen.getByRole('radio', { name: /The day on screen/ }));
+    await user.click(screen.getByRole('radio', { name: /The whole day being viewed/ }));
 
     expect(screen.getByText(/everything recorded on Monday, 3 March 2025/))
       .toBeInTheDocument();
@@ -56,7 +56,7 @@ describe('WipeDataDialog', () => {
     const onWiped = vi.fn();
     open(day, onWiped);
 
-    await user.click(screen.getByRole('radio', { name: /The day on screen/ }));
+    await user.click(screen.getByRole('radio', { name: /The whole day being viewed/ }));
     await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
 
     await waitFor(() => expect(wipeCapture).toHaveBeenCalledWith({
@@ -91,7 +91,7 @@ describe('WipeDataDialog', () => {
     const user = userEvent.setup();
     open();
 
-    await user.click(screen.getByRole('radio', { name: /The day on screen/ }));
+    await user.click(screen.getByRole('radio', { name: /The whole day being viewed/ }));
     await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
 
     expect(await screen.findByText(/nothing was deleted/)).toBeInTheDocument();
@@ -114,7 +114,50 @@ describe('WipeDataDialog', () => {
   it('does not offer to delete a day when the view is not on one', () => {
     open(null);
 
-    expect(screen.getByRole('radio', { name: /The day on screen/ })).toBeDisabled();
+    expect(screen.getByRole('radio', { name: /The whole day being viewed/ })).toBeDisabled();
     expect(screen.getByText(/open a single day first/)).toBeInTheDocument();
+  });
+
+  it('keeps Tab inside the dialog', async () => {
+    const user = userEvent.setup();
+    open();
+
+    // aria-modal tells assistive technology the rest of the page is not there.
+    // Tab has to agree, or the next press walks into content the user has just
+    // been told to ignore, with the dialog still on screen.
+    for (let press = 0; press < 8; press++) {
+      await user.tab();
+      expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+    }
+  });
+
+  it('gives focus back to whatever had it', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+
+    const { unmount } = open();
+    expect(document.activeElement).not.toBe(opener);
+
+    unmount();
+
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('says what it is about to do through a region that was already there', async () => {
+    const user = userEvent.setup();
+    const { container } = open();
+
+    // The region has to be in the document before its text changes, or the
+    // change is not announced. Rendered along with its first sentence, it is
+    // usually announced as nothing at all.
+    const region = container.querySelector('[aria-live="polite"]');
+    expect(region).not.toBeNull();
+    expect(region).toHaveTextContent('');
+
+    await user.click(screen.getByRole('radio', { name: /Everything recorded so far/ }));
+
+    expect(region).toHaveTextContent(/everything Telltale has recorded/);
   });
 });

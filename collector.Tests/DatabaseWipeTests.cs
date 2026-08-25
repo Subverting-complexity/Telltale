@@ -19,13 +19,41 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
     private const long Day1 = Day0 + DayMs;
     private const long Day2 = Day0 + (2 * DayMs);
 
-    /// <summary>Every table a wipe is expected to empty.</summary>
-    private static readonly string[] CaptureTables =
-    [
-        "sample", "sample_1m", "sample_10m",
-        "machine", "machine_1m", "machine_10m",
-        "collector_health", "collector_tick_phase",
-    ];
+    /// <summary>
+    /// The tables a wipe is expected to empty, read out of the database rather
+    /// than copied from <see cref="Database"/>.
+    /// </summary>
+    /// <remarks>
+    /// A hand written copy would go stale in exactly the way that matters: a later
+    /// migration adds a table holding recorded history, whoever adds it forgets the
+    /// wipe, and a test carrying the same stale list passes while the wipe quietly
+    /// leaves history behind. Deriving it means that the day such a table appears,
+    /// these tests fail until it is either wiped or named as a deliberate exception.
+    ///
+    /// A table holds recorded history if it has a <c>ts</c> column.
+    /// <c>process_instance</c> has none and is asserted separately, and
+    /// <c>machine_info</c> and <c>schema_version</c> have none either, which is why
+    /// they are the two things a wipe keeps.
+    /// </remarks>
+    private string[] CaptureTables()
+    {
+        using var conn = Connect();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT m.name FROM sqlite_master AS m
+            WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
+              AND EXISTS (SELECT 1 FROM pragma_table_info(m.name) WHERE name = 'ts')
+            ORDER BY m.name
+            """;
+
+        using var reader = cmd.ExecuteReader();
+        var tables = new List<string>();
+        while (reader.Read())
+            tables.Add(reader.GetString(0));
+
+        Assert.NotEmpty(tables);
+        return [.. tables];
+    }
 
     [Fact]
     public void WipeAll_EmptiesEveryTableThatHoldsRecordedHistory()
@@ -35,7 +63,7 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
 
         Db.WipeAll();
 
-        foreach (var table in CaptureTables)
+        foreach (var table in CaptureTables())
             Assert.Equal(0, Count(table));
 
         Assert.Equal(0, Count("process_instance"));
@@ -96,7 +124,7 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
 
         Db.WipeRange(Day1, Day1 + DayMs - 1);
 
-        foreach (var table in CaptureTables)
+        foreach (var table in CaptureTables())
         {
             Assert.Equal(0, Count(table, $"ts >= {Day1} AND ts < {Day1 + DayMs}"));
             Assert.Equal(1, Count(table, $"ts < {Day1}"));
@@ -174,11 +202,21 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         for (int i = 0; i < 4000; i++)
             Db.WriteMachineSample(Day0 + i, Machine());
 
-        long before = Db.GetDatabaseSizeBytes();
+        // Checkpointed first, so the starting file size is the real one rather
+        // than whatever had reached the file before the log was folded into it.
+        Db.WalCheckpoint();
+        long fileBefore = new FileInfo(DbPath).Length;
+        long pagesBefore = Db.GetDatabaseSizeBytes();
+
         var result = Db.WipeAll();
 
-        Assert.True(Db.GetDatabaseSizeBytes() < before,
-            "The file should be smaller after everything in it was deleted.");
+        // The file itself, not only the page count. Vacuuming lowers the page
+        // count whether or not the file is ever shortened, so asserting on the
+        // page count alone would pass with the file still at its old size on
+        // disk, which is what the person who asked for the wipe goes and looks at.
+        Assert.True(new FileInfo(DbPath).Length < fileBefore,
+            "The database file should be smaller on disk after everything in it was deleted.");
+        Assert.True(Db.GetDatabaseSizeBytes() < pagesBefore);
         Assert.True(result.BytesFreed > 0, "The wipe should report the space it gave back.");
     }
 
@@ -199,7 +237,7 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         {
             Assert.Throws<SqliteException>(() => Db.WipeAll());
 
-            foreach (var table in CaptureTables)
+            foreach (var table in CaptureTables())
                 Assert.Equal(2, Count(table));
 
             Assert.Equal(2, Count("process_instance"));
@@ -249,7 +287,7 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
             """);
 
     private int RowsInDatabase() =>
-        CaptureTables.Sum(t => Count(t)) + Count("process_instance");
+        CaptureTables().Sum(table => Count(table)) + Count("process_instance");
 
     private static MachineSample Machine() =>
         new(50.0, 8000, 12000, 0, 1.0, 2.0, 16000, 30.0, 1000, null);

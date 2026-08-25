@@ -1584,13 +1584,31 @@ body {
   font-size: 0.8rem;
 }
 
-.dialog-confirm {
+/*
+  The one live region in the dialog. It is always in the document so a change to
+  it is announced, which means it is also empty most of the time: it collapses
+  rather than leaving a gap when there is nothing to say.
+*/
+.dialog-say {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.dialog-say:not(:empty) {
   margin: 0 0 14px;
+}
+
+/*
+  Only the sentence asking a person to confirm is emphasised, and never the one
+  reporting what already went. The wording carries the warning on its own; the
+  box is there to slow the reader down before the irreversible click, which is
+  pointless afterwards.
+*/
+.dialog-say.warning {
   padding: 10px;
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--danger) 12%, var(--bg-primary));
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
-  font-size: 0.9rem;
 }
 
 .dialog-error {

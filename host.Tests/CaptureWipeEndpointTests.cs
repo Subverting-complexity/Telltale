@@ -198,6 +198,55 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task The_reply_uses_the_field_names_the_window_reads()
+    {
+        _wipe.Result = new CaptureWipeResult(7, 8);
+        var listener = await Started(_wipe);
+        using var client = new HttpClient();
+
+        var response = await Post(client, TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+        var body = await response.Content.ReadAsStringAsync();
+
+        // Asserted on the raw text rather than by deserialising. ReadFromJsonAsync
+        // matches property names case insensitively, so a reply that had drifted to
+        // PascalCase would still round trip here while the window, which reads the
+        // fields by name, quietly got undefined for both of them.
+        Assert.Contains("\"rowsDeleted\"", body);
+        Assert.Contains("\"bytesFreed\"", body);
+    }
+
+    [Fact]
+    public async Task A_refusal_names_its_reason_in_the_field_the_window_reads()
+    {
+        var listener = await Started(_wipe);
+        using var client = new HttpClient();
+
+        var response = await Post(client, TokenOf(listener.WindowUrl!), """{}""");
+        var body = await response.Content.ReadAsStringAsync();
+
+        // Same reason. Without the field being called this, every refusal reaches
+        // the person as a bare status code instead of the sentence written for it.
+        Assert.Contains("\"error\"", body);
+    }
+
+    [Fact]
+    public async Task A_body_sent_as_something_other_than_json_is_rejected_rather_than_throwing()
+    {
+        var listener = await Started(_wipe);
+        using var client = new HttpClient();
+
+        var response = await client.PostAsync(
+            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TokenOf(listener.WindowUrl!)}",
+            new StringContent("""{"scope":"all"}""", Encoding.UTF8, "text/plain"));
+
+        // A well formed body under the wrong content type is still a bad request,
+        // not a server error. Left to the JSON reader it would throw out of the
+        // handler and reach the window as a bare 500 with nothing to show.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Null(_wipe.Called);
+    }
+
+    [Fact]
     public async Task A_body_that_is_not_json_is_rejected_rather_than_throwing()
     {
         var listener = await Started(_wipe);

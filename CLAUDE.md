@@ -47,9 +47,12 @@ every other page in the browser can reach loopback. It is mapped only by the
 single application build, which routes it through the recorder's own connection,
 so the viewer executable keeps its read-only handle and offers no wipe at all.
 The deletes run in one transaction, and nothing outside `schema_version` and
-`machine_info` survives a full wipe. Widening any of that, to delete a finer
-selection, to run without the token, or to reach the file from a second writable
-connection, needs a reason written down here.
+`machine_info` survives a full wipe. A wipe writes one line to the log saying
+what its scope was and how much went, which is the same kind of thing the log
+already carries and names no process and no command line. Widening any of that,
+to delete a finer selection, to run without the token, to write more than that
+one line, or to reach the file from a second writable connection, needs a reason
+written down here.
 
 Command lines are not stored either unless the user turns on
 `recordCommandLines`, which is off by default. When it is on, the collector

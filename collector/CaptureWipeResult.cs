@@ -13,9 +13,12 @@ namespace Telltale.Collector;
 /// the <c>process_instance</c> rows the cleanup afterwards removed.
 /// </param>
 /// <param name="BytesFreed">
-/// How much smaller the database file is than it was. Zero when nothing was
-/// deleted, and it can be zero after a real delete too: SQLite returns freed
-/// pages to the file's own free list, and only the incremental vacuum that runs
-/// afterwards hands whole pages back to the filesystem.
+/// How much smaller the database is than it was, measured the same way the rest
+/// of the collector measures it: page count times page size, which is what the
+/// size cap enforces against and what the window reports beside the clock.
+///
+/// Zero when nothing was deleted, and it can be zero after a real delete too.
+/// SQLite frees whole pages, so a delete small enough to leave every page still
+/// partly occupied returns none of them.
 /// </param>
 public sealed record CaptureWipeResult(long RowsDeleted, long BytesFreed);

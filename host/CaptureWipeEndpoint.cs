@@ -27,7 +27,8 @@ static class CaptureWipeEndpoint
     /// Serves <see cref="Path"/> from <paramref name="app"/>, acting through
     /// <paramref name="wipe"/> for any request carrying <paramref name="token"/>.
     /// </summary>
-    public static void MapCaptureWipe(this WebApplication app, ICaptureWipe wipe, string token)
+    public static void MapCaptureWipe(
+        this WebApplication app, ICaptureWipe wipe, string token, RollingLogFile? log = null)
     {
         var json = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
@@ -42,6 +43,16 @@ static class CaptureWipeEndpoint
             if (!WindowToken.IsPresentedIn(request, token))
                 return Results.NotFound();
 
+            // Checked rather than left to ReadFromJsonAsync, which answers a
+            // content type it does not recognise with an InvalidOperationException
+            // and would leave the handler throwing a bare 500 at a request this
+            // endpoint has a perfectly good 400 for.
+            if (!request.HasJsonContentType())
+            {
+                return Problem(json, StatusCodes.Status400BadRequest,
+                    "The request must be sent as application/json.");
+            }
+
             WipeRequest? body;
             try
             {
@@ -55,11 +66,12 @@ static class CaptureWipeEndpoint
             if (body is null)
                 return Problem(json, StatusCodes.Status400BadRequest, "The request body is missing.");
 
-            return Perform(body, wipe, json);
+            return Perform(body, wipe, json, log);
         });
     }
 
-    static IResult Perform(WipeRequest body, ICaptureWipe wipe, JsonSerializerOptions json)
+    static IResult Perform(
+        WipeRequest body, ICaptureWipe wipe, JsonSerializerOptions json, RollingLogFile? log)
     {
         bool everything = string.Equals(body.Scope, "all", StringComparison.OrdinalIgnoreCase);
         bool range = string.Equals(body.Scope, "range", StringComparison.OrdinalIgnoreCase);
@@ -81,6 +93,14 @@ static class CaptureWipeEndpoint
             var result = everything
                 ? wipe.All()
                 : wipe.Range(body.From!.Value, body.To!.Value);
+
+            // The one destructive thing Telltale does on request, so it leaves a
+            // trace beside the database rather than none at all. The line names a
+            // scope and two counts and nothing else, so it adds no category of
+            // information the log did not already carry.
+            log?.Append(everything
+                ? $"Wiped the whole capture: {result.RowsDeleted} rows, {result.BytesFreed} bytes freed."
+                : $"Wiped {body.From}..{body.To}: {result.RowsDeleted} rows, {result.BytesFreed} bytes freed.");
 
             return Results.Json(
                 new WipeResponse(result.RowsDeleted, result.BytesFreed), json);

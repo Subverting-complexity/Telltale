@@ -19,9 +19,8 @@ import { HealthSummary } from './HealthSummary';
 import { TopConsumers } from './TopConsumers';
 import { HeatmapView } from './Heatmap';
 import { WipeDataDialog } from './WipeDataDialog';
-import type { WipeTarget } from './WipeDataDialog';
 import {
-  getDayRange, getMonthRange, getWeekRange, getYearRange,
+  getDayRange, getMonthRange, getWeekRange, getYearRange, viewedDay,
 } from './utils';
 
 function getInitialTheme(): Theme {
@@ -73,20 +72,6 @@ function updateUrl(view: ViewState) {
   if (view.day) params.set('day', String(view.day));
   params.set('scale', view.scale);
   window.history.replaceState(null, '', `?${params}`);
-}
-
-/**
- * The day the wipe control offers to delete, or null when the view spans more
- * than one day. A wipe is offered per day and not per month or year, so a view
- * that is not on one day has nothing to name.
- */
-function viewedDay(view: ViewState): WipeTarget | null {
-  if (view.scale !== 'day' || view.month === undefined || view.day === undefined) return null;
-  const { from, to } = getDayRange(view.year, view.month, view.day);
-  const label = new Date(from).toLocaleDateString(undefined, {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  });
-  return { label, from, to };
 }
 
 export default function App() {
@@ -249,9 +234,33 @@ export default function App() {
 
   const hasData = range?.min != null;
   const logicalProcessors = health?.logicalProcessors || 1;
+
+  // Built here rather than inline, because the return below is not the only one.
+  const wipeDialog = wipeOpen ? (
+    <WipeDataDialog
+      day={viewedDay(view)}
+      onClose={() => setWipeOpen(false)}
+      onWiped={() => {
+        // The deleted range has to read as empty straight away, and the range
+        // endpoint has to be asked again: wiping the earliest day moves where
+        // the recording starts.
+        setCustomRange(null);
+        setSelectedHourRange(null);
+        setSelectedProcess(null);
+        refreshData();
+      }}
+    />
+  ) : null;
   const showHeatmapToggle = view.scale === 'week' || view.scale === 'month' || view.scale === 'year';
 
-  if (!hasData && !loading) {
+  // The empty screen waits while the dialog is open. Wiping everything empties
+  // the recording, which flips hasData false, and this return replaces the whole
+  // page: React sees a different tree in the same place, tears the dialog down
+  // and builds a new one with none of its state. The user would be told what had
+  // just been deleted for exactly as long as it took the range endpoint to
+  // answer. Nothing is hidden by waiting, because the dialog is on top of the
+  // page anyway, and the screen appears as soon as it is closed.
+  if (!hasData && !loading && !wipeOpen) {
     return (
       <div className="app">
         <header className="app-header" role="banner">
@@ -486,21 +495,7 @@ export default function App() {
         )}
       </main>
 
-      {wipeOpen && (
-        <WipeDataDialog
-          day={viewedDay(view)}
-          onClose={() => setWipeOpen(false)}
-          onWiped={() => {
-            // The deleted range has to read as empty straight away, and the
-            // range endpoint has to be asked again: wiping the earliest day
-            // moves where the recording starts.
-            setCustomRange(null);
-            setSelectedHourRange(null);
-            setSelectedProcess(null);
-            refreshData();
-          }}
-        />
-      )}
+      {wipeDialog}
     </div>
   );
 }

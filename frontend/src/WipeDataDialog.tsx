@@ -58,14 +58,44 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
   const [done, setDone] = useState<WipeResponse | null>(null);
   const panel = useRef<HTMLDivElement>(null);
 
+  // Focus moves in on open and back to whatever had it on close. Without the
+  // second half, closing the dialog drops focus onto the body and a keyboard
+  // user restarts from the top of the page.
   useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
     panel.current?.focus();
+    return () => previous?.focus?.();
   }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onClose();
+      if (event.key === 'Escape' && !busy) {
+        onClose();
+        return;
+      }
+
+      // aria-modal says the rest of the page is not there. Tab has to agree with
+      // it, or the next press walks out of the dialog and into content a screen
+      // reader has just been told to ignore.
+      if (event.key !== 'Tab' || !panel.current) return;
+
+      const stops = panel.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled])');
+      if (stops.length === 0) return;
+
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const active = document.activeElement;
+
+      if (event.shiftKey && (active === first || active === panel.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
+
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [busy, onClose]);
@@ -106,9 +136,22 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
       >
         <h2 id="wipe-dialog-title">Delete recorded data</h2>
 
+        {/*
+          Present from the moment the dialog opens rather than inserted along
+          with its first sentence. A live region generally has to be in the
+          document before its content changes for the change to be announced, so
+          one that arrives already full is usually announced as nothing at all.
+        */}
+        <p className={`dialog-say ${!done && choice ? 'warning' : ''}`} aria-live="polite">
+          {done
+            ? describeResult(done.rowsDeleted, done.bytesFreed)
+            : choice
+              ? `This deletes ${describe}. Are you sure?`
+              : ''}
+        </p>
+
         {done ? (
           <>
-            <p aria-live="polite">{describeResult(done.rowsDeleted, done.bytesFreed)}</p>
             <div className="dialog-actions">
               <button className="dialog-btn" onClick={onClose}>Close</button>
             </div>
@@ -133,7 +176,7 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
                   onChange={() => setChoice('day')}
                 />
                 <span>
-                  {day ? `The day on screen (${day.label})` : 'The day on screen'}
+                  {day ? `The whole day being viewed (${day.label})` : 'The whole day being viewed'}
                   {!day && (
                     <span className="dialog-hint"> (open a single day first)</span>
                   )}
@@ -151,12 +194,6 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
                 <span>Everything recorded so far</span>
               </label>
             </fieldset>
-
-            {choice && (
-              <p className="dialog-confirm" aria-live="polite">
-                This deletes {describe}. Are you sure?
-              </p>
-            )}
 
             {error && <p className="dialog-error" role="alert">{error}</p>}
 
