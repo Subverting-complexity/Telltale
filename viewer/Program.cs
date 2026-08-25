@@ -509,7 +509,7 @@ try
 
             return Results.Json(new { period, alerts }, jsonOptions);
         }
-        catch
+        catch (SqliteException)
         {
             return Results.Json(new { period, alerts = Array.Empty<object>() }, jsonOptions);
         }
@@ -636,7 +636,7 @@ try
 
             return Results.Json(new { baselines }, jsonOptions);
         }
-        catch
+        catch (SqliteException)
         {
             return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
         }
@@ -717,7 +717,7 @@ try
 
             return Results.Json(new { metric, buckets }, jsonOptions);
         }
-        catch
+        catch (SqliteException)
         {
             return Results.Json(new { metric, buckets = Array.Empty<object>() }, jsonOptions);
         }
