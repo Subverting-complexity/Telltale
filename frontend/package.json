@@ -15,9 +15,13 @@
     "uplot": "^1.6.31"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.4.1",
+    "jsdom": "^29.1.1",
     "typescript": "~5.8.3",
     "vite": "^6.3.0",
     "vitest": "^4.1.0"

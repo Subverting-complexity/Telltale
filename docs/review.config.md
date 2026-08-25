@@ -227,9 +227,16 @@ TypeScript + Vite frontend, over a local SQLite database.
 
 - New backend logic needs unit tests in `collector.Tests/` or
   `viewer.Tests/`. Pure helpers and parsing/aggregation code have no excuse.
-- New frontend utility logic needs a `vitest` test alongside it. Presentational
-  components without logic do not.
-- Bug fixes need a test that fails before the fix and passes after it.
+- New frontend utility logic needs a `vitest` test alongside it.
+- A component that decides what to render, or that formats a value on its way to
+  the screen, needs a test that renders it. `frontend/` has a component harness
+  now: jsdom plus testing-library, wired into `npm test`, so `*.test.tsx` files
+  run in the quality gate and in CI alongside everything else. Before it existed
+  this expectation could not be met, and a call site handing kilobytes to a
+  helper that takes megabytes shipped because of it. A component that only
+  arranges other components still needs nothing.
+- Bug fixes need a test that fails before the fix and passes after it. That now
+  includes fixes in `.tsx` files.
 - P/Invoke wrappers are hard to unit test. A test over the managed parsing and
   shaping layer is expected even where the native call itself is not covered.
 - `bash scripts/quality-gate.sh` must pass locally before any commit.
