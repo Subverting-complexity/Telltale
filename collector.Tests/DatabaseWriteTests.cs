@@ -244,4 +244,26 @@ public class DatabaseWriteTests() : SqliteTestBase("write")
         Assert.Equal(50, Real($"SELECT sample_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
         Assert.Equal(60, Real($"SELECT machine_write_ms FROM collector_tick_phase WHERE ts = {Ts}"));
     }
+
+    /// <summary>
+    /// The first tick of a run has one reading of the collector's processor time
+    /// and needs two, so there is no rate to record. That has to reach the column
+    /// as null: writing zero is what made this field useless before issue #93,
+    /// because a reader cannot tell an idle recorder from an unmeasured one.
+    /// </summary>
+    [Fact]
+    public void WriteCollectorHealth_StoresAnUnmeasuredCpuAsNullRatherThanZero()
+    {
+        Db.WriteCollectorHealth(Ts, null, 40.0, 12.0, 300, 120);
+
+        Assert.Equal(1, Count("collector_health", "cpu_pct IS NULL"));
+    }
+
+    [Fact]
+    public void WriteCollectorHealth_StoresAMeasuredCpuOfZeroAsZero()
+    {
+        Db.WriteCollectorHealth(Ts, 0.0, 40.0, 12.0, 300, 120);
+
+        Assert.Equal(1, Count("collector_health", "cpu_pct = 0"));
+    }
 }

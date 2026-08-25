@@ -574,7 +574,13 @@ public sealed class Database : IDisposable
         }
     }
 
-    public void WriteCollectorHealth(long timestamp, double cpuPct, double privateMb,
+    /// <param name="cpuPct">
+    /// The collector's own CPU as a share of one core, or null when no rate could
+    /// be measured, which is the case on the first tick of a run. Null is written
+    /// as null: this column read a hardcoded zero for its whole life before, and a
+    /// zero nobody measured is the thing that made it useless.
+    /// </param>
+    public void WriteCollectorHealth(long timestamp, double? cpuPct, double privateMb,
         double sampleCostMs, int processCount, int storedCount)
     {
         lock (_gate)
@@ -587,7 +593,7 @@ public sealed class Database : IDisposable
                 VALUES (@ts, @cpu, @pm, @cost, @pc, @sc)
                 """;
             cmd.Parameters.AddWithValue("@ts", timestamp);
-            cmd.Parameters.AddWithValue("@cpu", cpuPct);
+            cmd.Parameters.AddWithValue("@cpu", (object?)cpuPct ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@pm", privateMb);
             cmd.Parameters.AddWithValue("@cost", sampleCostMs);
             cmd.Parameters.AddWithValue("@pc", processCount);

@@ -12,6 +12,13 @@ public sealed class CollectorWorker : BackgroundService
     private readonly ProcessIdentityResolver _identities;
 
     private readonly Dictionary<(int Pid, long CreateTime), PreviousSample> _previous = new();
+
+    /// <summary>
+    /// The collector's own processor time and the stopwatch reading it was taken
+    /// at, from the previous tick. Null until the first health row has been
+    /// written, because a rate needs two readings and the first tick has one.
+    /// </summary>
+    private (long CpuTicks, long ElapsedTicks)? _previousSelf;
     private readonly Stopwatch _elapsedTimer = new();
     private readonly TickOverrunMonitor _overruns = new();
 
@@ -132,13 +139,7 @@ public sealed class CollectorWorker : BackgroundService
                 if (_previous.TryGetValue(key, out var prev))
                 {
                     long cpuDelta = (snap.KernelTime + snap.UserTime) - (prev.KernelTime + prev.UserTime);
-                    long ticksDelta = elapsedTicks - prev.ElapsedTicks;
-
-                    if (ticksDelta > 0 && cpuDelta >= 0)
-                    {
-                        double elapsedSec = (double)ticksDelta / Stopwatch.Frequency;
-                        cpuPct = (cpuDelta / 10_000_000.0) / elapsedSec * 100.0;
-                    }
+                    cpuPct = CpuRate.PercentOfOneCore(cpuDelta, elapsedTicks - prev.ElapsedTicks);
 
                     long totalIo = snap.IoReadBytes + snap.IoWriteBytes + snap.IoOtherBytes;
                     long prevTotalIo = prev.IoReadBytes + prev.IoWriteBytes + prev.IoOtherBytes;
@@ -214,10 +215,32 @@ public sealed class CollectorWorker : BackgroundService
             _previous.Remove(k);
     }
 
+    /// <summary>
+    /// Writes the row that answers "is the recorder itself the thing slowing this
+    /// machine down". The CPU figure is measured exactly as every other process's
+    /// is: processor time used since the previous tick, over the wall clock time
+    /// between the two readings, against the same stopwatch the sampling loop
+    /// uses. It is therefore on the same denominator as <c>sample.cpu_pct</c>, a
+    /// share of one core, and not of the whole machine.
+    /// </summary>
     private void RecordHealth(long timestamp, double sampleCostMs, int processCount, int storedCount)
     {
-        var self = Process.GetCurrentProcess();
-        double cpuPct = 0;
+        // Disposed rather than left to the finaliser. This runs once a tick, and
+        // each call opens a handle to the process it describes.
+        using var self = Process.GetCurrentProcess();
+
+        long cpuTicks = self.PrivilegedProcessorTime.Ticks + self.UserProcessorTime.Ticks;
+        long elapsedTicks = _elapsedTimer.ElapsedTicks;
+
+        // Nothing rather than zero on the first tick, and on the reading after a
+        // stopwatch or counter that went backwards. Zero is a measurement, and
+        // writing one where none was taken is what this field did before.
+        double? cpuPct = _previousSelf is { } previous
+            ? CpuRate.PercentOfOneCore(cpuTicks - previous.CpuTicks, elapsedTicks - previous.ElapsedTicks)
+            : null;
+
+        _previousSelf = (cpuTicks, elapsedTicks);
+
         double privateMb = self.PrivateMemorySize64 / (1024.0 * 1024.0);
 
         _db.WriteCollectorHealth(timestamp, cpuPct, privateMb, sampleCostMs, processCount, storedCount);
