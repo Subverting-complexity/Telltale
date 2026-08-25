@@ -1,4 +1,5 @@
-﻿using System.Text.Json;
+using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace Telltale.Viewer;
@@ -51,8 +52,22 @@ public static class ViewerEndpoints
         // capture with no data from one the viewer could not read, so the reason is
         // recorded here before the empty result goes out. Warning rather than error:
         // the request itself is still answered.
-        void ReportQueryFailure(SqliteException ex, string endpoint) =>
+        //
+        // Recorded once per endpoint per distinct message. A capture that cannot be
+        // read fails on every request, and the frontend polls /api/health every ten
+        // seconds, so logging each one would fill the rotating log in a few hours and
+        // evict everything else in it. The cost of collapsing them is that a failure
+        // which clears and returns with the same message is only reported once.
+        var lastReported = new ConcurrentDictionary<string, string>();
+
+        void ReportQueryFailure(SqliteException ex, string endpoint)
+        {
+            if (lastReported.TryGetValue(endpoint, out string? previous) && previous == ex.Message)
+                return;
+
+            lastReported[endpoint] = ex.Message;
             logger.LogWarning(ex, "The capture database could not be queried for {Endpoint}. Returning an empty result.", endpoint);
+        }
 
         // --- Threshold constants (shared by /api/alerts and /api/thresholds) ---
         const double SystemCpuElevatedPct = 10;
@@ -575,16 +590,24 @@ public static class ViewerEndpoints
                 var fi = new FileInfo(dbPath);
                 if (fi.Exists) dbSizeBytes = fi.Length;
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                or ArgumentException or NotSupportedException)
             {
-                // Only the reported size is lost, so this is a note rather than a
-                // warning: the health response is still correct in every other part.
-                logger.LogDebug(ex, "The size of the capture database could not be read.");
-                // Only the reported size is lost, so the rest of the health
-                // response is still worth returning. This guards a file probe
-                // rather than a query, so SqliteException is not what it throws;
-                // a malformed configured path is a configuration error and is
-                // left to surface.
+                // This guards a file probe rather than a query, so SqliteException is
+                // not what it can throw. Only the reported size is lost either way, so
+                // the rest of the health response is still worth returning.
+                //
+                // The last two cover a configured database path that is empty or
+                // malformed, which reaches here through the FileInfo constructor. That
+                // is a configuration error rather than a transient one, so it is worth
+                // a warning rather than the debug note the others get. Letting it
+                // escape instead would turn /api/health into a 500, and the frontend
+                // discards a failed health poll silently, so the operator would see the
+                // status bar disappear with nothing anywhere explaining why.
+                if (ex is ArgumentException or NotSupportedException)
+                    logger.LogWarning(ex, "The configured capture database path is not usable.");
+                else
+                    logger.LogDebug(ex, "The size of the capture database could not be read.");
             }
 
             return Results.Json(new

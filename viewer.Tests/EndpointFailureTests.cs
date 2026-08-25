@@ -11,6 +11,12 @@ namespace Viewer.Tests;
 /// The point of these is that narrowing those handlers did not change what a caller
 /// sees. The frontend treats an unreadable capture as an empty one, so each endpoint
 /// still has to answer with its documented empty shape rather than a 500.
+///
+/// These are regression cover rather than proof of the narrowing itself. They pass
+/// against the code as it was before, because a bare catch returned the same empty
+/// shapes. Proving the other half, that a non-SqliteException now escapes instead of
+/// being disguised as an empty capture, needs a way to inject a fault into the query
+/// path, and there is no seam for one.
 /// </summary>
 public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
 {
@@ -26,9 +32,9 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
     [Fact]
     public void TheFixtureReallyIsUnreadable()
     {
-        // Without this, every test below would also pass against a database that
-        // is merely empty, which exercises the success path and proves nothing
-        // about the failure handlers.
+        // Without this, every test below would also pass against a database that is
+        // merely empty, which exercises the success path and proves nothing about the
+        // failure handlers.
         var ex = Record.Exception(() =>
         {
             using var conn = new SqliteConnection($"Data Source={_factory.DbPath};Mode=ReadOnly");
@@ -47,7 +53,7 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
         var response = await _client.GetAsync("/api/range");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var root = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var root = await ParseAsync(response);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("min").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("max").ValueKind);
     }
@@ -58,7 +64,7 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
         var response = await _client.GetAsync("/api/health");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var root = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var root = await ParseAsync(response);
         Assert.False(root.GetProperty("collectorRunning").GetBoolean());
         Assert.Equal(0, root.GetProperty("lastSampleTs").GetInt64());
     }
@@ -67,26 +73,40 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
     public async Task Health_StillReportsTheFileSizeWhenTheDatabaseCannotBeRead()
     {
         // The size comes from a file probe rather than a query, so it survives the
-        // database being unreadable. This is the half of the health response that
-        // the narrowed file-system handler protects.
+        // database being unreadable. This is the half of the health response that the
+        // narrowed file-system handler protects.
+        //
+        // The fixture file is deliberately several megabytes so the reported size
+        // rounds above zero. A probe that failed would leave the size at its default
+        // of zero, so without that this assertion could not tell the two apart.
         var response = await _client.GetAsync("/api/health");
-        var root = JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        var root = await ParseAsync(response);
 
-        Assert.True(root.TryGetProperty("dbSizeMb", out var size));
-        Assert.True(size.GetDouble() >= 0);
+        double expected = Math.Round(BrokenDatabaseFactory.FillerBytes / (1024.0 * 1024.0), 1);
+
+        Assert.True(expected > 0, "The fixture must be large enough to report a non-zero size.");
+        Assert.Equal(expected, root.GetProperty("dbSizeMb").GetDouble());
     }
 
     [Theory]
-    [InlineData("/api/timeline?from=0&to=99999999999999")]
-    [InlineData("/api/processes?from=0&to=99999999999999")]
-    [InlineData("/api/process/1?from=0&to=99999999999999")]
-    [InlineData("/api/process-group/testapp.exe?from=0&to=99999999999999")]
-    [InlineData("/api/alerts?days=1")]
-    [InlineData("/api/baselines?names=testapp.exe")]
-    [InlineData("/api/heatmap?from=0&to=99999999999999&metric=cpu")]
-    public async Task EveryQueryEndpoint_AnswersRatherThanFailingWhenTheDatabaseCannotBeRead(string url)
+    [InlineData("/api/timeline?from=0&to=99999999999999", "points")]
+    [InlineData("/api/processes?from=0&to=99999999999999", "processes")]
+    [InlineData("/api/process/1?from=0&to=99999999999999", "points")]
+    [InlineData("/api/process-group/testapp.exe?from=0&to=99999999999999", "points")]
+    [InlineData("/api/alerts?days=1", "alerts")]
+    [InlineData("/api/baselines?names=testapp.exe", "baselines")]
+    [InlineData("/api/heatmap?from=0&to=99999999999999&metric=cpu", "buckets")]
+    public async Task EveryQueryEndpoint_AnswersWithItsEmptyShapeWhenTheDatabaseCannotBeRead(
+        string url, string collection)
     {
         var response = await _client.GetAsync(url);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var items = (await ParseAsync(response)).GetProperty(collection);
+        Assert.Equal(JsonValueKind.Array, items.ValueKind);
+        Assert.Equal(0, items.GetArrayLength());
     }
+
+    static async Task<JsonElement> ParseAsync(HttpResponseMessage response) =>
+        JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
 }

@@ -37,8 +37,9 @@ public class EndpointFailureLoggingTests : IClassFixture<BrokenDatabaseFactory>
     {
         var response = await _client.GetAsync(url);
 
-        // The empty result is still the contract. Logging the reason must not change
-        // what the caller receives.
+        // Logging the reason must not change what the caller receives. The empty
+        // shape each endpoint returns is asserted in EndpointFailureTests; what
+        // matters here is that adding the log did not turn any of them into a 500.
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var warning = _factory.Logs.Entries.LastOrDefault(

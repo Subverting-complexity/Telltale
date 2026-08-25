@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace Viewer.Tests;
@@ -14,6 +15,15 @@ namespace Viewer.Tests;
 /// </summary>
 public class BrokenDatabaseFactory : TelltaleTestFactory
 {
+    /// <summary>
+    /// How much filler the unreadable file holds. Large enough that /api/health
+    /// reports a non-zero size in megabytes, which is what lets a test tell a
+    /// working file probe from one that failed and left the size at its default.
+    /// SQLite rejects the file on its header regardless of length, so the failure
+    /// this fixture exists to cause is unaffected.
+    /// </summary>
+    public const int FillerBytes = 3 * 1024 * 1024;
+
     /// <summary>What the viewer logged while serving requests.</summary>
     public RecordingLoggerProvider Logs { get; } = new();
 
@@ -32,7 +42,33 @@ public class BrokenDatabaseFactory : TelltaleTestFactory
         var dir = Path.Combine(Path.GetTempPath(), $"telltale-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "telltale.db");
-        File.WriteAllText(path, "This file is deliberately not a SQLite database.");
+
+        var contents = new byte[FillerBytes];
+        "This file is deliberately not a SQLite database."u8.CopyTo(contents);
+        File.WriteAllBytes(path, contents);
+
         return path;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+
+        if (!disposing) return;
+
+        // The pool holds the connections the endpoints opened, which keeps the file
+        // locked and the delete below failing on Windows.
+        SqliteConnection.ClearAllPools();
+
+        try
+        {
+            Directory.Delete(Path.GetDirectoryName(DbPath)!, recursive: true);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 }
