@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <NoWarn>CA1416</NoWarn>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\collector\Collector.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The current schema and the frozen version 1 snapshot. The migration tests
+         build a database each way and compare the two, and DatabaseSchemaTests
+         compares the schema Database builds against the current file, since
+         schema.sql is the only contract between the collector and the viewer. -->
+    <None Include="..\schema.sql" Link="schema.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="schema-v1.sql" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The configuration file publish.bat ships next to the collector. Copied here
+         under its real name so TelltaleConfig.Load finds it exactly as the collector
+         would, and the shipped defaults can be asserted rather than assumed. -->
+    <None Include="..\telltale.json" Link="telltale.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

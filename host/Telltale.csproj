@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Telltale.App</RootNamespace>
+    <AssemblyName>Telltale</AssemblyName>
+    <StartupObject>Telltale.App.TelltaleApplication</StartupObject>
+    <ApplicationIcon>telltale.ico</ApplicationIcon>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Kestrel and the endpoint routing MapTelltaleApi uses. Referenced
+         explicitly rather than by using the Web SDK, because this is a desktop
+         application that happens to serve HTTP to itself, not a web project. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Host.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../collector/Collector.csproj" />
+    <ProjectReference Include="../viewer/Viewer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="../telltale.json" Link="telltale.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Embedded as well as set as the application icon, so the notification area
+         can pick the small size out of the file rather than scale a large one. -->
+    <EmbeddedResource Include="telltale.ico" />
+  </ItemGroup>
+
+  <!-- The frontend is built into viewer/wwwroot by the viewer project, which has
+       already run by the time this executes because it is a project reference.
+       The item is declared inside the target so the glob is evaluated then, not
+       at project load when the folder may not exist yet. -->
+  <Target Name="CopyFrontendToOutput" AfterTargets="Build">
+    <ItemGroup>
+      <FrontendAsset Include="$(MSBuildThisFileDirectory)../viewer/wwwroot/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(FrontendAsset)"
+          DestinationFiles="@(FrontendAsset->'$(OutDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyFrontendToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <FrontendAsset Include="$(MSBuildThisFileDirectory)../viewer/wwwroot/**/*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(FrontendAsset)"
+          DestinationFiles="@(FrontendAsset->'$(PublishDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

@@ -1,0 +1,125 @@
+name: Review gate
+
+# Stops a pull request merging while its review is still in flight.
+#
+# Auto-merge on approval is deliberate here. An approved pull request should go
+# in on its own once the tests are green, with no human step. What must not
+# happen is a merge landing before any reviewer has finished with it.
+#
+# Until this existed, nothing prevented that. The ordering was held only by
+# convention inside the agent workflow: a claim ref under refs/claims/, and a
+# review-state label. Neither is consulted by a merge. Branch protection asked
+# only for the two test jobs, so any process calling `gh pr merge` succeeded the
+# moment CI went green, and an enqueued `gh pr merge --auto` did the same thing
+# on GitHub's own schedule.
+#
+# PR #72 is the worked example. It merged five minutes after opening, carrying
+# claude-reviewing, with no verdict recorded, while two reviewers were still
+# running. The review findings it had already collected were lost from that
+# merge and had to be reapplied in PR #79.
+#
+# ONE SETTING IS LOAD BEARING, and this file does nothing on its own without it.
+# It lives in branch protection on main:
+#
+#   This job ("Review complete") must be listed in the required status checks.
+#   GitHub's auto-merge waits for every required check before completing a
+#   merge, whatever admin enforcement says, so this is what makes the label
+#   binding. It is set.
+#
+# Writing that down was not enough on its own, which is the second worked
+# example. From this file being added until 2026-08-25 the check was never
+# actually added to branch protection, so this job ran, reported, and was
+# ignored. PR #79 merged carrying claude-needs-re-review with this job red, and
+# its re-review then ran against an already-merged pull request. See #85.
+#
+# "Include administrators" is deliberately OFF, and this is a change from what
+# this comment used to say. It would additionally close the direct
+# `gh pr merge --admin` path, which the review skill retries with when branch
+# protection refuses. That retry fires only after the skill's review has
+# finished and applied claude-approved, so it cannot merge during a review and
+# does not breach what this gate is for. Leaving it off also keeps
+# bypass-ci-on-billing-failure working, which turning it on would disable.
+#
+# The residual risk that buys: nothing stops some other process merging with
+# --admin mid-review. The review skill will not, but the execute skill has its
+# own merge path. If a premature merge ever happens by a route the required
+# check does not cover, that decision is the first thing to revisit.
+#
+# See docs/review.config.md, which is where the setting, the reasoning and the
+# recovery procedure are written down in full.
+
+on:
+  pull_request:
+    branches: [main]
+    # `edited` covers a base branch changed to main, which is the documented
+    # flow for a story chained off another story's branch.
+    types: [opened, reopened, synchronize, labeled, unlabeled, edited, ready_for_review]
+
+# Runs queue rather than cancel. The job writes labels, so cancelling one part
+# way could leave the state half changed, and each run reads the live labels
+# anyway, so the last to finish reports the truth regardless.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review-state:
+    name: Review complete
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      ACTION: ${{ github.event.action }}
+    steps:
+      - name: Withdraw an approval that the new commits have outdated
+        if: github.event.action == 'synchronize'
+        run: |
+          # A verdict applies to the code the reviewer read, so a push retires
+          # it. Withdrawing the label rather than only failing the check is what
+          # makes the state recoverable: re-applying a label a pull request
+          # already carries fires no event, so without this an approved pull
+          # request that received a fix push would fail this check forever, with
+          # nothing left to re-run it.
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+          case ",${LABELS}," in
+            *,claude-approved,*)
+              echo "Withdrawing claude-approved: it was given to code that is no longer the head commit."
+              gh pr edit "$PR" --repo "$REPO" \
+                --remove-label claude-approved --add-label claude-needs-re-review
+              ;;
+            *)
+              echo "Not approved, so there is no verdict to withdraw."
+              ;;
+          esac
+
+      - name: Require a finished review
+        run: |
+          # Read live rather than from the event payload. The payload is a
+          # snapshot from when the event fired, and reconciling a verdict emits
+          # a removal and an addition, so a payload could describe a state that
+          # has already been superseded by the time this runs.
+          LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '[.labels[].name] | join(",")')
+          echo "Labels on this pull request: ${LABELS:-none}"
+
+          # Belt and braces alongside the withdrawal above. If that step could
+          # not write the label, for any reason, a push still blocks the merge
+          # rather than riding in on the previous verdict.
+          if [ "$ACTION" = "synchronize" ]; then
+            echo "::error::New commits were pushed, so any earlier approval no longer applies to this code. The approval has been withdrawn and the merge stays blocked until the review runs again."
+            exit 1
+          fi
+
+          case ",${LABELS}," in
+            *,claude-approved,*)
+              echo "Review finished and approved. Merging is allowed."
+              exit 0
+              ;;
+          esac
+
+          echo "::error::This pull request has not been approved. Merging stays blocked until a review sets claude-approved. Current labels: ${LABELS:-none}."
+          exit 1
