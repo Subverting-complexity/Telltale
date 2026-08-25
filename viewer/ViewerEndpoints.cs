@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace Telltale.Viewer;
@@ -91,7 +91,7 @@ public static class ViewerEndpoints
                 }
                 return Results.Json(new { min = (long?)null, max = (long?)null }, jsonOptions);
             }
-            catch
+            catch (SqliteException)
             {
                 return Results.Json(new { min = (long?)null, max = (long?)null }, jsonOptions);
             }
@@ -542,7 +542,12 @@ public static class ViewerEndpoints
                     }
                 }
             }
-            catch { }
+            catch (SqliteException)
+            {
+                // An unreadable capture leaves the counters at their defaults,
+                // which reports the collector as not running. That is the honest
+                // answer for a database the viewer cannot open.
+            }
 
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             bool collectorRunning = lastSampleTs > 0 && (now - lastSampleTs) < 15000;
@@ -553,7 +558,14 @@ public static class ViewerEndpoints
                 var fi = new FileInfo(dbPath);
                 if (fi.Exists) dbSizeBytes = fi.Length;
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Only the reported size is lost, so the rest of the health
+                // response is still worth returning. This guards a file probe
+                // rather than a query, so SqliteException is not what it throws;
+                // a malformed configured path is a configuration error and is
+                // left to surface.
+            }
 
             return Results.Json(new
             {
