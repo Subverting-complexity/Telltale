@@ -25,13 +25,44 @@ sealed class RollingLogFile
         _maxBytes = maxBytes;
     }
 
-    /// <summary>The log Telltale writes to when nothing else is configured.</summary>
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Telltale", "telltale.log");
-
-    public void Append(string line)
+    /// <summary>
+    /// The log that belongs to the capture database at <paramref name="databasePath"/>.
+    /// </summary>
+    /// <remarks>
+    /// Beside the database rather than at a fixed location, so that someone who
+    /// points databasePath somewhere else gets the log there too instead of having
+    /// to know about a second place to look.
+    /// </remarks>
+    public static string PathBeside(string databasePath)
     {
+        string? folder = null;
+        try
+        {
+            folder = Path.GetDirectoryName(Path.GetFullPath(databasePath));
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // Validation should have rejected this already. Somewhere is better
+            // than nowhere if it did not.
+        }
+
+        return Path.Combine(
+            string.IsNullOrEmpty(folder) ? AppContext.BaseDirectory : folder,
+            "telltale.log");
+    }
+
+    /// <summary>
+    /// Writes one timestamped line.
+    /// </summary>
+    /// <remarks>
+    /// The timestamp is added here rather than by the caller, so that a line
+    /// written directly and a line that came through the logging pipeline are
+    /// still readable in the same order.
+    /// </remarks>
+    public void Append(string message)
+    {
+        var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff} {message}";
+
         lock (_gate)
         {
             try
@@ -94,11 +125,11 @@ sealed class FileLoggerProvider : ILoggerProvider
             if (!IsEnabled(logLevel))
                 return;
 
-            var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff} {logLevel,-11} {_category} {formatter(state, exception)}";
+            var message = $"{logLevel,-11} {_category} {formatter(state, exception)}";
             if (exception is not null)
-                line += Environment.NewLine + exception;
+                message += Environment.NewLine + exception;
 
-            _file.Append(line);
+            _file.Append(message);
         }
     }
 }

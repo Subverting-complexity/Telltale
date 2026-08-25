@@ -32,21 +32,28 @@ static class TelltaleApplication
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
 
-        var log = new RollingLogFile(RollingLogFile.DefaultPath);
-
         var config = TelltaleConfig.Load();
         string? problem = CollectorStartup.DescribeConfigurationProblem(config);
         if (problem is not null)
         {
+            // Before the log exists, because where the log goes depends on a
+            // database path that has just been found to be unusable.
             StartupReport.Show(problem);
             return 1;
         }
+
+        var log = new RollingLogFile(RollingLogFile.PathBeside(config.ResolvedDatabasePath));
 
         // Fully qualified because this namespace is called Telltale.App, which
         // shadows the Host type when it is written unqualified.
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder(args);
         builder.Logging.ClearProviders();
         builder.Logging.AddProvider(new FileLoggerProvider(log));
+        // The generic host announces itself with "Press Ctrl+C to shut down",
+        // which is written for a console this application does not have. Left in,
+        // it tells anyone reading the log to do something that cannot work.
+        builder.Services.Configure<Microsoft.Extensions.Hosting.ConsoleLifetimeOptions>(
+            options => options.SuppressStatusMessages = true);
         builder.Services.AddTelltaleCollector(config);
 
         var recorder = builder.Build();

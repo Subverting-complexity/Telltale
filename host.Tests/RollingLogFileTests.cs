@@ -41,7 +41,22 @@ public class RollingLogFileTests : IDisposable
         log.Append("two");
 
         var lines = File.ReadAllLines(_path);
-        Assert.Equal(["one", "two"], lines);
+        Assert.Equal(2, lines.Length);
+        Assert.EndsWith("one", lines[0]);
+        Assert.EndsWith("two", lines[1]);
+    }
+
+    [Fact]
+    public void Every_line_carries_the_time_it_was_written()
+    {
+        // Lines arrive from two places: the logging pipeline and direct writes
+        // from the application itself. Stamping them here is what keeps the two
+        // readable in the same order.
+        new RollingLogFile(_path).Append("something happened");
+
+        var line = File.ReadAllLines(_path).Single();
+
+        Assert.Matches(@"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} something happened$", line);
     }
 
     [Fact]
@@ -52,7 +67,7 @@ public class RollingLogFileTests : IDisposable
         log.Append(new string('a', 100));
         log.Append("after the rotation");
 
-        Assert.Equal("after the rotation", File.ReadAllText(_path).TrimEnd());
+        Assert.EndsWith("after the rotation", File.ReadAllText(_path).TrimEnd());
         Assert.Contains("aaa", File.ReadAllText(_path + ".1"));
     }
 
@@ -95,12 +110,26 @@ public class RollingLogFileTests : IDisposable
     }
 
     [Fact]
-    public void The_default_path_sits_beside_the_capture_database()
+    public void The_log_sits_beside_the_capture_database()
     {
-        var expected = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Telltale", "telltale.log");
+        // Someone who moves the database should not have to learn about a second
+        // place to look for what went wrong with it.
+        var database = Path.Combine("D:", "captures", "telltale.db");
 
-        Assert.Equal(expected, RollingLogFile.DefaultPath);
+        Assert.Equal(
+            Path.Combine("D:", "captures", "telltale.log"),
+            RollingLogFile.PathBeside(database));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("telltale.db")]
+    public void A_database_path_with_no_folder_still_gives_a_usable_log_path(string database)
+    {
+        var path = RollingLogFile.PathBeside(database);
+
+        Assert.EndsWith("telltale.log", path);
+        Assert.True(Path.IsPathRooted(path));
     }
 }

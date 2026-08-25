@@ -6,7 +6,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:5111'
+      // The port the shipped build listens on. Development and the shipped
+      // build disagreed here for a long time: nothing published ever listened
+      // on 5111, so this proxy pointed at a server that did not exist outside a
+      // debugger.
+      '/api': 'http://127.0.0.1:41821'
     }
   },
   build: {

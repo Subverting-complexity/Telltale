@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Telltale.Viewer;
@@ -144,6 +145,11 @@ sealed class ViewerListener : IAsyncDisposable
         builder.Logging.ClearProviders();
         if (_log is not null)
             builder.Logging.AddProvider(new FileLoggerProvider(_log));
+
+        // Same reason as the recorder: the lifetime's console banner is written
+        // for a console, and this application has none.
+        builder.Services.Configure<Microsoft.Extensions.Hosting.ConsoleLifetimeOptions>(
+            options => options.SuppressStatusMessages = true);
 
         var app = builder.Build();
 
