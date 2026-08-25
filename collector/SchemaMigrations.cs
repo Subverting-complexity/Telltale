@@ -21,9 +21,15 @@ public static class SchemaMigrations
     /// </summary>
     public const int LatestVersion = 2;
 
-    private sealed record Migration(int Version, string Description, string Sql);
+    /// <summary>
+    /// One step, taking a database from the version before it to
+    /// <see cref="Version"/>. Public so a test can hand <see cref="Apply"/> a list
+    /// of its own: the real list holds a single entry that succeeds, which can
+    /// demonstrate neither rollback nor ordering.
+    /// </summary>
+    public sealed record Migration(int Version, string Description, string Sql);
 
-    private static readonly Migration[] Ordered =
+    private static readonly IReadOnlyList<Migration> Ordered =
     [
         new(2, "merge duplicate process rollup rows and make (ts, instance_id) unique",
             MergeDuplicateProcessRollupsSql),
@@ -45,31 +51,51 @@ public static class SchemaMigrations
 
     /// <summary>
     /// Applies every migration the database has not reached yet, and returns the
-    /// version it ends at. A database already at or beyond
-    /// <see cref="LatestVersion"/> is left untouched.
+    /// version it ends at. A database already at or beyond the highest version in
+    /// <paramref name="migrations"/> is left untouched.
     /// </summary>
-    public static int Apply(SqliteConnection conn, ILogger logger)
+    /// <param name="migrations">
+    /// The steps to consider, defaulting to the ones this build ships. A test
+    /// passes its own, because neither the promise that a failed step rolls back
+    /// nor the order steps run in can be shown against a list holding one entry
+    /// that succeeds.
+    /// </param>
+    public static int Apply(SqliteConnection conn, ILogger logger,
+                            IReadOnlyList<Migration>? migrations = null)
     {
+        var steps = migrations ?? Ordered;
+
+        // Read from the steps in hand rather than from LatestVersion, so a caller
+        // supplying its own list is measured against that list instead of against
+        // a constant it knows nothing about. For the shipped list the two are the
+        // same number, because LatestVersion is raised with every migration added
+        // below, and LegacyDatabase_IsSteppedUpToTheLatestVersion fails if they
+        // ever drift apart.
+        int target = steps.Count == 0 ? LatestVersion : steps.Max(m => m.Version);
+
         int current = ReadVersion(conn);
 
-        if (current > LatestVersion)
+        if (current > target)
         {
             // Written by a newer build. Migrating cannot help and rewriting the
             // schema backwards would lose whatever that build added, so the
             // database is left as it is and the mismatch is reported instead.
+            // Whether to then run against it at all is the caller's decision:
+            // see StartupDatabaseCheck.
             logger.LogWarning(
                 "Database is at schema version {Current}, newer than the version {Latest} this build knows. " +
-                "Leaving it unchanged.", current, LatestVersion);
+                "Leaving it unchanged.", current, target);
 
             return current;
         }
 
-        if (current == LatestVersion) return current;
+        var pending = steps.Where(m => m.Version > current).OrderBy(m => m.Version).ToList();
+        if (pending.Count == 0) return current;
 
         logger.LogInformation("Database is at schema version {Current}. Migrating to {Latest}.",
-            current, LatestVersion);
+            current, target);
 
-        foreach (var migration in Ordered.Where(m => m.Version > current).OrderBy(m => m.Version))
+        foreach (var migration in pending)
         {
             // One transaction per migration, covering the schema change and the
             // row that records it. A failure part way through rolls the whole

@@ -16,6 +16,10 @@ public class SchemaMigrationTests : IDisposable
     /// <summary>An arbitrary timestamp sitting exactly on a minute boundary.</summary>
     private const long BucketStart = 1_700_000_000_000L / 60_000L * 60_000L;
 
+    /// <summary>Values <c>PRAGMA auto_vacuum</c> reports for off and for incremental.</summary>
+    private const long AutoVacuumOff = 0;
+    private const long AutoVacuumIncremental = 2;
+
     private readonly List<string> _dbPaths = [];
 
     [Fact]
@@ -266,7 +270,7 @@ public class SchemaMigrationTests : IDisposable
     }
 
     [Fact]
-    public void DatabaseWrittenByANewerBuild_IsReportedAndLeftAlone()
+    public void DatabaseWrittenByANewerBuild_IsLeftAloneAndRefused()
     {
         string path = NewDbPath();
         using (OpenCollectorDatabase(path)) { }
@@ -281,13 +285,147 @@ public class SchemaMigrationTests : IDisposable
 
         var logger = new CapturingLogger();
         using (var db = new Database(path, logger))
+        {
+            // Opening still reports the version it found and changes nothing.
+            // Migrating cannot help, and rewriting the schema backwards would
+            // lose whatever the newer build added.
             Assert.Equal(newerVersion, db.SchemaVersion);
+
+            // What is new is that the collector then declines to run against it
+            // rather than recording into a shape it does not understand.
+            Assert.NotNull(StartupDatabaseCheck.RefusalForNewerDatabase(
+                db.SchemaVersion, SchemaMigrations.LatestVersion, path));
+        }
 
         using var check = Connect(path);
         Assert.Equal(shapeBefore, Shape(check));
         Assert.Equal(newerVersion, SchemaMigrations.ReadVersion(check));
         Assert.Contains(logger.Warnings, w => w.Contains("newer than the version"));
     }
+
+    [Fact]
+    public void DatabaseWrittenByANewerBuild_IsNotVacuumedEvenWhenOptedIn()
+    {
+        // The collector is about to refuse this database, so opening it to read
+        // the version must not write to it. The auto_vacuum conversion is the
+        // largest write there is: it rewrites every page of the file.
+        string path = CreateLegacyDatabase();
+        using (var conn = Connect(path))
+            Execute(conn, $"INSERT INTO schema_version (version) VALUES ({SchemaMigrations.LatestVersion + 1})");
+
+        using (new Database(path, new CapturingLogger(), vacuumOnStartup: true)) { }
+
+        using var check = Connect(path);
+        Assert.Equal(AutoVacuumOff, Scalar(check, "PRAGMA auto_vacuum"));
+    }
+
+    [Fact]
+    public void DatabaseThisBuildUnderstands_IsStillVacuumedWhenOptedIn()
+    {
+        // The control for the test above. Without it that one would still pass
+        // if the conversion had simply stopped working altogether.
+        string path = CreateLegacyDatabase();
+
+        using (var conn = Connect(path))
+            Assert.Equal(AutoVacuumOff, Scalar(conn, "PRAGMA auto_vacuum"));
+
+        using (new Database(path, new CapturingLogger(), vacuumOnStartup: true)) { }
+
+        using var check = Connect(path);
+        Assert.Equal(AutoVacuumIncremental, Scalar(check, "PRAGMA auto_vacuum"));
+    }
+
+    [Fact]
+    public void MigrationThatFails_LeavesTheVersionAndTheShapeUnchanged()
+    {
+        string path = NewDbPath();
+        using (OpenCollectorDatabase(path)) { }
+
+        using var conn = Connect(path);
+        string shapeBefore = Shape(conn);
+
+        // The first statement succeeds and the second does not, so there is a
+        // half finished change for the transaction to undo. A migration that
+        // fell over on its very first statement would leave nothing behind and
+        // would prove nothing about rolling back.
+        var failing = new SchemaMigrations.Migration(
+            SchemaMigrations.LatestVersion + 1,
+            "create a table, then fail",
+            """
+            CREATE TABLE half_applied (x INTEGER);
+            INSERT INTO no_such_table (x) VALUES (1);
+            """);
+
+        Assert.Throws<SqliteException>(
+            () => SchemaMigrations.Apply(conn, new CapturingLogger(), [failing]));
+
+        // The shape assertion is the half that does the work. The version
+        // assertion alone would pass even with the transaction removed, because
+        // a row written after the failing statement never gets to run either
+        // way; only the shape shows the half applied table left behind.
+        //
+        // Verified by mutation: dropping the transaction from Apply fails this
+        // test. Note that moving the cmd.Transaction assignment does not, and
+        // cannot, because a SQLite transaction belongs to the connection rather
+        // than to the command.
+        Assert.Equal(SchemaMigrations.LatestVersion, SchemaMigrations.ReadVersion(conn));
+        Assert.Equal(shapeBefore, Shape(conn));
+    }
+
+    [Fact]
+    public void Migrations_AreAppliedInVersionOrder()
+    {
+        string path = NewDbPath();
+        using (OpenCollectorDatabase(path)) { }
+
+        using var conn = Connect(path);
+
+        // Created here rather than by either migration, so that both orders run
+        // without error and the order they ran in shows up in the rows. Left to
+        // one of the migrations, the wrong order would fail instead, which
+        // proves the same point only by accident.
+        Execute(conn, "CREATE TABLE applied_order (step INTEGER)");
+
+        int first = SchemaMigrations.LatestVersion + 1;
+        int second = SchemaMigrations.LatestVersion + 2;
+
+        // Handed over highest first, so a build that walked the list as given
+        // would record them the wrong way round.
+        SchemaMigrations.Apply(conn, new CapturingLogger(), [RecordStep(second), RecordStep(first)]);
+
+        Assert.Equal(2L, Scalar(conn, "SELECT COUNT(*) FROM applied_order"));
+        Assert.Equal(first, Scalar(conn, "SELECT step FROM applied_order ORDER BY rowid LIMIT 1"));
+        Assert.Equal(second, Scalar(conn, "SELECT step FROM applied_order ORDER BY rowid DESC LIMIT 1"));
+        Assert.Equal(second, SchemaMigrations.ReadVersion(conn));
+    }
+
+    [Fact]
+    public void MigrationTheDatabaseHasAlreadyPassed_IsNotAppliedAgain()
+    {
+        string path = NewDbPath();
+        using (OpenCollectorDatabase(path)) { }
+
+        using var conn = Connect(path);
+        Execute(conn, "CREATE TABLE applied_order (step INTEGER)");
+
+        int first = SchemaMigrations.LatestVersion + 1;
+        int second = SchemaMigrations.LatestVersion + 2;
+        Execute(conn, $"INSERT INTO schema_version (version) VALUES ({first})");
+
+        SchemaMigrations.Apply(conn, new CapturingLogger(), [RecordStep(first), RecordStep(second)]);
+
+        Assert.Equal(1L, Scalar(conn, "SELECT COUNT(*) FROM applied_order"));
+        Assert.Equal(second, Scalar(conn, "SELECT step FROM applied_order"));
+        Assert.Equal(second, SchemaMigrations.ReadVersion(conn));
+    }
+
+    /// <summary>
+    /// A migration that does nothing but write down that it ran, so that the
+    /// order a set of them ran in can be read back afterwards.
+    /// </summary>
+    private static SchemaMigrations.Migration RecordStep(int version) =>
+        new(version, $"record step {version}",
+            $"INSERT INTO applied_order (step) VALUES ({version})");
 
     /// <summary>
     /// Every object in the database, as the text that created it. Comparing this
