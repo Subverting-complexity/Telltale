@@ -201,6 +201,35 @@ Every open issue belongs on the board. An issue with no Status is invisible
 to the board view, so put new issues in `Todo` unless they are genuinely
 blocked, in which case put them in `Blocked`.
 
+### Board Automation
+
+Placement is handled by the project's own built-in workflows, configured at
+`https://github.com/orgs/Subverting-complexity/projects/12/workflows`:
+
+| Built-in workflow      | Configuration                          |
+| ---------------------- | -------------------------------------- |
+| Auto-add to project    | `Subverting-complexity/Telltale`, filter `is:issue,is:open` |
+| Item added to project  | Set `Status` to `Todo`                 |
+
+These cannot be created or enabled through the API. GraphQL exposes
+`deleteProjectV2Workflow` but no create or update mutation, so changing them
+is a manual step in the Projects UI. Read the current state with the
+`workflows` connection on `ProjectV2` before assuming a given one is on.
+
+Do not rely on the plugin placing issues on the board. `report-issue` treats
+board placement as best-effort and skips silently when it cannot resolve the
+board, which is how nine open issues ended up off the board before
+2026-08-25. The built-in workflows are the mechanism that is meant to be
+correct; the plugin path is a bonus when it happens to fire.
+
+Two consequences worth knowing:
+
+- Only issues are auto-added. Pull requests stay off the board deliberately,
+  because PR state is tracked by the review labels in `docs/review.config.md`.
+- `Item added to project` stamps `Todo` on **every** add, including an issue
+  added by hand that is already in progress. Set the real Status after
+  adding one manually.
+
 ## Backlog Mode
 
 Flat. The repository has no milestones, so stories are ordered by priority
