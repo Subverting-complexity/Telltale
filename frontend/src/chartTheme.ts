@@ -1,5 +1,5 @@
 import type uPlot from 'uplot';
-import type { MetricKey, ThemeMode } from './palette';
+import type { ThemeMode } from './palette';
 import { METRIC_KEYS, chartColor, metricColor } from './palette';
 
 // Shared across every uPlot line chart (Timeline's ChartPanel and
@@ -16,10 +16,6 @@ import { METRIC_KEYS, chartColor, metricColor } from './palette';
 // a colour, rather than the four the old hard-coded list allowed.
 export function compareColors(mode: ThemeMode): string[] {
   return METRIC_KEYS.map(key => metricColor(key, mode));
-}
-
-export function seriesColor(key: MetricKey, mode: ThemeMode): string {
-  return metricColor(key, mode);
 }
 
 export interface ChartThemeColors {

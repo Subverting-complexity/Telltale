@@ -28,6 +28,7 @@ function tileColorVars(metric: MetricKey): TileColorVars {
 // Area fill plus an end-point dot, matching the line charts (chartTheme.ts's
 // pointsConfig) instead of a bare stroke, so the tiles read as part of the
 // same chart system rather than a smaller, plainer copy of it.
+//
 // stroke, fill and stop-color are set through style rather than as
 // presentation attributes, because var() resolves in a CSS declaration and not
 // in an SVG attribute value.

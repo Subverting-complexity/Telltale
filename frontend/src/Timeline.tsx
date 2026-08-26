@@ -5,8 +5,9 @@ import type { TimelinePoint, ProcessPoint, ThresholdConfig } from './types';
 import { DataTable, timelineColumns, processColumns } from './DataTable';
 import { formatSize, formatRate, computeMovingAverage, computeMean, computeLinearFit, CPU_OF_ONE_CORE, CPU_OF_ALL_CORES } from './utils';
 import type { ChartThemeColors } from './chartTheme';
-import { getThemeColors, pointsConfig, buildAxes, seriesColor } from './chartTheme';
+import { getThemeColors, pointsConfig, buildAxes } from './chartTheme';
 import type { MetricKey } from './palette';
+import { metricColor } from './palette';
 import { useThemeMode } from './theme';
 
 interface TimelineProps {
@@ -334,7 +335,7 @@ function ChartPanel<T extends { ts: number }>({
   // dependencies of the rebuild below, which is what makes a theme switch
   // repaint the chart instead of leaving it in the previous theme.
   const mode = useThemeMode();
-  const color = seriesColor(metric, mode);
+  const color = metricColor(metric, mode);
 
   const buildChart = useCallback(() => {
     if (!containerRef.current || data.length === 0) return;
