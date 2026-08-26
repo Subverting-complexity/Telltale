@@ -164,6 +164,9 @@ export default function App() {
 
   const chartSectionRef = useRef<HTMLElement>(null);
 
+  /** Sequence number of the most recent timeline request, so stale ones can be dropped. */
+  const latestRequest = useRef(0);
+
   useEffect(() => { applyTheme(theme); }, [theme]);
 
   useEffect(() => {
@@ -282,18 +285,30 @@ export default function App() {
     setRefreshKey(k => k + 1);
   }, []);
 
+  const activeRange = customRange ?? getViewRange(view);
+
   // The floors describe one window, so they stop meaning anything the moment the
   // window changes. Cleared here rather than in the fetch below, because that one
   // also runs on the ninety second refresh and on a granularity change, where the
   // floors are still true and clearing them would flash the notice off.
+  //
+  // Keyed on the bounds rather than on `view`, because re-selecting the scale
+  // already in force builds a fresh but equal object, and a reference comparison
+  // would throw the floors away for a window that had not moved.
   useEffect(() => {
     setTimelineDetail(null);
-  }, [view, customRange]);
+  }, [activeRange.from, activeRange.to]);
 
   useEffect(() => {
     setLoading(true);
-    const { from, to } = customRange ?? getViewRange(view);
 
+    // Two requests can be in flight after a quick second click, and the first
+    // is not guaranteed to answer first. Only the newest is allowed to land,
+    // otherwise a stale answer overwrites both the series and the floors the
+    // picker reads, and the picker starts describing a window nobody is on.
+    const request = ++latestRequest.current;
+
+    const { from, to } = activeRange;
     const bucketMs = granularityById(granularity).bucketMs;
 
     Promise.all([
@@ -306,6 +321,8 @@ export default function App() {
         q: processFilter || undefined,
       }).catch(() => ({ grouped: true, processes: [] })),
     ]).then(([tl, procs]) => {
+      if (request !== latestRequest.current) return;
+
       setTimeline(tl.points);
       setTimelineDetail({
         bucketMs: tl.bucketMs,
@@ -316,7 +333,7 @@ export default function App() {
       setProcesses(procs.processes as ProcessGroupRow[]);
       setLoading(false);
     });
-  }, [view, processSort, processFilter, customRange, refreshKey, granularity]);
+  }, [activeRange.from, activeRange.to, processSort, processFilter, refreshKey, granularity]);
 
   useEffect(() => {
     const id = setInterval(refreshData, 90_000);
@@ -414,8 +431,6 @@ export default function App() {
       </div>
     );
   }
-
-  const activeRange = customRange ?? getViewRange(view);
 
   function renderDrillDown() {
     if (selectedProcess?.type === 'comparison') {

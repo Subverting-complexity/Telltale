@@ -75,8 +75,15 @@ export function granularityAvailability(
   option: GranularityOption,
   rangeMs: number,
   served: TimelineDetail | null,
+  /** True for the option in force, which is never reported as out of reach. */
+  selected = false,
 ): GranularityAvailability {
-  if (option.bucketMs === null) return { available: true, reason: '' };
+  // Whatever is selected is, by definition, what the chart is being drawn at.
+  // Narrowing the window under a selection (picking one hour out of a day, say)
+  // can bring it below a rule it previously cleared, and saying it is
+  // unavailable while it is plainly in use is a contradiction rather than
+  // information.
+  if (option.bucketMs === null || selected) return { available: true, reason: '' };
 
   if (rangeMs > 0 && option.bucketMs * MIN_USEFUL_POINTS > rangeMs) {
     return { available: false, reason: 'Too wide for the span on screen.' };
@@ -100,8 +107,11 @@ export function clampNotice(served: TimelineDetail): string | null {
   const { bucketMs, bucketRequestMs } = served;
   if (bucketRequestMs === null || bucketMs <= 0 || bucketMs <= bucketRequestMs) return null;
 
+  const reason = reasonFor(bucketRequestMs, served);
   return `Showing ${describeBucket(bucketMs)} detail. You asked for `
-    + `${describeBucket(bucketRequestMs)} detail, but ${reasonFor(bucketRequestMs, served).toLowerCase()}`;
+    + `${describeBucket(bucketRequestMs)} detail, but `
+    // Only the first letter, so a reason naming something capitalised keeps it.
+    + reason.charAt(0).toLowerCase() + reason.slice(1);
 }
 
 /**

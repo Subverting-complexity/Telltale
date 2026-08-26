@@ -23,11 +23,17 @@ let tierFloorMs = 5_000;
 /** What the server serves, when a test wants it to differ from what was asked. */
 let servedBucketMs: number | null = null;
 
+/**
+ * Set to make the api mock hand back promises the test resolves by hand, so two
+ * requests can be answered out of the order they were made.
+ */
+let heldResponses: (() => void)[] | null = null;
+
 vi.mock('./api', () => ({
   getRange: () => Promise.resolve({ min: Date.now() - 7 * 86_400_000, max: Date.now() }),
   getTimeline: (from: number, to: number, bucketMs?: number | null) => {
     getTimeline(from, to, bucketMs);
-    return Promise.resolve({
+    const body = () => ({
       resolution: 'machine',
       // The server answers with what it was asked for unless a test says
       // otherwise, so a widening is never accidental.
@@ -37,6 +43,10 @@ vi.mock('./api', () => ({
       tierFloorMs,
       points: [],
     });
+    // Read when the response is released rather than when it is asked for, so a
+    // test can decide what a held response will turn out to say.
+    if (!heldResponses) return Promise.resolve(body());
+    return new Promise(resolve => { heldResponses!.push(() => resolve(body())); });
   },
   getProcesses: () => Promise.resolve({ grouped: true, processes: [] }),
   getHealth: () => Promise.resolve({
@@ -57,6 +67,7 @@ beforeEach(() => {
   minBucketMs = 0;
   tierFloorMs = 5_000;
   servedBucketMs = null;
+  heldResponses = null;
 });
 
 describe('timeline granularity', () => {
@@ -95,6 +106,35 @@ describe('timeline granularity', () => {
       expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true'));
     expect(lastRequestedBucket()).toBeNull();
     expect(new URLSearchParams(window.location.search).get('g')).toBeNull();
+  });
+
+  it('ignores an answer overtaken by a newer request', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalled());
+
+    // From here the server answers only when this test says so.
+    heldResponses = [];
+
+    await user.click(screen.getByRole('button', { name: '10 min' }));
+    await waitFor(() => expect(heldResponses).toHaveLength(1));
+
+    await user.click(screen.getByRole('button', { name: '1 hour' }));
+    await waitFor(() => expect(heldResponses).toHaveLength(2));
+
+    // The newer request answers first, and reports a window holding full detail.
+    heldResponses![1]!();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '1 min' })).not.toHaveAttribute('aria-disabled', 'true'));
+
+    // Then the overtaken one answers, claiming a much coarser floor. Landing it
+    // would withhold 1 min on the strength of a window nobody is looking at.
+    minBucketMs = 600_000;
+    heldResponses![0]!();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '1 hour' })).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.getByRole('button', { name: '1 min' })).not.toHaveAttribute('aria-disabled', 'true');
   });
 
   it('restores a granularity named in the URL', async () => {

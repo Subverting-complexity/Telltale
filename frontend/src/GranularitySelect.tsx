@@ -32,8 +32,8 @@ export function GranularitySelect({ value, onChange, rangeMs, served }: Granular
       <span className="nav-subgrid-label" id={labelId}>Detail</span>
       <div className="granularity-options" role="group" aria-labelledby={labelId}>
         {GRANULARITIES.map((option, i) => {
-          const { available, reason } = granularityAvailability(option, rangeMs, served);
           const selected = option.id === value;
+          const { available, reason } = granularityAvailability(option, rangeMs, served, selected);
           return (
             <span key={option.id} className="granularity-option">
               <button

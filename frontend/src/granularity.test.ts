@@ -92,6 +92,22 @@ describe('granularityAvailability', () => {
     expect(granularityAvailability(option('1d'), 7 * DAY, served()).available).toBe(true);
   });
 
+  it('never reports the option in force as out of reach', () => {
+    // Narrowing a day down to one selected hour leaves an hourly bucket wider
+    // than the span, but it is what the chart is being drawn at, so calling it
+    // unavailable would contradict the button's own pressed state.
+    const HOUR = 3_600_000;
+    expect(granularityAvailability(option('1h'), HOUR, served(), true).available).toBe(true);
+
+    // Same for one the recording can no longer serve.
+    const rollupOnly = served({ minBucketMs: 600_000, tierFloorMs: 600_000 });
+    expect(granularityAvailability(option('5s'), YEAR, rollupOnly, true).available).toBe(true);
+
+    // And the same options are still withheld when they are not in force.
+    expect(granularityAvailability(option('1h'), HOUR, served(), false).available).toBe(false);
+    expect(granularityAvailability(option('5s'), YEAR, rollupOnly, false).available).toBe(false);
+  });
+
   it('treats an empty span as unconstrained', () => {
     expect(granularityAvailability(option('5s'), 0, served()).available).toBe(true);
   });
@@ -110,6 +126,16 @@ describe('clampNotice', () => {
     // A bucket of zero is full detail, which is never less than what was asked
     // for however fine the request was.
     expect(clampNotice(served({ bucketMs: 0, bucketRequestMs: 5_000 }))).toBeNull();
+  });
+
+  it('lowers only the first letter of the reason it splices in', () => {
+    // Guards against `.toLowerCase()` on the whole sentence, which would flatten
+    // any capitalised word a future reason happened to name.
+    const notice = clampNotice(served({
+      bucketMs: 600_000, bucketRequestMs: 5_000, tierFloorMs: 600_000,
+    }))!;
+    expect(notice).toContain('but finer detail');
+    expect(notice).toContain('Showing 10 minute detail.');
   });
 
   it('blames retention when the request was below the tier floor', () => {
