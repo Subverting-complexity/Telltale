@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 
@@ -135,6 +135,47 @@ describe('timeline granularity', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: '1 hour' })).toHaveAttribute('aria-pressed', 'true'));
     expect(screen.getByRole('button', { name: '1 min' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('holds on to the served detail when the scale already in force is re-selected', async () => {
+    const user = userEvent.setup();
+    const today = new Date();
+    window.history.replaceState(null, '',
+      `?year=${today.getFullYear()}&month=${today.getMonth() + 1}&day=${today.getDate()}&scale=day&g=5s`);
+    servedBucketMs = 600_000;
+    minBucketMs = 600_000;
+    tierFloorMs = 600_000;
+
+    render(<App />);
+    await screen.findByText(/Showing 10 minute detail\./);
+    const before = getTimeline.mock.calls.length;
+
+    // Clicking the tab already selected builds a fresh but equal ViewState. The
+    // window has not moved, so nothing should be refetched and nothing the
+    // server said about it should be thrown away.
+    await user.click(screen.getByRole('tab', { name: 'Day' }));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+
+    expect(getTimeline.mock.calls.length).toBe(before);
+    expect(screen.getByText(/Showing 10 minute detail\./)).toBeInTheDocument();
+  });
+
+  it('leaves the detail in force usable after the window is narrowed under it', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('button', { name: '1 hour' }));
+    await waitFor(() => expect(lastRequestedBucket()).toBe(3_600_000));
+
+    // Filtering the day down to one hour leaves the hourly bucket wider than the
+    // span, but it is still what the chart is drawn at, so the button that says
+    // so must not also say it is out of reach.
+    await user.click(screen.getByRole('button', { name: /^09:00/ }));
+
+    await waitFor(() => expect(getTimeline.mock.calls.length).toBeGreaterThan(2));
+    expect(screen.getByRole('button', { name: '1 hour' })).not.toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: '1 hour' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('restores a granularity named in the URL', async () => {

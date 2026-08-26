@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  GRANULARITIES, granularityById, granularityAvailability, clampNotice, describeBucket,
+  GRANULARITIES, granularityById, granularityAvailability, clampNotice, describeBucket, midSentence,
 } from './granularity';
 import type { TimelineDetail } from './granularity';
 
@@ -128,16 +128,6 @@ describe('clampNotice', () => {
     expect(clampNotice(served({ bucketMs: 0, bucketRequestMs: 5_000 }))).toBeNull();
   });
 
-  it('lowers only the first letter of the reason it splices in', () => {
-    // Guards against `.toLowerCase()` on the whole sentence, which would flatten
-    // any capitalised word a future reason happened to name.
-    const notice = clampNotice(served({
-      bucketMs: 600_000, bucketRequestMs: 5_000, tierFloorMs: 600_000,
-    }))!;
-    expect(notice).toContain('but finer detail');
-    expect(notice).toContain('Showing 10 minute detail.');
-  });
-
   it('blames retention when the request was below the tier floor', () => {
     const notice = clampNotice(served({
       bucketMs: 600_000, bucketRequestMs: 5_000, tierFloorMs: 600_000,
@@ -154,6 +144,25 @@ describe('clampNotice', () => {
     expect(notice).toBe(
       'Showing 1 hour detail. You asked for 1 minute detail, '
       + 'but that would be more points than one response carries.');
+  });
+});
+
+describe('midSentence', () => {
+  it('lowers the first letter', () => {
+    expect(midSentence('Finer detail is not retained.')).toBe('finer detail is not retained.');
+  });
+
+  it('leaves a capital further in alone', () => {
+    // Neither reason in use today has one, so lowercasing the whole sentence
+    // would look correct here and quietly flatten the first reason that did.
+    expect(midSentence('Telltale no longer holds that detail.'))
+      .toBe('telltale no longer holds that detail.');
+    expect(midSentence('Finer detail from Telltale is not retained.'))
+      .toBe('finer detail from Telltale is not retained.');
+  });
+
+  it('does not fall over on an empty string', () => {
+    expect(midSentence('')).toBe('');
   });
 });
 

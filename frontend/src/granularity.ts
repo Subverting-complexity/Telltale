@@ -107,11 +107,20 @@ export function clampNotice(served: TimelineDetail): string | null {
   const { bucketMs, bucketRequestMs } = served;
   if (bucketRequestMs === null || bucketMs <= 0 || bucketMs <= bucketRequestMs) return null;
 
-  const reason = reasonFor(bucketRequestMs, served);
   return `Showing ${describeBucket(bucketMs)} detail. You asked for `
     + `${describeBucket(bucketRequestMs)} detail, but `
-    // Only the first letter, so a reason naming something capitalised keeps it.
-    + reason.charAt(0).toLowerCase() + reason.slice(1);
+    + midSentence(reasonFor(bucketRequestMs, served));
+}
+
+/**
+ * A sentence written to stand alone, moved into the middle of another one.
+ *
+ * Only the first letter is lowered. Lowering the whole string would read the
+ * same for both reasons below, since neither has a capital past its first
+ * letter, and would quietly flatten one that did.
+ */
+export function midSentence(sentence: string): string {
+  return sentence.charAt(0).toLowerCase() + sentence.slice(1);
 }
 
 /**
