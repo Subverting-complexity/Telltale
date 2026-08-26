@@ -15,19 +15,44 @@ public sealed record TimelinePoint(
     double? NetKbps,
     double? GpuBusyPct);
 
-public sealed record TimelineResult(string Resolution, IReadOnlyList<TimelinePoint> Points);
+/// <summary>
+/// A timeline answer and the granularity behind it.
+///
+/// <paramref name="BucketMs"/> is the width each point covers, where <c>0</c>
+/// means the points are the stored samples themselves rather than an aggregate.
+/// <paramref name="BucketRequestMs"/> echoes what the caller asked for, so the
+/// caller can see when its request was widened and say so.
+/// <paramref name="MinBucketMs"/> is the finest this window could have been
+/// served at, which is what tells a caller which granularities are worth
+/// offering.
+/// </summary>
+public sealed record TimelineResult(
+    string Resolution,
+    long BucketMs,
+    long? BucketRequestMs,
+    long MinBucketMs,
+    IReadOnlyList<TimelinePoint> Points);
 
 public static class TimelineQuery
 {
-    public static TimelineResult Execute(SqliteConnection conn, long from, long to)
+    /// <summary>
+    /// Reads the machine timeline for a window. <paramref name="requestedBucketMs"/>
+    /// is the granularity the caller asked for, if any; the plan clamps it to
+    /// something the tiers holding this window can serve.
+    /// </summary>
+    public static TimelineResult Execute(SqliteConnection conn, long from, long to, long? requestedBucketMs = null)
     {
         var plan = TierSelection.Plan(from, to, isMachine: true,
-            TierCoverageReader.Read(conn, isMachine: true));
+            TierCoverageReader.Read(conn, isMachine: true), requestedBucketMs);
         TierSource source = TierSql.Source(plan, isMachine: true);
+
+        // One number decides the shape of the query. Whether it came from the
+        // caller or from the range is already settled by the plan.
+        long bucket = plan.EffectiveBucket;
 
         using var cmd = conn.CreateCommand();
 
-        if (!plan.ServesFullResolution && plan.Bucket > 0)
+        if (bucket > 0)
         {
             cmd.CommandText = $"""
                 SELECT (ts / @bucket) * @bucket as ts,
@@ -43,7 +68,7 @@ public static class TimelineQuery
                 FROM {source.Sql} WHERE ts >= @from AND ts <= @to
                 GROUP BY ts / @bucket ORDER BY ts
                 """;
-            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
+            cmd.Parameters.AddWithValue("@bucket", bucket);
         }
         else
         {
@@ -77,6 +102,7 @@ public static class TimelineQuery
                 GpuBusyPct: reader.IsDBNull(10) ? null : reader.GetDouble(10)));
         }
 
-        return new TimelineResult(plan.Resolution, points);
+        return new TimelineResult(
+            plan.Resolution, bucket, plan.RequestedBucket, plan.SmallestServableBucket, points);
     }
 }

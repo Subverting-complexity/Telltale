@@ -8,18 +8,30 @@ public sealed record TierSlice(string Table, long From, long To);
 
 public sealed record TierPlan
 {
-    public TierPlan(IReadOnlyList<TierSlice> slices, long bucket)
+    public TierPlan(IReadOnlyList<TierSlice> slices, long bucket, long? requestedBucket = null)
     {
         if (slices.Count == 0)
             throw new ArgumentException("A tier plan must name at least one slice.", nameof(slices));
 
         Slices = slices;
         Bucket = bucket;
+
+        // A request of zero or less is not a narrower ask, it is no ask, and the
+        // endpoint promises to treat one as absent rather than as an error. It is
+        // normalised here so nothing downstream has to repeat the check.
+        RequestedBucket = requestedBucket > 0 ? requestedBucket : null;
     }
 
     public IReadOnlyList<TierSlice> Slices { get; }
 
+    /// <summary>
+    /// The bucket this range would be given if nobody asked for one. Still what
+    /// the process endpoints read; the timeline reads <see cref="EffectiveBucket"/>.
+    /// </summary>
     public long Bucket { get; }
+
+    /// <summary>The bucket the caller asked for, or null if it did not ask for one.</summary>
+    public long? RequestedBucket { get; }
 
     public long CoarsestIntervalMs => Slices.Max(s => TierSelection.NativeIntervalMs(s.Table));
 
@@ -56,6 +68,63 @@ public sealed record TierPlan
     }
 
     /// <summary>
+    /// The span actually read, widened for the same overflow reason as
+    /// <see cref="ServesFullResolution"/>. Slices are sorted and disjoint, so the
+    /// first slice's start and the last slice's end bound the whole read.
+    /// </summary>
+    Int128 ReadSpanMs => (Int128)Slices[^1].To - Slices[0].From;
+
+    /// <summary>
+    /// The width the timeline query groups by, where <c>0</c> means hand back
+    /// rows exactly as they are stored.
+    ///
+    /// This is the one number the query branches on. Without a request it
+    /// reproduces what the endpoint has always done: full resolution where the
+    /// window earns it, the automatic bucket otherwise. With a request it is that
+    /// request, clamped to something the tiers can actually serve.
+    /// </summary>
+    public long EffectiveBucket => RequestedBucket is long wanted
+        ? Clamp(wanted)
+        : ServesFullResolution ? 0 : Bucket;
+
+    /// <summary>
+    /// The finest bucket this window could be served at, which is what a request
+    /// for an impossibly small one clamps to. <c>0</c> means the window can be
+    /// served at full stored resolution.
+    ///
+    /// The frontend needs this to know which granularity options to offer. It
+    /// cannot work the answer out for itself, because only the database knows
+    /// which tiers still hold the window.
+    /// </summary>
+    public long SmallestServableBucket => Clamp(1);
+
+    /// <summary>
+    /// Brings a requested bucket to something the selected tiers can serve. It
+    /// widens, never narrows, so a request is answered with at least the detail
+    /// asked for or the closest the recording still holds.
+    /// </summary>
+    long Clamp(long wanted)
+    {
+        long coarsest = CoarsestIntervalMs;
+
+        // Down to a whole tier interval, then floored at one. A bucket that
+        // straddled part of a rollup row would average a fraction of a row against
+        // whole ones, and no tier can be divided finer than the rows it stores.
+        long bucket = Math.Max(coarsest, wanted - wanted % coarsest);
+
+        // Then up, if that many points would be more than one response carries.
+        long capFloor = TierSelection.SmallestBucketWithinCap(ReadSpanMs, coarsest);
+        if (bucket < capFloor) bucket = capFloor;
+
+        // A single raw tier asked for no more detail than it stores is the
+        // unbucketed path. The cap has already been applied, so a bucket still
+        // this small also means the window is inside the raw-only exemption.
+        if (IsSingleRawTier && bucket <= coarsest) return 0;
+
+        return bucket;
+    }
+
+    /// <summary>
     /// Tables read, oldest first, for the API's `resolution` field. A tier can
     /// serve more than one slice, so names are de-duplicated.
     /// </summary>
@@ -79,7 +148,11 @@ public static class TierSelection
 
     /// <summary>
     /// The most points a raw-only window may be worth before it is bucketed like
-    /// any other range.
+    /// any other range, and, since granularity became selectable, the ceiling on
+    /// what an explicitly requested bucket may produce as well. A caller naming
+    /// its own bucket must not be a way past the bound the automatic choice
+    /// respects, and the number that bounds the widest automatic response is the
+    /// natural one to bound a requested one by too.
     ///
     /// Raw-only windows are exempt from <c>MaxPoints</c> so the machine timeline
     /// keeps the 5 second detail the day view exists to show. Left unbounded,
@@ -117,7 +190,13 @@ public static class TierSelection
         : table.EndsWith("_1m", StringComparison.Ordinal) ? 60_000L
         : 5_000L;
 
-    public static TierPlan Plan(long from, long to, bool isMachine, IReadOnlyDictionary<string, TierCoverage> coverage)
+    /// <summary>
+    /// Chooses the tiers for a window. <paramref name="requestedBucketMs"/> is the
+    /// bucket the caller asked for, if any; the plan clamps it to something the
+    /// selected tiers can serve rather than refusing it.
+    /// </summary>
+    public static TierPlan Plan(long from, long to, bool isMachine, IReadOnlyDictionary<string, TierCoverage> coverage,
+        long? requestedBucketMs = null)
     {
         IReadOnlyList<string> tiers = TiersFor(isMachine);
         var slices = new List<TierSlice>();
@@ -159,7 +238,25 @@ public static class TierSelection
         if (slices.Count == 0) slices.Add(new TierSlice(tiers[0], from, to));
 
         slices.Sort((a, b) => a.From.CompareTo(b.From));
-        return new TierPlan(slices, ComputeBucket(from, to, slices));
+        return new TierPlan(slices, ComputeBucket(from, to, slices), requestedBucketMs);
+    }
+
+    /// <summary>
+    /// The smallest bucket that divides <paramref name="spanMs"/> into no more
+    /// than <see cref="MaxRawOnlyPoints"/> points, rounded up to a whole
+    /// <paramref name="tierInterval"/>. Zero for an empty or inverted span, which
+    /// leaves the caller's own floor standing.
+    ///
+    /// The span arrives as <see cref="Int128"/> because a window spanning most of
+    /// long overflows a 64 bit subtraction. The result cannot: the widest span
+    /// expressible divided by 20,000 is about 1.8e15.
+    /// </summary>
+    public static long SmallestBucketWithinCap(Int128 spanMs, long tierInterval)
+    {
+        if (spanMs <= 0) return 0;
+
+        Int128 perPoint = (spanMs + MaxRawOnlyPoints - 1) / MaxRawOnlyPoints;
+        return (long)(((perPoint + tierInterval - 1) / tierInterval) * tierInterval);
     }
 
     static long ComputeBucket(long from, long to, List<TierSlice> slices)

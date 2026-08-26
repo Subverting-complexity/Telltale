@@ -142,17 +142,31 @@ public static class ViewerEndpoints
             }
         });
 
-        app.MapGet("/api/timeline", (long from, long to) =>
+        // `bucket` is taken as a string and parsed here rather than bound as a
+        // long?, so that a value of zero, a negative one, or something that is not
+        // a number at all reads as "no granularity asked for" instead of failing
+        // the request. A person editing the query string by hand should get the
+        // chart back, not a 400.
+        app.MapGet("/api/timeline", (long from, long to, string? bucket) =>
         {
+            long? requestedBucket = long.TryParse(bucket, out long parsed) && parsed > 0 ? parsed : null;
+
             try
             {
                 using var conn = OpenDb();
                 using var checkCmd = conn.CreateCommand();
                 checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine'";
                 if (checkCmd.ExecuteScalar() == null)
-                    return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
+                    return Results.Json(new
+                    {
+                        resolution = "machine",
+                        bucketMs = 0L,
+                        bucketRequestMs = requestedBucket,
+                        minBucketMs = 0L,
+                        points = Array.Empty<object>(),
+                    }, jsonOptions);
 
-                var result = TimelineQuery.Execute(conn, from, to);
+                var result = TimelineQuery.Execute(conn, from, to, requestedBucket);
 
                 var points = result.Points.Select(p => new
                 {
@@ -169,12 +183,26 @@ public static class ViewerEndpoints
                     gpuBusyPct = p.GpuBusyPct,
                 });
 
-                return Results.Json(new { resolution = result.Resolution, points }, jsonOptions);
+                return Results.Json(new
+                {
+                    resolution = result.Resolution,
+                    bucketMs = result.BucketMs,
+                    bucketRequestMs = result.BucketRequestMs,
+                    minBucketMs = result.MinBucketMs,
+                    points,
+                }, jsonOptions);
             }
             catch (SqliteException ex)
             {
                 ReportQueryFailure(ex, "/api/timeline");
-                return Results.Json(new { resolution = "machine", points = Array.Empty<object>() }, jsonOptions);
+                return Results.Json(new
+                {
+                    resolution = "machine",
+                    bucketMs = 0L,
+                    bucketRequestMs = requestedBucket,
+                    minBucketMs = 0L,
+                    points = Array.Empty<object>(),
+                }, jsonOptions);
             }
         });
 
