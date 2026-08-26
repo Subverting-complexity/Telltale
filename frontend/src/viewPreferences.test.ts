@@ -74,6 +74,16 @@ describe('loadViewPreferences', () => {
     expect(loaded.sort).toBe(DEFAULT_VIEW_PREFERENCES.sort);
   });
 
+  it('falls back to Auto on a granularity nobody offers', () => {
+    write({ ...SAVED, granularity: '3s' });
+    expect(loadViewPreferences().granularity).toBe('auto');
+  });
+
+  it('falls back to every category on one that does not exist', () => {
+    write({ ...SAVED, category: 'everything' });
+    expect(loadViewPreferences().category).toBe('all');
+  });
+
   it('ignores a heatmap flag that is not a boolean', () => {
     write({ ...SAVED, heatmap: 'yes' });
     expect(loadViewPreferences().heatmap).toBe(DEFAULT_VIEW_PREFERENCES.heatmap);
@@ -86,6 +96,17 @@ describe('loadViewPreferences', () => {
 
     expect(loaded.granularity).toBe('auto');
     expect(loaded.granularityScale).toBe(loaded.scale);
+  });
+
+  it('drops the granularity when the scale it was paired with did not survive validation', () => {
+    // The substituted scale is not the one the width was chosen for, so the
+    // pairing no longer means anything even though both fields are present.
+    write({ ...SAVED, scale: 'fortnight', granularity: '1d', granularityScale: 'day' });
+
+    const loaded = loadViewPreferences();
+
+    expect(loaded.scale).toBe(DEFAULT_VIEW_PREFERENCES.scale);
+    expect(loaded.granularity).toBe('auto');
   });
 
   it('keeps a granularity paired with a different scale, for the caller to reject', () => {

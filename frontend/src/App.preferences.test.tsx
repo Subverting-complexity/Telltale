@@ -149,6 +149,24 @@ describe('restoring the view a window was left on', () => {
 
     expect(screen.getByRole('tab', { name: 'Day' })).toHaveAttribute('aria-selected', 'true');
   });
+
+  it('renders normally when the store refuses to hand the entry over', async () => {
+    // Scoped to this key rather than refusing everything, because the theme is
+    // read from the same store without a guard of its own (#150). That is out of
+    // this story's scope; refusing every key here would test that gap instead of
+    // this one. Once #150 is fixed this can refuse every key.
+    const real = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
+      if (key === VIEW_PREFERENCES_KEY) throw new DOMException('The operation is insecure.');
+      return real.call(this, key);
+    });
+
+    render(<App />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalled());
+
+    expect(screen.getByRole('tab', { name: 'Day' })).toHaveAttribute('aria-selected', 'true');
+    vi.restoreAllMocks();
+  });
 });
 
 describe('the URL takes precedence over what was saved', () => {
@@ -221,6 +239,23 @@ describe('saving the view as it changes', () => {
       expect(stored.granularity).toBe('1h');
       expect(stored.granularityScale).toBe('month');
     });
+  });
+
+  it('never writes the process filter text, whatever is typed into it', async () => {
+    // The read side is covered above. This is the write side, and it is the one
+    // that would fail if a field were ever added to the saved object: what
+    // someone searched for is exactly the part of the view that stays private.
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('tab', { name: 'Processes' }));
+    await user.type(screen.getByRole('searchbox', { name: /filter processes/i }), 'keepass');
+
+    await waitFor(() => expect(loadViewPreferences().tab).toBe('processes'));
+    const stored = localStorage.getItem(VIEW_PREFERENCES_KEY) ?? '';
+    expect(stored).not.toContain('keepass');
+    expect(stored).not.toContain('filter');
   });
 
   it('writes an entry on the first open, so the next one has something to read', async () => {

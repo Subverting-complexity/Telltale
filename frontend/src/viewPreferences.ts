@@ -99,20 +99,20 @@ export function isViewScale(value: unknown): value is ViewScale {
   return isMemberOf(VIEW_SCALES, value);
 }
 
-export function isDashboardTab(value: unknown): value is DashboardTab {
+function isDashboardTab(value: unknown): value is DashboardTab {
   return isMemberOf(DASHBOARD_TABS, value);
 }
 
-export function isProcessSort(value: unknown): value is ProcessSort {
+function isProcessSort(value: unknown): value is ProcessSort {
   return isMemberOf(PROCESS_SORTS, value);
 }
 
-export function isCategoryFilter(value: unknown): value is ProcessCategory | 'all' {
+function isCategoryFilter(value: unknown): value is ProcessCategory | 'all' {
   return isMemberOf(CATEGORY_FILTERS, value);
 }
 
 /** Checked against the option list itself, which is the one place they are defined. */
-export function isGranularityId(value: unknown): value is GranularityId {
+function isGranularityId(value: unknown): value is GranularityId {
   return typeof value === 'string' && GRANULARITIES.some(option => option.id === value);
 }
 
@@ -140,12 +140,20 @@ export function loadViewPreferences(storage: Storage | null = defaultStorage()):
   const saved = readObject(storage);
   if (saved === null) return { ...DEFAULT_VIEW_PREFERENCES };
 
-  const scale = isViewScale(saved.scale) ? saved.scale : DEFAULT_VIEW_PREFERENCES.scale;
+  const savedScale = isViewScale(saved.scale) ? saved.scale : null;
+  const scale = savedScale ?? DEFAULT_VIEW_PREFERENCES.scale;
 
   // An entry that does not say which scale its granularity was chosen under
   // cannot be trusted to pair the two, so the granularity is dropped rather than
   // applied to whichever scale happens to be restored.
-  const pairedScale = isViewScale(saved.granularityScale) ? saved.granularityScale : null;
+  //
+  // An entry whose own scale did not survive validation is treated the same way,
+  // because the granularity would then be paired against a scale that was
+  // substituted rather than saved. A width the picker would never have offered
+  // for the restored span could otherwise come back looking like a choice.
+  const pairedScale = savedScale !== null && isViewScale(saved.granularityScale)
+    ? saved.granularityScale
+    : null;
   const granularity = pairedScale !== null && isGranularityId(saved.granularity)
     ? saved.granularity
     : DEFAULT_VIEW_PREFERENCES.granularity;
