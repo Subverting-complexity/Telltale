@@ -18,8 +18,15 @@ export function getRange(): Promise<RangeResponse> {
   return fetchJson(`${API_BASE}/range`);
 }
 
-export function getTimeline(from: number, to: number): Promise<TimelineResponse> {
-  return fetchJson(`${API_BASE}/timeline?from=${from}&to=${to}`);
+/**
+ * `bucketMs` asks for a particular granularity. The server widens it where the
+ * recording cannot serve it, and says so in the response, so passing one is a
+ * request rather than an instruction.
+ */
+export function getTimeline(from: number, to: number, bucketMs?: number | null): Promise<TimelineResponse> {
+  const params = new URLSearchParams({ from: String(from), to: String(to) });
+  if (bucketMs) params.set('bucket', String(bucketMs));
+  return fetchJson(`${API_BASE}/timeline?${params}`);
 }
 
 export function getProcesses(

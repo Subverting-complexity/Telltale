@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { ViewState, ViewScale } from './types';
 import { getDaysInMonth } from './utils';
+import { GranularitySelect } from './GranularitySelect';
+import type { GranularityId } from './granularity';
 
 export interface HourSelection {
   from: number;
@@ -21,6 +23,12 @@ interface TimeNavProps {
   selectedHourRange?: HourSelection | null;
   minTs: number | null;
   maxTs: number | null;
+  granularity: GranularityId;
+  onGranularityChange: (id: GranularityId) => void;
+  /** Width of the window on screen, for deciding which granularities are offerable. */
+  rangeMs: number;
+  /** Finest bucket the last response said this window can serve; null before the first one. */
+  minBucketMs: number | null;
 }
 
 const SCALES: ViewScale[] = ['day', 'week', 'month', 'year'];
@@ -70,7 +78,10 @@ function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null)
   return `${scaleLabel} · ${dateLabel} · ${hourLabel}`;
 }
 
-export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs }: TimeNavProps) {
+export function TimeNav({
+  view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs,
+  granularity, onGranularityChange, rangeMs, minBucketMs,
+}: TimeNavProps) {
   const now = new Date();
   const [expanded, setExpanded] = useState(false);
 
@@ -164,6 +175,13 @@ export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, min
             </button>
           ))}
         </div>
+
+        <GranularitySelect
+          value={granularity}
+          onChange={onGranularityChange}
+          rangeMs={rangeMs}
+          minBucketMs={minBucketMs}
+        />
 
         <div className="time-nav-controls">
           <div className="date-stepper">
