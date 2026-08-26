@@ -1,12 +1,15 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { getRange, getTimeline, getProcesses, getHealth, getThresholds } from './api';
 import type {
-  ViewState, ViewScale, Theme, RangeResponse,
+  ViewState, Theme, RangeResponse,
   TimelinePoint, ProcessGroupRow, HealthResponse, ThresholdConfig,
-  ProcessSelection,
+  ProcessSelection, DashboardTab, ProcessSort,
 } from './types';
 import type { ProcessCategory } from './utils';
-type DashboardTab = 'overview' | 'alerts' | 'processes';
+import {
+  loadViewPreferences, saveViewPreferences, restoredGranularity, viewForScale, isViewScale,
+} from './viewPreferences';
+import type { ViewPreferences } from './viewPreferences';
 import { StatusBar } from './StatusBar';
 import { TimeNav, pad2 } from './TimeNav';
 import type { HourSelection } from './TimeNav';
@@ -37,8 +40,6 @@ function applyTheme(theme: Theme) {
     document.documentElement.setAttribute('data-theme', theme);
   }
 }
-
-const validScales: ViewScale[] = ['year', 'month', 'week', 'day'];
 
 function drillDownLabel(selection: ProcessSelection): string {
   switch (selection.type) {
@@ -86,13 +87,49 @@ function parseUrlParams(): ViewState | null {
   } else if (state.month) state.scale = 'month';
   else state.scale = 'year';
   const scale = params.get('scale');
-  if (scale && validScales.includes(scale as ViewScale)) state.scale = scale as ViewScale;
+  if (isViewScale(scale)) state.scale = scale;
   return state;
 }
 
-function parseUrlGranularity(): GranularityId {
+/**
+ * The granularity the URL asks for, or null when it does not ask for one.
+ *
+ * The two are worth telling apart. A URL that says nothing leaves the saved
+ * preference free to apply; one that names a width nobody recognises has still
+ * spoken, and Auto is the answer to it.
+ */
+function parseUrlGranularity(): GranularityId | null {
   const g = new URLSearchParams(window.location.search).get('g');
+  if (g === null) return null;
   return GRANULARITIES.some(o => o.id === g) ? g as GranularityId : 'auto';
+}
+
+/**
+ * What the window opens on.
+ *
+ * The URL wins outright where it carries a view: it is either a link someone was
+ * given or a history entry being restored, and in both cases it describes a
+ * particular thing to look at rather than a habit. The saved preferences apply
+ * only to a bare URL, which is what Telltale itself opens the window on.
+ */
+function initialSettings(): {
+  view: ViewState;
+  granularity: GranularityId;
+  preferences: ViewPreferences;
+} {
+  const preferences = loadViewPreferences();
+  const urlView = parseUrlParams();
+  const urlGranularity = parseUrlGranularity();
+
+  if (urlView) {
+    return { view: urlView, granularity: urlGranularity ?? 'auto', preferences };
+  }
+
+  return {
+    view: viewForScale(preferences.scale, new Date()),
+    granularity: urlGranularity ?? restoredGranularity(preferences),
+    preferences,
+  };
 }
 
 function buildUrlParams(view: ViewState, granularity: GranularityId): URLSearchParams {
@@ -129,36 +166,39 @@ function updateGranularityUrl(view: ViewState, granularity: GranularityId) {
 }
 
 export default function App() {
-  const now = new Date();
+  // Read once, when the window opens. From here on the state below is the truth
+  // and the effect further down writes it back; nothing reads storage again.
+  const [initial] = useState(initialSettings);
+
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [range, setRange] = useState<RangeResponse | null>(null);
-  const [view, setView] = useState<ViewState>(() => {
-    return parseUrlParams() ?? {
-      scale: 'day',
-      year: now.getFullYear(),
-      month: now.getMonth() + 1,
-      day: now.getDate(),
-    };
-  });
+  const [view, setView] = useState<ViewState>(initial.view);
 
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
-  const [granularity, setGranularity] = useState<GranularityId>(parseUrlGranularity);
+  const [granularity, setGranularity] = useState<GranularityId>(initial.granularity);
   // What the last response was actually served at, which is what the picker
   // needs to know which options this window can offer and what the chart needs
   // to say when a request was widened.
   const [timelineDetail, setTimelineDetail] = useState<TimelineDetail | null>(null);
   const [processes, setProcesses] = useState<ProcessGroupRow[]>([]);
+  // Not restored, and deliberately so. It is the one piece of view state that
+  // records what someone went looking for, and a filter in force on open reads
+  // as missing data rather than as a filter.
   const [processFilter, setProcessFilter] = useState('');
-  const [processSort, setProcessSort] = useState('cpu');
+  const [processSort, setProcessSort] = useState<ProcessSort>(initial.preferences.sort);
   const [selectedProcess, setSelectedProcess] = useState<ProcessSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [customRange, setCustomRange] = useState<{ from: number; to: number } | null>(null);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [thresholds, setThresholds] = useState<ThresholdConfig | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>('all');
-  const [showHeatmap, setShowHeatmap] = useState(false);
-  const [dashboardTab, setDashboardTab] = useState<DashboardTab>('overview');
+  const [categoryFilter, setCategoryFilter] = useState<ProcessCategory | 'all'>(
+    initial.preferences.category,
+  );
+  // Restored, but only offered above Day scale. A saved heatmap on a day view
+  // draws the chart until the scale widens, which is what the toggle itself does.
+  const [showHeatmap, setShowHeatmap] = useState(initial.preferences.heatmap);
+  const [dashboardTab, setDashboardTab] = useState<DashboardTab>(initial.preferences.tab);
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedHourRange, setSelectedHourRange] = useState<HourSelection | null>(null);
 
@@ -168,6 +208,27 @@ export default function App() {
   const latestRequest = useRef(0);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
+
+  // Written on every change rather than on the way out, because a window can go
+  // away without warning and there is no moment this page is guaranteed to get.
+  // It runs on mount too, writing back what was just read, which is how the
+  // entry comes to exist after a first open that changed nothing.
+  //
+  // The scale is stored twice over: once as the scale to restore, and once as
+  // the scale the granularity belongs to. They are the same here because
+  // `navigate` returns the granularity to Auto whenever the scale changes, so
+  // the width in force always belongs to the scale in force.
+  useEffect(() => {
+    saveViewPreferences({
+      scale: view.scale,
+      granularity,
+      granularityScale: view.scale,
+      tab: dashboardTab,
+      heatmap: showHeatmap,
+      sort: processSort,
+      category: categoryFilter,
+    });
+  }, [view.scale, granularity, dashboardTab, showHeatmap, processSort, categoryFilter]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {

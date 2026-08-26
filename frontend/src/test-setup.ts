@@ -8,6 +8,14 @@ import { afterEach } from 'vitest';
 
 afterEach(() => {
   cleanup();
+  // The window records the theme and the view it was left on, so without this a
+  // test that changed either would hand its state to the next one in the file
+  // and the next one would open on a view it never asked for.
+  //
+  // Guarded because a test file can opt out of jsdom into a plain node
+  // environment, where there is no store and this would throw after every test
+  // in that file rather than only where it had something to clear.
+  if (typeof localStorage !== 'undefined') localStorage.clear();
 });
 
 // jsdom does not implement matchMedia, and uPlot calls it while its module is

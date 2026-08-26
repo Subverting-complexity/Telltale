@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ProcessGroupRow } from './types';
+import type { ProcessGroupRow, ProcessSort } from './types';
 import { formatSize, formatIo, categoriseProcess, formatCpuOfAllCores, CPU_OF_ALL_CORES } from './utils';
 import type { ProcessCategory } from './utils';
 // Which semantic token each category takes is decided in palette.ts, so a
@@ -13,13 +13,11 @@ interface ProcessTableProps {
   onCompare: (names: string[]) => void;
   filter: string;
   onFilterChange: (filter: string) => void;
-  sortBy: string;
-  onSortChange: (sort: string) => void;
+  sortBy: ProcessSort;
+  onSortChange: (sort: ProcessSort) => void;
   categoryFilter: ProcessCategory | 'all';
   onCategoryChange: (cat: ProcessCategory | 'all') => void;
 }
-
-type SortCol = 'cpu' | 'memory' | 'io' | 'name';
 
 const CATEGORIES: { value: ProcessCategory | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -44,7 +42,7 @@ export function ProcessTable({
   const maxCpu = Math.max(...filtered.map(p => p.cpuPct / logicalProcessors), 1);
   const maxMem = Math.max(...filtered.map(p => p.privateMb), 1);
 
-  function sortIcon(col: SortCol) {
+  function sortIcon(col: ProcessSort) {
     return sortBy === col ? ' ▼' : '';
   }
 
