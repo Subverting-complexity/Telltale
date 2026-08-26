@@ -586,10 +586,10 @@ public sealed class Database : IDisposable
             {
                 pTs.Value = timestamp;
                 pIid.Value = row.InstanceId;
-                pCpu.Value = row.CpuPct.HasValue ? row.CpuPct.Value : DBNull.Value;
+                pCpu.Value = (object?)row.CpuPct ?? DBNull.Value;
                 pPm.Value = row.PrivateMb;
                 pWs.Value = row.WorkingSetMb;
-                pIo.Value = row.IoKb.HasValue ? row.IoKb.Value : DBNull.Value;
+                pIo.Value = (object?)row.IoKb ?? DBNull.Value;
                 pTh.Value = row.Threads;
                 pHa.Value = row.Handles;
                 cmd.ExecuteNonQuery();
@@ -1279,7 +1279,7 @@ public sealed record TickPhaseTimings(
     double SampleWriteMs,
     double MachineWriteMs);
 
-public record SampleRow(
+public sealed record SampleRow(
     long InstanceId,
     double? CpuPct,
     double PrivateMb,
@@ -1288,7 +1288,7 @@ public record SampleRow(
     int Threads,
     int Handles);
 
-public record MachineSample(
+public sealed record MachineSample(
     double? CpuPct,
     double? MemoryAvailMb,
     double? CommitMb,

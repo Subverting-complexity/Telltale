@@ -53,7 +53,17 @@ catch (Exception ex)
 }
 finally
 {
-    mutex?.ReleaseMutex();
+    try
+    {
+        mutex?.ReleaseMutex();
+    }
+    catch (ApplicationException)
+    {
+        // app.Run() is async under the hood and can resume on a different
+        // thread, so ReleaseMutex may fail with a thread-ownership error.
+        // Disposing the handle releases the mutex either way.
+    }
+
     mutex?.Dispose();
 }
 

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { TimelinePoint } from './types';
-import { formatRate } from './utils';
+import { formatRate, formatSizeGb } from './utils';
 
 interface HealthSummaryProps {
   timeline: TimelinePoint[];
@@ -12,11 +12,6 @@ function getZoneClass(pct: number): string {
   if (pct >= 80) return 'zone-danger';
   if (pct >= 50) return 'zone-warning';
   return 'zone-ok';
-}
-
-function formatGb(mb: number): string {
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
-  return `${mb.toFixed(0)} MB`;
 }
 
 function Sparkline({ values }: { values: (number | null)[] }) {
@@ -77,7 +72,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('memory')}
         aria-label={memPct !== null
-          ? `Memory: ${formatGb(memUsedMb!)} / ${formatGb(memTotalMb)} (${memPct.toFixed(0)}%)`
+          ? `Memory: ${formatSizeGb(memUsedMb!)} / ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%)`
           : `Memory: no data`}
       >
         <div className="tile-header">Memory</div>
@@ -90,10 +85,10 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
                 style={{ width: `${Math.min(memPct, 100)}%` }}
               />
             </div>
-            <div className="tile-label">{formatGb(memUsedMb!)} / {formatGb(memTotalMb)}</div>
+            <div className="tile-label">{formatSizeGb(memUsedMb!)} / {formatSizeGb(memTotalMb)}</div>
           </>
         ) : (
-          <div className="tile-label">{memTotalMb > 0 ? formatGb(memTotalMb) : 'No data'}</div>
+          <div className="tile-label">{memTotalMb > 0 ? formatSizeGb(memTotalMb) : 'No data'}</div>
         )}
       </button>
 
