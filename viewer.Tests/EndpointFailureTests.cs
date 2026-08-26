@@ -108,5 +108,5 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
     }
 
     static async Task<JsonElement> ParseAsync(HttpResponseMessage response) =>
-        JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
+        JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.Clone();
 }

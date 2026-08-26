@@ -1,6 +1,5 @@
 using System.Net;
 using System.Net.Http.Json;
-using System.Net.Sockets;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using Telltale.App;
@@ -35,31 +34,10 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
             Directory.Delete(folder, recursive: true);
     }
 
-    static int FreePort()
-    {
-        using var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port;
-    }
-
-    /// <summary>The token Telltale puts in the URL it opens a window on.</summary>
-    static string TokenOf(string windowUrl)
-    {
-        foreach (var pair in new Uri(windowUrl).Query.TrimStart('?').Split('&'))
-        {
-            var parts = pair.Split('=', 2);
-            if (parts.Length == 2 && parts[0] == "s")
-                return Uri.UnescapeDataString(parts[1]);
-        }
-
-        throw new InvalidOperationException($"No token in {windowUrl}");
-    }
 
     async Task<ViewerListener> Started(ICaptureWipe? wipe)
     {
-        _listener = new ViewerListener(_databasePath, FreePort(), log: null, wipe: wipe);
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort(), log: null, wipe: wipe);
         await _listener.StartAsync();
         return _listener;
     }
@@ -104,7 +82,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         using var client = new HttpClient();
 
         var response = await client.PostAsync(
-            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TokenOf(listener.WindowUrl!)}",
+            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TestHelpers.TokenOf(listener.WindowUrl!)}",
             Body("""{"scope":"all"}"""));
 
         // This is the viewer executable's arrangement: it opens the capture file
@@ -119,7 +97,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         using var client = new HttpClient();
 
         var response = await client.GetAsync(
-            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TokenOf(listener.WindowUrl!)}");
+            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TestHelpers.TokenOf(listener.WindowUrl!)}");
 
         // A GET is what a browser issues for a link, an image or a prefetch, and
         // none of those should be able to delete a recording by being followed.
@@ -137,7 +115,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("all", _wipe.Called);
@@ -154,7 +132,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         using var client = new HttpClient();
 
         var response = await Post(
-            client, TokenOf(listener.WindowUrl!), """{"scope":"range","from":1000,"to":2000}""");
+            client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"range","from":1000,"to":2000}""");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("range", _wipe.Called);
@@ -170,7 +148,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         using var client = new HttpClient();
 
         var response = await Post(
-            client, TokenOf(listener.WindowUrl!), """{"scope":"range","from":1000,"to":2000}""");
+            client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"range","from":1000,"to":2000}""");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<WipeReply>();
@@ -191,7 +169,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), json);
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), json);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Null(_wipe.Called);
@@ -204,7 +182,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
         var body = await response.Content.ReadAsStringAsync();
 
         // Asserted on the raw text rather than by deserialising. ReadFromJsonAsync
@@ -221,7 +199,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), """{}""");
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{}""");
         var body = await response.Content.ReadAsStringAsync();
 
         // Same reason. Without the field being called this, every refusal reaches
@@ -236,7 +214,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         using var client = new HttpClient();
 
         var response = await client.PostAsync(
-            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TokenOf(listener.WindowUrl!)}",
+            $"{listener.Url}{CaptureWipeEndpoint.Path}?s={TestHelpers.TokenOf(listener.WindowUrl!)}",
             new StringContent("""{"scope":"all"}""", Encoding.UTF8, "text/plain"));
 
         // A well formed body under the wrong content type is still a bad request,
@@ -252,7 +230,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), "not json at all");
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), "not json at all");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Null(_wipe.Called);
@@ -265,7 +243,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         Assert.Contains("busy", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
@@ -278,7 +256,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var listener = await Started(_wipe);
         using var client = new HttpClient();
 
-        var response = await Post(client, TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }

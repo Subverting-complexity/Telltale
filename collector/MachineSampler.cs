@@ -108,7 +108,7 @@ public sealed class MachineSampler : IDisposable
             if (result == 0 && size > 0)
                 return new string(buffer, 0, (int)size - 1);
         }
-        catch { }
+        catch (Exception) { }
         return null;
     }
 
@@ -135,7 +135,7 @@ public sealed class MachineSampler : IDisposable
             _netCounters = filtered.Select(i =>
             {
                 try { return new PerformanceCounter(category, counter, i, true); }
-                catch { return null; }
+                catch (Exception) { return null; }
             }).Where(c => c != null).Cast<PerformanceCounter>().ToArray();
         }
         catch (Exception ex)
@@ -189,7 +189,7 @@ public sealed class MachineSampler : IDisposable
             CpuPct: cpuPct,
             MemoryAvailMb: memAvailMb,
             CommitMb: commitMb,
-            HardFaults: hardFaults.HasValue ? (int)hardFaults.Value : null,
+            HardFaults: hardFaults.HasValue && double.IsFinite(hardFaults.Value) ? (int)hardFaults.Value : null,
             DiskReadMs: diskReadMs,
             DiskWriteMs: diskWriteMs,
             MemoryTotalMb: memoryTotalMb,
@@ -202,7 +202,7 @@ public sealed class MachineSampler : IDisposable
     {
         if (counter == null) return null;
         try { return counter.NextValue(); }
-        catch { return null; }
+        catch (Exception) { return null; }
     }
 
     public void Dispose()

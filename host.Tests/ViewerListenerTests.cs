@@ -33,43 +33,20 @@ public class ViewerListenerTests : IAsyncLifetime
             Directory.Delete(folder, recursive: true);
     }
 
-    /// <summary>A port nothing is listening on right now.</summary>
-    static int FreePort()
-    {
-        using var probe = new TcpListener(IPAddress.Loopback, 0);
-        probe.Start();
-        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
-        probe.Stop();
-        return port;
-    }
-
     static int PortOf(string url) => new Uri(url).Port;
-
-    /// <summary>The token Telltale puts in the URL it opens a window on.</summary>
-    static string TokenOf(string windowUrl)
-    {
-        foreach (var pair in new Uri(windowUrl).Query.TrimStart('?').Split('&'))
-        {
-            var parts = pair.Split('=', 2);
-            if (parts.Length == 2 && parts[0] == "s")
-                return Uri.UnescapeDataString(parts[1]);
-        }
-
-        throw new InvalidOperationException($"No token in {windowUrl}");
-    }
 
     static Task<HttpResponseMessage> Ping(HttpClient client, ViewerListener listener, string windowId) =>
         client.PostAsync(
-            $"{listener.Url}/api/session/ping?s={TokenOf(listener.WindowUrl!)}&c={windowId}", content: null);
+            $"{listener.Url}/api/session/ping?s={TestHelpers.TokenOf(listener.WindowUrl!)}&c={windowId}", content: null);
 
     static Task<HttpResponseMessage> Close(HttpClient client, ViewerListener listener, string windowId) =>
         client.PostAsync(
-            $"{listener.Url}/api/session/closed?s={TokenOf(listener.WindowUrl!)}&c={windowId}", content: null);
+            $"{listener.Url}/api/session/closed?s={TestHelpers.TokenOf(listener.WindowUrl!)}&c={windowId}", content: null);
 
     [Fact]
     public async Task It_listens_on_the_configured_port()
     {
-        var port = FreePort();
+        var port = TestHelpers.FreePort();
         _listener = new ViewerListener(_databasePath, port);
 
         await _listener.StartAsync();
@@ -81,7 +58,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task It_binds_loopback_and_nothing_else()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
 
         await _listener.StartAsync();
 
@@ -97,7 +74,7 @@ public class ViewerListenerTests : IAsyncLifetime
         // A name that resolves to 127.0.0.1 is how a page reaches a loopback server
         // it is otherwise same-origin with. Host filtering is what turns that away,
         // and it only works because AllowedHosts is set rather than defaulted.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
 
         using var client = new HttpClient();
@@ -112,7 +89,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task It_serves_the_same_api_the_viewer_serves()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
 
         using var client = new HttpClient();
@@ -124,7 +101,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task A_taken_port_falls_back_to_one_Windows_chooses()
     {
-        var taken = FreePort();
+        var taken = TestHelpers.FreePort();
         using var squatter = new TcpListener(IPAddress.Loopback, taken);
         squatter.Start();
 
@@ -142,7 +119,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task Starting_again_returns_the_address_already_being_served()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
 
         var first = await _listener.StartAsync();
         var second = await _listener.StartAsync();
@@ -158,7 +135,7 @@ public class ViewerListenerTests : IAsyncLifetime
         // address to a browser. Without re-arming the session, the watchdog can
         // stop the listener between handing the address out and the browser
         // getting to it, and the user sees a connection refused.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -177,7 +154,7 @@ public class ViewerListenerTests : IAsyncLifetime
     {
         // Every window has been silent for as long as the machine was away, which
         // looks exactly like every window having gone.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -194,7 +171,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task Stopping_closes_the_socket()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         var url = _listener.Url!;
 
@@ -211,7 +188,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task Stopping_twice_is_not_an_error()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
 
         await _listener.StopAsync();
@@ -223,7 +200,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task It_can_be_started_again_after_being_stopped()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         await _listener.StopAsync();
 
@@ -238,20 +215,20 @@ public class ViewerListenerTests : IAsyncLifetime
     {
         // The old one stops working with the listener that minted it, so a page
         // left open from a previous session cannot drive the new one.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
-        var first = TokenOf(_listener.WindowUrl!);
+        var first = TestHelpers.TokenOf(_listener.WindowUrl!);
 
         await _listener.StopAsync();
         await _listener.StartAsync();
 
-        Assert.NotEqual(first, TokenOf(_listener.WindowUrl!));
+        Assert.NotEqual(first, TestHelpers.TokenOf(_listener.WindowUrl!));
     }
 
     [Fact]
     public async Task The_window_url_carries_the_token_and_the_plain_url_does_not()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
 
         Assert.StartsWith(_listener.Url!, _listener.WindowUrl!);
@@ -262,7 +239,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task A_window_saying_it_closed_is_what_ends_the_session()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -281,7 +258,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task Closing_one_window_leaves_another_one_serving()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -301,7 +278,7 @@ public class ViewerListenerTests : IAsyncLifetime
         // custom header is a request a browser sends cross-origin without asking
         // first, and the reply being unreadable does not undo the side effect. So
         // the side effect has to not happen.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -320,7 +297,7 @@ public class ViewerListenerTests : IAsyncLifetime
     {
         // The other half of the same problem. A page that could ping would keep the
         // socket open for exactly the hours this design exists to close it.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -336,7 +313,7 @@ public class ViewerListenerTests : IAsyncLifetime
         // /api/health is reachable from a bare image tag on any page. If ordinary
         // requests counted as the window being there, that alone would keep the
         // socket up indefinitely. Only a window holding the token counts.
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
@@ -356,12 +333,12 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public async Task A_session_request_that_names_no_window_is_refused()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
         await _listener.StartAsync();
         using var client = new HttpClient();
 
         var response = await client.PostAsync(
-            $"{_listener.Url}/api/session/ping?s={TokenOf(_listener.WindowUrl!)}", content: null);
+            $"{_listener.Url}/api/session/ping?s={TestHelpers.TokenOf(_listener.WindowUrl!)}", content: null);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -369,7 +346,7 @@ public class ViewerListenerTests : IAsyncLifetime
     [Fact]
     public void Nothing_has_gone_before_anything_has_started()
     {
-        _listener = new ViewerListener(_databasePath, FreePort());
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort());
 
         Assert.False(_listener.IsRunning);
         Assert.False(_listener.EveryWindowHasGone());

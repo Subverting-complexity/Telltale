@@ -36,6 +36,8 @@ function applyTheme(theme: Theme) {
   }
 }
 
+const validScales: ViewScale[] = ['year', 'month', 'week', 'day'];
+
 function getViewRange(view: ViewState): { from: number; to: number } {
   switch (view.scale) {
     case 'year':
@@ -45,6 +47,7 @@ function getViewRange(view: ViewState): { from: number; to: number } {
     case 'week':
       return getWeekRange(view.year, view.month ?? 1, view.day ?? 1);
     case 'day':
+    default:
       return getDayRange(view.year, view.month ?? 1, view.day ?? 1);
   }
 }
@@ -53,15 +56,24 @@ function parseUrlParams(): ViewState | null {
   const params = new URLSearchParams(window.location.search);
   const year = params.get('year');
   if (!year) return null;
-  const state: ViewState = { scale: 'day', year: parseInt(year) };
+  const parsedYear = parseInt(year);
+  if (isNaN(parsedYear)) return null;
+  const state: ViewState = { scale: 'day', year: parsedYear };
   const month = params.get('month');
-  if (month) state.month = parseInt(month);
+  if (month) {
+    const m = parseInt(month);
+    if (!isNaN(m)) state.month = m;
+  }
   const day = params.get('day');
-  if (day) { state.day = parseInt(day); state.scale = 'day'; }
-  else if (month) state.scale = 'month';
+  if (day) {
+    const d = parseInt(day);
+    if (!isNaN(d)) { state.day = d; state.scale = 'day'; }
+    else if (state.month) state.scale = 'month';
+    else state.scale = 'year';
+  } else if (state.month) state.scale = 'month';
   else state.scale = 'year';
-  const scale = params.get('scale') as ViewScale;
-  if (scale) state.scale = scale;
+  const scale = params.get('scale');
+  if (scale && validScales.includes(scale as ViewScale)) state.scale = scale as ViewScale;
   return state;
 }
 
@@ -71,6 +83,8 @@ function updateUrl(view: ViewState) {
   if (view.month) params.set('month', String(view.month));
   if (view.day) params.set('day', String(view.day));
   params.set('scale', view.scale);
+  const token = new URLSearchParams(window.location.search).get('s');
+  if (token) params.set('s', token);
   // Changing the date range invalidates any drill-down history entry
   // pushed for the previous range, so the history state is reset to
   // `null` alongside the URL — otherwise Forward could resurface a
@@ -256,8 +270,15 @@ export default function App() {
     setTimeout(() => chartSectionRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
   }
 
-  function handleNavigateToDay(year: number, month: number, day: number) {
+  function handleNavigateToDay(year: number, month: number, day: number, hour?: number) {
     navigate({ scale: 'day', year, month, day });
+    if (hour != null) {
+      const dayStart = new Date(year, month - 1, day).getTime();
+      const from = dayStart + hour * 3600000;
+      const to = from + 3600000;
+      setCustomRange({ from, to });
+      setSelectedHourRange({ startHour: hour, endHour: hour, from, to });
+    }
   }
 
   function cycleTheme() {
