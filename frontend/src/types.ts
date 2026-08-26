@@ -173,6 +173,12 @@ export type ProcessSelection =
 
 export type Theme = 'light' | 'dark' | 'system';
 
+/** Which section of the dashboard is on screen. */
+export type DashboardTab = 'overview' | 'alerts' | 'processes';
+
+/** Which column the process table is ordered by. */
+export type ProcessSort = 'cpu' | 'memory' | 'io' | 'name';
+
 /** What to throw away: everything recorded, or one span of it. */
 export type WipeScope =
   | { scope: 'all' }
