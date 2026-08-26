@@ -1208,6 +1208,11 @@ public sealed class Database : IDisposable
             DeleteOldestRollupDataLocked("sample_10m");
             DeleteOldestRollupDataLocked("machine_10m");
 
+            // A DELETE moves pages to the free list but does not reduce
+            // page_count, so GetDatabaseSizeBytesLocked would still see
+            // the pre-delete size without a vacuum in between.
+            IncrementalVacuumLocked();
+
             if (GetDatabaseSizeBytesLocked() <= maxBytes) return;
 
             DeleteOldestRollupDataLocked("sample_1m");

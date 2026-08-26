@@ -127,19 +127,5 @@ public class EndpointTestFactory : TelltaleTestFactory
         tx.Commit();
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        base.Dispose(disposing);
-
-        if (!disposing) return;
-
-        SqliteConnection.ClearAllPools();
-
-        try
-        {
-            Directory.Delete(Path.GetDirectoryName(DbPath)!, recursive: true);
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-    }
+    // Cleanup handled by TelltaleTestFactory.Dispose.
 }

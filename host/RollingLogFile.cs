@@ -21,6 +21,7 @@ sealed class RollingLogFile
 
     public RollingLogFile(string path, long maxBytes = 1024 * 1024)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxBytes, 1);
         _path = path;
         _maxBytes = maxBytes;
     }

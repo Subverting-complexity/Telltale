@@ -231,6 +231,25 @@ public class ConfigTests
         Assert.Empty(new TelltaleConfig { ViewerPort = port }.Validate());
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(91)]
+    public void HealthRetentionDaysOutsideTheRange_FailsValidation(int days)
+    {
+        var errors = new TelltaleConfig { HealthRetentionDays = days }.Validate();
+        Assert.Contains(errors, e => e.Contains("healthRetentionDays"));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(7)]
+    [InlineData(90)]
+    public void HealthRetentionDaysInsideTheRange_PassesValidation(int days)
+    {
+        Assert.Empty(new TelltaleConfig { HealthRetentionDays = days }.Validate());
+    }
+
     [Fact]
     public void RedactCommandLine_HandlesNull()
     {

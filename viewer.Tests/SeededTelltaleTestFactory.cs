@@ -40,25 +40,5 @@ public class SeededTelltaleTestFactory : TelltaleTestFactory
         return path;
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        base.Dispose(disposing);
-
-        if (!disposing) return;
-
-        // The pool holds the seeding connection open, which keeps the WAL
-        // sidecar files locked and the delete below failing on Windows.
-        SqliteConnection.ClearAllPools();
-
-        try
-        {
-            Directory.Delete(Path.GetDirectoryName(DbPath)!, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
-    }
+    // Cleanup handled by TelltaleTestFactory.Dispose.
 }

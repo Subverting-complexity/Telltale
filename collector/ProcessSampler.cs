@@ -39,7 +39,7 @@ public sealed class ProcessSampler : IProcessSampler
                 long ioRead = 0, ioWrite = 0;
                 int handleCount = 0;
 
-                try { handleCount = proc.HandleCount; } catch { }
+                try { handleCount = proc.HandleCount; } catch (Exception) { }
 
                 results.Add(new ProcessSnapshot(
                     Pid: proc.Id,

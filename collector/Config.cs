@@ -177,19 +177,22 @@ public sealed partial class TelltaleConfig
         if (Rollup10mRetentionDays < Rollup1mRetentionDays)
             errors.Add("rollup10mRetentionDays must be at least rollup1mRetentionDays.");
 
+        if (HealthRetentionDays < 1 || HealthRetentionDays > 90)
+            errors.Add("healthRetentionDays must be between 1 and 90.");
+
         return errors;
     }
 
     public static bool IsInSyncFolder(string path)
     {
-        var normalized = Path.GetFullPath(path).Replace('\\', '/').ToLowerInvariant();
+        var normalized = Path.GetFullPath(path).Replace('\\', '/');
         var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-            .Replace('\\', '/').ToLowerInvariant();
+            .Replace('\\', '/');
 
         string[] syncFolders = ["OneDrive", "Google Drive", "Dropbox", "iCloudDrive"];
         foreach (var folder in syncFolders)
         {
-            var syncPath = $"{userProfile}/{folder.ToLowerInvariant()}";
+            var syncPath = $"{userProfile}/{folder}";
             if (normalized.StartsWith(syncPath, StringComparison.OrdinalIgnoreCase))
                 return true;
         }

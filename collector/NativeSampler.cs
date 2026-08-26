@@ -53,7 +53,7 @@ public sealed class NativeSampler : IProcessSampler
                 return false;
             }
 
-            var self = System.Diagnostics.Process.GetCurrentProcess();
+            using var self = System.Diagnostics.Process.GetCurrentProcess();
             bool foundSelf = results.Any(p => p.Pid == self.Id);
             if (!foundSelf)
             {

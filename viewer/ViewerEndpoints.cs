@@ -184,6 +184,8 @@ public static class ViewerEndpoints
             try
             {
                 using var conn = OpenDb();
+                if (!HasTable(conn, "sample"))
+                    return Results.Json(new { grouped, processes = Array.Empty<object>() }, jsonOptions);
                 int take = Math.Clamp(limit ?? 50, 1, 500);
         
                 var plan = PlanTiers(conn, from, to, isMachine: false);
@@ -204,6 +206,7 @@ public static class ViewerEndpoints
                         "name" => "sub.name",
                         _ => weightedCpu
                     };
+                    string sortDir = sort == "name" ? "ASC" : "DESC";
                     cmd.CommandText = $"""
                         SELECT sub.name,
                                {TierSql.AvgOfWeightedTotals("sub.ts_cpu_weighted", "sub.ts_weight", "avg_cpu_pct")},
@@ -221,11 +224,11 @@ public static class ViewerEndpoints
                             FROM {source.Sql} s
                             JOIN process_instance pi ON pi.id = s.instance_id
                             WHERE s.ts >= @from AND s.ts <= @to
-                            {(q != null ? "AND pi.name LIKE @q" : "")}
+                            {(q != null ? "AND pi.name LIKE @q ESCAPE '\\'" : "")}
                             GROUP BY pi.name, s.ts
                         ) sub
                         GROUP BY sub.name
-                        ORDER BY {sortExpr} DESC
+                        ORDER BY {sortExpr} {sortDir}
                         LIMIT @limit
                         """;
                 }
@@ -238,6 +241,7 @@ public static class ViewerEndpoints
                         "name" => "pi.name",
                         _ => TierSql.WeightedAvgExpr("s.cpu_pct", "s.weight")
                     };
+                    string sortDirUngrouped = sort == "name" ? "ASC" : "DESC";
                     cmd.CommandText = $"""
                         SELECT pi.id, pi.pid, pi.name, pi.path,
                                {TierSql.WeightedAvg("s.cpu_pct", "avg_cpu_pct", "s.weight")},
@@ -246,9 +250,9 @@ public static class ViewerEndpoints
                         FROM {source.Sql} s
                         JOIN process_instance pi ON pi.id = s.instance_id
                         WHERE s.ts >= @from AND s.ts <= @to
-                        {(q != null ? "AND pi.name LIKE @q" : "")}
+                        {(q != null ? "AND pi.name LIKE @q ESCAPE '\\'" : "")}
                         GROUP BY pi.id
-                        ORDER BY {sortExpr} DESC
+                        ORDER BY {sortExpr} {sortDirUngrouped}
                         LIMIT @limit
                         """;
                 }
@@ -257,7 +261,7 @@ public static class ViewerEndpoints
                 cmd.Parameters.AddWithValue("@from", from);
                 cmd.Parameters.AddWithValue("@to", to);
                 cmd.Parameters.AddWithValue("@limit", take);
-                if (q != null) cmd.Parameters.AddWithValue("@q", $"%{q}%");
+                if (q != null) cmd.Parameters.AddWithValue("@q", $"%{EscapeLike(q)}%");
         
                 var results = new List<object>();
                 using var reader = cmd.ExecuteReader();
@@ -308,6 +312,8 @@ public static class ViewerEndpoints
             try
             {
                 using var conn = OpenDb();
+                if (!HasTable(conn, "sample"))
+                    return Results.Json(new { info = (object?)null, resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
                 var plan = PlanTiers(conn, from, to, isMachine: false);
                 TierSource source = TierSql.Source(plan, isMachine: false);
         
@@ -388,6 +394,8 @@ public static class ViewerEndpoints
             try
             {
                 using var conn = OpenDb();
+                if (!HasTable(conn, "sample"))
+                    return Results.Json(new { instances = Array.Empty<object>(), resolution = "sample", points = Array.Empty<object>() }, jsonOptions);
                 var plan = PlanTiers(conn, from, to, isMachine: false);
                 TierSource source = TierSql.Source(plan, isMachine: false);
         
@@ -661,6 +669,8 @@ public static class ViewerEndpoints
             var nameList = names.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (nameList.Length == 0)
                 return Results.Json(new { baselines = Array.Empty<object>() }, jsonOptions);
+            if (nameList.Length > 50)
+                nameList = nameList[..50];
 
             try
             {
@@ -685,11 +695,11 @@ public static class ViewerEndpoints
                     cmd.CommandText = $"""
                         SELECT pi.name,
                                AVG(s.cpu_pct_avg) as avg_cpu,
-                               SQRT(AVG(s.cpu_pct_avg * s.cpu_pct_avg) - AVG(s.cpu_pct_avg) * AVG(s.cpu_pct_avg)) as stddev_cpu,
+                               SQRT(MAX(0, AVG(s.cpu_pct_avg * s.cpu_pct_avg) - AVG(s.cpu_pct_avg) * AVG(s.cpu_pct_avg))) as stddev_cpu,
                                AVG(s.private_mb_max) as avg_memory_mb,
-                               SQRT(AVG(s.private_mb_max * s.private_mb_max) - AVG(s.private_mb_max) * AVG(s.private_mb_max)) as stddev_memory_mb,
+                               SQRT(MAX(0, AVG(s.private_mb_max * s.private_mb_max) - AVG(s.private_mb_max) * AVG(s.private_mb_max))) as stddev_memory_mb,
                                AVG(s.io_kb_total) as avg_io_kb,
-                               SQRT(AVG(s.io_kb_total * s.io_kb_total) - AVG(s.io_kb_total) * AVG(s.io_kb_total)) as stddev_io_kb,
+                               SQRT(MAX(0, AVG(s.io_kb_total * s.io_kb_total) - AVG(s.io_kb_total) * AVG(s.io_kb_total))) as stddev_io_kb,
                                COUNT(DISTINCT s.ts) as data_points
                         FROM {table} s
                         JOIN process_instance pi ON pi.id = s.instance_id
@@ -858,5 +868,16 @@ public static class ViewerEndpoints
     {
         foreach (TierBound bound in source.Parameters)
             cmd.Parameters.AddWithValue($"@{bound.Name}", bound.Value);
+    }
+
+    static string EscapeLike(string value) =>
+        value.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
+
+    static bool HasTable(SqliteConnection conn, string table)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name=@name";
+        cmd.Parameters.AddWithValue("@name", table);
+        return cmd.ExecuteScalar() != null;
     }
 }

@@ -303,7 +303,13 @@ sealed class ViewerListener : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await StopAsync().ConfigureAwait(false);
-        _gate.Dispose();
+        try
+        {
+            await StopAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Dispose();
+        }
     }
 }
