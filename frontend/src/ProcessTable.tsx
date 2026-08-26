@@ -2,6 +2,9 @@ import { useState } from 'react';
 import type { ProcessGroupRow } from './types';
 import { formatSize, formatIo, categoriseProcess, formatCpuOfAllCores, CPU_OF_ALL_CORES } from './utils';
 import type { ProcessCategory } from './utils';
+// Which semantic token each category takes is decided in palette.ts, so a
+// re-theme reaches this table without it declaring a colour of its own.
+import { categoryCssVar } from './palette';
 
 interface ProcessTableProps {
   processes: ProcessGroupRow[];
@@ -24,12 +27,6 @@ const CATEGORIES: { value: ProcessCategory | 'all'; label: string }[] = [
   { value: 'system', label: 'System' },
   { value: 'services', label: 'Services' },
 ];
-
-const CATEGORY_COLORS: Record<ProcessCategory, string> = {
-  system: 'var(--text-muted)',
-  services: 'var(--accent)',
-  applications: 'var(--success)',
-};
 
 export function ProcessTable({
   processes, logicalProcessors, onSelectGroup, onCompare,
@@ -168,7 +165,7 @@ export function ProcessTable({
                     </button>
                     <span
                       className="category-dot"
-                      style={{ backgroundColor: CATEGORY_COLORS[category] }}
+                      style={{ backgroundColor: categoryCssVar(category) }}
                       title={category}
                     />
                     {proc.name}

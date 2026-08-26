@@ -2,7 +2,7 @@ import { useState, useMemo, type CSSProperties } from 'react';
 import type { ProcessGroupRow } from './types';
 import { formatSize, formatIo, categoriseProcess, formatCpuOfAllCores } from './utils';
 import type { ProcessCategory } from './utils';
-import { CHART_COLORS } from './chartTheme';
+import { metricCssVar } from './palette';
 
 interface TopConsumersProps {
   processes: ProcessGroupRow[];
@@ -62,10 +62,11 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
   const metricLabel = metric === 'cpu' ? 'CPU, as a share of all cores'
     : metric === 'memory' ? 'memory usage' : 'I/O activity';
 
-  // Reuses chartTheme's per-series color instead of the panel picking its
+  // Reuses the palette's per-metric color instead of the panel picking its
   // own, so switching CPU / Memory / I/O recolors the whole panel to match
-  // the same line the System Overview chart draws for that metric.
-  const metricColorVars: MetricColorVars = { '--metric-color': CHART_COLORS[metric] };
+  // the same line the System Overview chart draws for that metric. The var()
+  // rather than a resolved value, so it also follows a theme change.
+  const metricColorVars: MetricColorVars = { '--metric-color': metricCssVar(metric) };
 
   return (
     <section className="top-consumers" aria-label="Top resource consumers" style={metricColorVars}>

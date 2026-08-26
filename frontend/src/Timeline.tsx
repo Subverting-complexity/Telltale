@@ -4,7 +4,11 @@ import 'uplot/dist/uPlot.min.css';
 import type { TimelinePoint, ProcessPoint, ThresholdConfig } from './types';
 import { DataTable, timelineColumns, processColumns } from './DataTable';
 import { formatSize, formatRate, computeMovingAverage, computeMean, computeLinearFit, CPU_OF_ONE_CORE, CPU_OF_ALL_CORES } from './utils';
-import { CHART_COLORS, getThemeColors, pointsConfig, buildAxes } from './chartTheme';
+import type { ChartThemeColors } from './chartTheme';
+import { getThemeColors, pointsConfig, buildAxes } from './chartTheme';
+import type { MetricKey } from './palette';
+import { metricColor } from './palette';
+import { useThemeMode } from './theme';
 
 interface TimelineProps {
   data: TimelinePoint[];
@@ -29,9 +33,8 @@ interface ThresholdLine {
   label: string;
 }
 
-function drawThresholdLines(u: uPlot, lines: ThresholdLine[]) {
+function drawThresholdLines(u: uPlot, lines: ThresholdLine[], theme: ChartThemeColors) {
   const { ctx } = u;
-  const theme = getThemeColors();
   const yAxis = u.axes[1];
   if (!yAxis) return;
 
@@ -58,9 +61,8 @@ function drawThresholdLines(u: uPlot, lines: ThresholdLine[]) {
   ctx.restore();
 }
 
-function drawMeanLine(u: uPlot, mean: number, formatLabel: (v: number) => string) {
+function drawMeanLine(u: uPlot, mean: number, formatLabel: (v: number) => string, theme: ChartThemeColors) {
   const { ctx } = u;
-  const theme = getThemeColors();
 
   const y = u.valToPos(mean, 'y', true);
   if (y < u.bbox.top / devicePixelRatio || y > (u.bbox.top + u.bbox.height) / devicePixelRatio) return;
@@ -82,12 +84,11 @@ function drawMeanLine(u: uPlot, mean: number, formatLabel: (v: number) => string
   ctx.restore();
 }
 
-function drawTrendLine(u: uPlot, values: (number | null)[], timestamps: number[]) {
+function drawTrendLine(u: uPlot, values: (number | null)[], timestamps: number[], theme: ChartThemeColors) {
   const fit = computeLinearFit(values);
   if (!fit) return;
 
   const { ctx } = u;
-  const theme = getThemeColors();
 
   const firstIdx = values.findIndex(v => v !== null);
   const lastIdx = values.length - 1 - [...values].reverse().findIndex(v => v !== null);
@@ -174,7 +175,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             title={CPU_OF_ALL_CORES}
             data={data}
             seriesKey="cpuPct"
-            color={CHART_COLORS.cpu}
+            metric="cpu"
             unit="%"
             onRangeSelect={handleRangeSelect}
             yMin={0}
@@ -191,7 +192,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             data={data}
             seriesKey="memoryAvailMb"
             totalKey="memoryTotalMb"
-            color={CHART_COLORS.memory}
+            metric="memory"
             unit="%"
             invert
             yMin={0}
@@ -207,7 +208,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             title="Disk Busy %"
             data={data}
             seriesKey="diskBusyPct"
-            color={CHART_COLORS.disk}
+            metric="disk"
             unit="%"
             onRangeSelect={handleRangeSelect}
             formatY={v => `${v.toFixed(1)}%`}
@@ -217,7 +218,7 @@ export function Timeline({ data, onRangeSelect, thresholds }: TimelineProps) {
             title="Network"
             data={data}
             seriesKey="netKbps"
-            color={CHART_COLORS.network}
+            metric="network"
             unit="KB/s"
             onRangeSelect={handleRangeSelect}
             formatY={v => {
@@ -264,7 +265,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
             title={CPU_OF_ONE_CORE}
             data={data}
             seriesKey="cpuPct"
-            color={CHART_COLORS.cpu}
+            metric="cpu"
             unit="%"
             overlays={overlays}
             thresholdLines={thresholds ? [
@@ -277,7 +278,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
             title="Memory MB"
             data={data}
             seriesKey="privateMb"
-            color={CHART_COLORS.memory}
+            metric="memory"
             unit="MB"
             formatY={v => formatSize(v)}
             formatTooltip={v => formatSize(v)}
@@ -291,7 +292,7 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
             title="I/O KB"
             data={data}
             seriesKey="ioKb"
-            color={CHART_COLORS.io}
+            metric="io"
             unit="KB"
             formatY={v => {
               if (v >= 1048576) return `${(v / 1048576).toFixed(1)} GB`;
@@ -307,14 +308,14 @@ export function ProcessTimeline({ data, title, thresholds }: ProcessTimelineProp
 }
 
 function ChartPanel<T extends { ts: number }>({
-  title, data, seriesKey, totalKey, color, unit, invert, onRangeSelect,
+  title, data, seriesKey, totalKey, metric, unit, invert, onRangeSelect,
   yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines, overlays,
 }: {
   title: string;
   data: T[];
   seriesKey: keyof T;
   totalKey?: keyof T;
-  color: string;
+  metric: MetricKey;
   unit: string;
   invert?: boolean;
   onRangeSelect?: (from: number, to: number) => void;
@@ -329,6 +330,13 @@ function ChartPanel<T extends { ts: number }>({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
 
+  // A canvas cannot read var(--metric-cpu), so the series colour and the chart
+  // furniture are resolved here, from the mode the hook reports. Both are
+  // dependencies of the rebuild below, which is what makes a theme switch
+  // repaint the chart instead of leaving it in the previous theme.
+  const mode = useThemeMode();
+  const color = metricColor(metric, mode);
+
   const buildChart = useCallback(() => {
     if (!containerRef.current || data.length === 0) return;
 
@@ -337,7 +345,7 @@ function ChartPanel<T extends { ts: number }>({
       chartRef.current = null;
     }
 
-    const theme = getThemeColors();
+    const theme = getThemeColors(mode);
     const timestamps = data.map(d => d.ts / 1000);
 
     const values: (number | null)[] = data.map(d => {
@@ -412,18 +420,18 @@ function ChartPanel<T extends { ts: number }>({
     const drawHooks: ((u: uPlot) => void)[] = [];
 
     if (thresholdLines && thresholdLines.length > 0) {
-      drawHooks.push((u: uPlot) => drawThresholdLines(u, thresholdLines));
+      drawHooks.push((u: uPlot) => drawThresholdLines(u, thresholdLines, theme));
     }
 
     if (overlays?.mean) {
       const mean = computeMean(values);
       if (mean !== null) {
-        drawHooks.push((u: uPlot) => drawMeanLine(u, mean, labelFormatter));
+        drawHooks.push((u: uPlot) => drawMeanLine(u, mean, labelFormatter, theme));
       }
     }
 
     if (overlays?.trend) {
-      drawHooks.push((u: uPlot) => drawTrendLine(u, values, timestamps));
+      drawHooks.push((u: uPlot) => drawTrendLine(u, values, timestamps, theme));
     }
 
     if (drawHooks.length > 0) {
@@ -449,7 +457,7 @@ function ChartPanel<T extends { ts: number }>({
     };
 
     chartRef.current = new uPlot(opts, uPlotData, containerRef.current);
-  }, [data, seriesKey, totalKey, color, unit, title, invert, onRangeSelect, yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines, overlays]);
+  }, [data, seriesKey, totalKey, color, mode, unit, title, invert, onRangeSelect, yMin, yMax, formatY, formatTooltip, computePercent, thresholdLines, overlays]);
 
   useEffect(() => {
     buildChart();

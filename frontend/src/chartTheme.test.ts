@@ -1,6 +1,52 @@
 import { describe, it, expect } from 'vitest';
 import type uPlot from 'uplot';
-import { pointsConfig, timeAxisValues } from './chartTheme';
+import { compareColors, getThemeColors, pointsConfig, timeAxisValues } from './chartTheme';
+import { CHART_SURFACES, METRIC_KEYS, metricColor } from './palette';
+
+// The charts paint onto a canvas and cannot read a CSS variable, so these two
+// resolve the palette for whichever mode they are handed. Taking the mode as an
+// argument rather than reading the document is the point: it forces the caller
+// to hold the mode as a value the chart rebuild can depend on, which is what
+// makes a theme switch repaint rather than leave the previous theme on screen.
+describe('compareColors', () => {
+  it('assigns the metric colours in palette order', () => {
+    expect(compareColors('light')).toEqual(METRIC_KEYS.map(k => metricColor(k, 'light')));
+  });
+
+  it('gives a different set per mode, so a dark chart is not drawn in light colours', () => {
+    expect(compareColors('dark')).not.toEqual(compareColors('light'));
+  });
+
+  it('offers one colour per metric, so five series are distinguishable', () => {
+    const colors = compareColors('dark');
+    expect(colors).toHaveLength(METRIC_KEYS.length);
+    expect(new Set(colors).size).toBe(METRIC_KEYS.length);
+  });
+});
+
+describe('getThemeColors', () => {
+  it('returns the palette entry for the mode it is given', () => {
+    expect(getThemeColors('light').grid).toBe(CHART_SURFACES['chart-grid'].light);
+    expect(getThemeColors('dark').grid).toBe(CHART_SURFACES['chart-grid'].dark);
+    expect(getThemeColors('dark').bg).toBe(CHART_SURFACES['chart-bg'].dark);
+  });
+
+  it('ignores the document, so the caller owns which mode is drawn', () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    try {
+      expect(getThemeColors('light')).toEqual(getThemeColors('light'));
+      expect(getThemeColors('light').axes).toBe(CHART_SURFACES['chart-axis'].light);
+    } finally {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  });
+
+  it('fills every field, so no chart element falls back to a uPlot default', () => {
+    for (const value of Object.values(getThemeColors('dark'))) {
+      expect(value).toBeTruthy();
+    }
+  });
+});
 
 function fakeUplot(minSeconds: number, maxSeconds: number): uPlot {
   return { scales: { x: { min: minSeconds, max: maxSeconds } } } as unknown as uPlot;

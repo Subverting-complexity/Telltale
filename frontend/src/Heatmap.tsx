@@ -2,6 +2,8 @@ import { useEffect, useState, useMemo, Fragment } from 'react';
 import { getHeatmap } from './api';
 import type { HeatmapBucket } from './types';
 import { formatSize, formatRate, CPU_OF_ALL_CORES } from './utils';
+import type { MetricKey } from './palette';
+import { metricHue } from './palette';
 
 interface HeatmapViewProps {
   from: number;
@@ -9,13 +11,18 @@ interface HeatmapViewProps {
   onNavigateToDay: (year: number, month: number, day: number, hour?: number) => void;
 }
 
-type HeatmapMetric = 'cpu' | 'memory' | 'disk' | 'network';
+type HeatmapMetric = Extract<MetricKey, 'cpu' | 'memory' | 'disk' | 'network'>;
 
-const METRICS: { key: HeatmapMetric; label: string; hue: number; format: (v: number) => string }[] = [
-  { key: 'cpu', label: CPU_OF_ALL_CORES, hue: 220, format: v => `${v.toFixed(1)}%` },
-  { key: 'memory', label: 'Memory', hue: 150, format: v => formatSize(v) },
-  { key: 'disk', label: 'Disk %', hue: 40, format: v => `${v.toFixed(1)}%` },
-  { key: 'network', label: 'Network', hue: 270, format: v => formatRate(v) },
+// The grid shades one hue by intensity, so it needs a hue rather than a
+// colour. It is derived from the metric's palette entry rather than written
+// down here, which is how the heatmap and the line chart for the same metric
+// stay the same hue: previously these were four hand-tuned numbers that only
+// approximated the chart colours.
+const METRICS: { key: HeatmapMetric; label: string; format: (v: number) => string }[] = [
+  { key: 'cpu', label: CPU_OF_ALL_CORES, format: v => `${v.toFixed(1)}%` },
+  { key: 'memory', label: 'Memory', format: v => formatSize(v) },
+  { key: 'disk', label: 'Disk %', format: v => `${v.toFixed(1)}%` },
+  { key: 'network', label: 'Network', format: v => formatRate(v) },
 ];
 
 function heatColor(value: number, max: number, hue: number): string {
@@ -26,9 +33,9 @@ function heatColor(value: number, max: number, hue: number): string {
   return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
 }
 
-function HeatmapGrid({ buckets, hue, days, format, from, onNavigateToDay }: {
+function HeatmapGrid({ buckets, metric, days, format, from, onNavigateToDay }: {
   buckets: HeatmapBucket[];
-  hue: number;
+  metric: HeatmapMetric;
   days: number;
   format: (v: number) => string;
   from: number;
@@ -43,6 +50,8 @@ function HeatmapGrid({ buckets, hue, days, format, from, onNavigateToDay }: {
     }
     return { cells, maxVal };
   }, [buckets]);
+
+  const hue = metricHue(metric);
 
   const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
 
@@ -173,7 +182,7 @@ export function HeatmapView({ from, to, onNavigateToDay }: HeatmapViewProps) {
           <h4 className="heatmap-title">{m.label}</h4>
           <HeatmapGrid
             buckets={data.get(m.key) ?? []}
-            hue={m.hue}
+            metric={m.key}
             days={days}
             format={m.format}
             from={from}

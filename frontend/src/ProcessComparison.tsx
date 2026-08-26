@@ -4,7 +4,9 @@ import 'uplot/dist/uPlot.min.css';
 import { getProcessGroup } from './api';
 import type { ProcessPoint } from './types';
 import { CPU_OF_ONE_CORE } from './utils';
-import { COMPARE_COLORS, getThemeColors, pointsConfig, buildAxes } from './chartTheme';
+import { compareColors, getThemeColors, pointsConfig, buildAxes } from './chartTheme';
+import { METRIC_KEYS, metricCssVar } from './palette';
+import { useThemeMode } from './theme';
 
 interface ProcessComparisonProps {
   names: string[];
@@ -26,6 +28,11 @@ function CompareChart({ title, datasets, seriesKey, unit }: {
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<uPlot | null>(null);
+
+  // Same reason as Timeline's ChartPanel: a canvas needs resolved values, so
+  // the mode has to be a dependency of the rebuild or the chart keeps the
+  // previous theme after a switch.
+  const mode = useThemeMode();
 
   const buildChart = useCallback(() => {
     if (!containerRef.current || datasets.length === 0) return;
@@ -55,13 +62,14 @@ function CompareChart({ title, datasets, seriesKey, unit }: {
       return timestamps.map(ts => lookup.get(ts) ?? null);
     });
 
-    const theme = getThemeColors();
+    const theme = getThemeColors(mode);
+    const palette = compareColors(mode);
     const pointCount = tsSeconds.length;
 
     const series: uPlot.Series[] = [
       {},
       ...datasets.map((ds, i) => {
-        const color = COMPARE_COLORS[i % COMPARE_COLORS.length];
+        const color = palette[i % palette.length];
         return {
           label: ds.name,
           stroke: color,
@@ -83,7 +91,7 @@ function CompareChart({ title, datasets, seriesKey, unit }: {
     };
 
     chartRef.current = new uPlot(opts, [tsSeconds, ...seriesData], containerRef.current);
-  }, [datasets, seriesKey, unit]);
+  }, [datasets, seriesKey, unit, mode]);
 
   useEffect(() => {
     buildChart();
@@ -140,7 +148,7 @@ export function ProcessComparison({ names, from, to, onBack }: ProcessComparison
       <div className="comparison-legend">
         {datasets.map((ds, i) => (
           <span key={ds.name} className="legend-item">
-            <span className="legend-dot" style={{ backgroundColor: COMPARE_COLORS[i % COMPARE_COLORS.length] }} />
+            <span className="legend-dot" style={{ backgroundColor: metricCssVar(METRIC_KEYS[i % METRIC_KEYS.length]) }} />
             {ds.name}
           </span>
         ))}

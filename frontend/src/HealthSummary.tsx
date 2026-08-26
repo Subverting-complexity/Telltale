@@ -1,7 +1,8 @@
 import { useMemo, type CSSProperties } from 'react';
 import type { TimelinePoint } from './types';
 import { formatRate, formatSizeGb } from './utils';
-import { CHART_COLORS } from './chartTheme';
+import type { MetricKey } from './palette';
+import { metricCssVar } from './palette';
 
 interface HealthSummaryProps {
   timeline: TimelinePoint[];
@@ -17,14 +18,22 @@ interface TileColorVars extends CSSProperties {
 // green/amber/red health-status color — the sparkline already makes a busy
 // metric visible through its own shape, so the bar doesn't need to repeat
 // that signal in a second color scheme.
-function tileColorVars(color: string): TileColorVars {
-  return { '--tile-color': color };
+//
+// It passes the palette's var() rather than a resolved value, so the tile
+// follows a theme change without this component re-rendering.
+function tileColorVars(metric: MetricKey): TileColorVars {
+  return { '--tile-color': metricCssVar(metric) };
 }
 
 // Area fill plus an end-point dot, matching the line charts (chartTheme.ts's
 // pointsConfig) instead of a bare stroke, so the tiles read as part of the
 // same chart system rather than a smaller, plainer copy of it.
-function Sparkline({ id, values, color }: { id: string; values: (number | null)[]; color: string }) {
+//
+// stroke, fill and stop-color are set through style rather than as
+// presentation attributes, because var() resolves in a CSS declaration and not
+// in an SVG attribute value.
+function Sparkline({ id, values, metric }: { id: string; values: (number | null)[]; metric: MetricKey }) {
+  const color = metricCssVar(metric);
   const filtered = values.map(v => v ?? 0);
   if (filtered.length < 2) return null;
   const max = Math.max(...filtered, 1);
@@ -43,13 +52,13 @@ function Sparkline({ id, values, color }: { id: string; values: (number | null)[
     <svg className="sparkline" viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-hidden="true">
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.32" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
+          <stop offset="0%" style={{ stopColor: color, stopOpacity: 0.32 }} />
+          <stop offset="100%" style={{ stopColor: color, stopOpacity: 0 }} />
         </linearGradient>
       </defs>
       <path d={areaPath} fill={`url(#${gradientId})`} />
-      <path d={linePath} fill="none" stroke={color} strokeWidth="1.4" />
-      <circle cx={lastX} cy={lastY} r="2" fill={color} />
+      <path d={linePath} fill="none" strokeWidth="1.4" style={{ stroke: color }} />
+      <circle cx={lastX} cy={lastY} r="2" style={{ fill: color }} />
     </svg>
   );
 }
@@ -82,14 +91,14 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('cpu')}
         aria-label={`CPU: ${cpuPct.toFixed(0)}% of ${logicalProcessors} cores`}
-        style={tileColorVars(CHART_COLORS.cpu)}
+        style={tileColorVars('cpu')}
       >
         <div className="tile-header">CPU</div>
         <div className="tile-value">{cpuPct.toFixed(0)}%</div>
         <div className="tile-bar-track">
           <div className="tile-bar-fill" style={{ width: `${Math.min(cpuPct, 100)}%` }} />
         </div>
-        <Sparkline id="cpu" values={cpuSeries} color={CHART_COLORS.cpu} />
+        <Sparkline id="cpu" values={cpuSeries} metric="cpu" />
         <div className="tile-label">{logicalProcessors} cores</div>
       </button>
 
@@ -99,7 +108,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         aria-label={memPct !== null
           ? `Memory: ${formatSizeGb(memUsedMb!)} / ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%)`
           : `Memory: no data`}
-        style={tileColorVars(CHART_COLORS.memory)}
+        style={tileColorVars('memory')}
       >
         <div className="tile-header">Memory</div>
         <div className="tile-value">{memPct !== null ? `${memPct.toFixed(0)}%` : '-'}</div>
@@ -108,7 +117,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
             <div className="tile-bar-track">
               <div className="tile-bar-fill" style={{ width: `${Math.min(memPct, 100)}%` }} />
             </div>
-            <Sparkline id="memory" values={memSeries} color={CHART_COLORS.memory} />
+            <Sparkline id="memory" values={memSeries} metric="memory" />
             <div className="tile-label">{formatSizeGb(memUsedMb!)} / {formatSizeGb(memTotalMb)}</div>
           </>
         ) : (
@@ -120,14 +129,14 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('disk')}
         aria-label={`Disk: ${diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}% busy`}`}
-        style={tileColorVars(CHART_COLORS.disk)}
+        style={tileColorVars('disk')}
       >
         <div className="tile-header">Disk</div>
         <div className="tile-value">{diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}%`}</div>
         <div className="tile-bar-track">
           <div className="tile-bar-fill" style={{ width: `${Math.min(diskPct, 100)}%` }} />
         </div>
-        <Sparkline id="disk" values={diskSeries} color={CHART_COLORS.disk} />
+        <Sparkline id="disk" values={diskSeries} metric="disk" />
         {diskPct >= 1 && <div className="tile-label">busy</div>}
       </button>
 
@@ -135,11 +144,11 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('network')}
         aria-label={`Network: ${formatRate(netKbps)}`}
-        style={tileColorVars(CHART_COLORS.network)}
+        style={tileColorVars('network')}
       >
         <div className="tile-header">Network</div>
         <div className="tile-value">{formatRate(netKbps)}</div>
-        <Sparkline id="network" values={netSeries} color={CHART_COLORS.network} />
+        <Sparkline id="network" values={netSeries} metric="network" />
       </button>
     </section>
   );
