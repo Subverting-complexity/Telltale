@@ -1,13 +1,16 @@
 :root {
   --bg-primary: #ffffff;
-  --bg-secondary: #f9fafb;
-  --bg-tertiary: #f3f4f6;
-  --text-primary: #111827;
-  --text-secondary: #6b7280;
-  --text-muted: #9ca3af;
-  --border: #e5e7eb;
+  --bg-secondary: #f7f8fb;
+  --bg-tertiary: #eef0f5;
+  --surface-toolbar: #ffffff;
+  --text-primary: #161c2c;
+  --text-secondary: #5b6478;
+  --text-muted: #94a0b8;
+  --border: #e2e5ee;
+  --border-strong: #ccd1e0;
   --accent: #3b82f6;
   --accent-hover: #2563eb;
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
@@ -15,36 +18,48 @@
   --bar-mem: #10b981;
   --focus-ring: 0 0 0 2px var(--accent);
   --radius: 6px;
+  --shadow-sm: 0 1px 3px rgba(20, 25, 40, 0.07);
+  --shadow-card: 0 1px 2px rgba(20, 25, 40, 0.06), 0 0 0 1px var(--border);
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg-primary: #111827;
-    --bg-secondary: #1f2937;
-    --bg-tertiary: #374151;
-    --text-primary: #f9fafb;
-    --text-secondary: #9ca3af;
-    --text-muted: #6b7280;
-    --border: #374151;
+    --bg-primary: #0a0f1a;
+    --bg-secondary: #121a2b;
+    --bg-tertiary: #1a2338;
+    --surface-toolbar: #0d1422;
+    --text-primary: #eef1f8;
+    --text-secondary: #9aa4c0;
+    --text-muted: #6b7590;
+    --border: #232c42;
+    --border-strong: #34405e;
     --accent: #60a5fa;
     --accent-hover: #93bbfd;
+    --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
     --bar-cpu: #60a5fa;
     --bar-mem: #34d399;
+    --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.3);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border);
   }
 }
 
 :root[data-theme="dark"] {
-  --bg-primary: #111827;
-  --bg-secondary: #1f2937;
-  --bg-tertiary: #374151;
-  --text-primary: #f9fafb;
-  --text-secondary: #9ca3af;
-  --text-muted: #6b7280;
-  --border: #374151;
+  --bg-primary: #0a0f1a;
+  --bg-secondary: #121a2b;
+  --bg-tertiary: #1a2338;
+  --surface-toolbar: #0d1422;
+  --text-primary: #eef1f8;
+  --text-secondary: #9aa4c0;
+  --text-muted: #6b7590;
+  --border: #232c42;
+  --border-strong: #34405e;
   --accent: #60a5fa;
   --accent-hover: #93bbfd;
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --bar-cpu: #60a5fa;
   --bar-mem: #34d399;
+  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border);
 }
 
 *,
@@ -98,6 +113,7 @@ body {
   justify-content: space-between;
   gap: 16px;
   padding: 16px 0;
+  background: var(--surface-toolbar);
   border-bottom: 1px solid var(--border);
 }
 
@@ -106,6 +122,65 @@ body {
   align-items: center;
   gap: 12px;
   min-width: 0;
+}
+
+/* Reserved whether or not the back button inside it is showing, so the
+   brand mark and everything after it never shifts when it fades in or
+   out on entering/leaving a process drill-down. */
+.back-slot {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+}
+
+.back-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.back-btn.visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.back-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.header-crumb-current {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.header-crumb-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.header-crumb-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .brand-mark {
@@ -200,6 +275,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
+  box-shadow: var(--shadow-card);
 }
 
 .section-card h2 {
@@ -272,11 +348,63 @@ body {
 
 /* Time navigation */
 .time-nav {
-  padding: 14px 0 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 12px 0 16px;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+/* Collapsed summary of the panel below (scale, date, and — on the day
+   scale — the selected hour range), so the full set of date/hour controls
+   don't have to stay on screen to know what's currently selected. */
+.date-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 10px 7px 14px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.12s ease;
+}
+
+.date-chip:hover {
+  border-color: var(--border-strong);
+}
+
+.date-chip-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+  font-size: 0.75em;
+  transition: transform 0.15s ease;
+}
+
+.date-chip.open .date-chip-icon {
+  transform: rotate(180deg);
+}
+
+/* Kept mounted (not conditionally rendered) even while collapsed, so the
+   breadcrumb text inside it still updates with the view and stays
+   queryable — only the CSS display toggles. */
+.date-panel {
+  display: none;
+  flex-direction: column;
   gap: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.date-panel.open {
+  display: flex;
 }
 
 .time-nav-scales {
@@ -1044,11 +1172,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  box-shadow: var(--shadow-sm);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .health-tile:hover {
   background: var(--bg-tertiary);
   border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }
 
 .tile-header {
@@ -1078,11 +1210,8 @@ body {
   height: 100%;
   border-radius: 3px;
   transition: width 0.3s ease;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--tile-color) 55%, transparent), var(--tile-color));
 }
-
-.tile-bar-fill.zone-ok { background: var(--success); }
-.tile-bar-fill.zone-warning { background: var(--warning); }
-.tile-bar-fill.zone-danger { background: var(--danger); }
 
 .tile-label {
   font-size: 0.75rem;
@@ -1101,7 +1230,7 @@ body {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-card);
 }
 
 .top-consumers-header {
@@ -1144,7 +1273,7 @@ body {
 }
 
 .metric-toggle.active {
-  background: var(--accent);
+  background: var(--metric-color, var(--accent));
   color: #fff;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
@@ -1177,31 +1306,69 @@ body {
 .consumer-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .consumer-row {
+  position: relative;
   display: grid;
-  grid-template-columns: 24px 140px 1fr 70px;
-  gap: 10px;
+  grid-template-columns: 22px 1fr auto;
+  gap: 12px;
   align-items: center;
   background: none;
   border: none;
-  padding: 8px 8px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 8px;
   cursor: pointer;
   font: inherit;
   color: var(--text-primary);
   text-align: left;
-  border-radius: var(--radius);
-  transition: background 0.15s ease, transform 0.15s ease;
+  overflow: hidden;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.consumer-row:last-child {
+  border-bottom: none;
 }
 
 .consumer-row:hover {
   background: var(--bg-tertiary);
-  transform: translateX(2px);
+}
+
+/* The wash is sized to the row's share of the top row's value, and reads
+   as a bar without a separate track/pill element — same per-metric color
+   the line charts use (chartTheme.ts's CHART_COLORS), so switching the CPU
+   / Memory / I/O toggle recolors every row instead of the old per-process
+   rainbow, which didn't mean anything and read as noise next to the
+   single-color charts. */
+.consumer-wash {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--metric-color) 42%, transparent) 0%,
+    color-mix(in srgb, var(--metric-color) 14%, transparent) 55%,
+    transparent 100%
+  );
+  transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+/* Fixed at the row's midpoint, echoing the dashed mean-line the line
+   charts already draw, rather than marking any particular value. */
+.consumer-tick {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 50%;
+  width: 0;
+  border-left: 1px dashed var(--text-muted);
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .consumer-rank {
+  position: relative;
   font-size: 0.7rem;
   font-weight: 600;
   color: var(--text-muted);
@@ -1209,6 +1376,7 @@ body {
 }
 
 .consumer-name {
+  position: relative;
   font-size: 0.85rem;
   font-weight: 500;
   overflow: hidden;
@@ -1216,44 +1384,11 @@ body {
   white-space: nowrap;
 }
 
-.consumer-bar-track {
-  position: relative;
-  height: 16px;
-  /* Same grid color the uPlot line charts use (chartTheme.ts's `theme.grid`
-     resolves to this same --border value), so the ranking bars read as
-     part of the same chart system rather than a plain progress bar. */
-  background-image: repeating-linear-gradient(
-    90deg,
-    var(--border) 0,
-    var(--border) 1px,
-    transparent 1px,
-    transparent 25%
-  );
-  background-color: var(--bg-tertiary);
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
-}
-
-.consumer-bar-fill {
-  position: relative;
-  height: 100%;
-  border-radius: 8px;
-  transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.consumer-bar-fill::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.25), rgba(255, 255, 255, 0) 65%);
-}
-
 .consumer-value {
+  position: relative;
   font-size: 0.85rem;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--metric-color);
   text-align: right;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -1261,7 +1396,8 @@ body {
 
 @media (max-width: 600px) {
   .consumer-row {
-    grid-template-columns: 20px 100px 1fr 60px;
+    grid-template-columns: 18px 1fr auto;
+    gap: 8px;
   }
 }
 
@@ -1526,7 +1662,7 @@ body {
   }
 
   .tile-bar-fill,
-  .consumer-bar-fill,
+  .consumer-wash,
   .heatmap-cell {
     forced-color-adjust: none;
   }

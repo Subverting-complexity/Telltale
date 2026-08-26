@@ -37,6 +37,11 @@ vi.mock('./ProcessDetail', () => ({
     </div>
   ),
 }));
+vi.mock('./WipeDataDialog', () => ({
+  WipeDataDialog: ({ onWiped }: { onWiped: () => void }) => (
+    <button onClick={onWiped}>Confirm wipe</button>
+  ),
+}));
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
@@ -102,6 +107,55 @@ describe('App drill-down history navigation', () => {
 
     await waitFor(() =>
       expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
+  });
+
+  it('shows a back button in the header only once a drill-down is open, and it steps back through history', async () => {
+    // The back button stays mounted at all times (a fixed-width slot in the
+    // header so nothing else shifts when it appears) — App.css hides it via
+    // a CSS class jsdom doesn't apply, so the "hidden" half of this is
+    // asserted on the class/tabIndex the CSS keys off, not on presence.
+    const user = userEvent.setup();
+    render(<App />);
+
+    const headerBack = await screen.findByRole('button', { name: 'Back to dashboard' });
+    expect(headerBack).toHaveClass('back-btn');
+    expect(headerBack).not.toHaveClass('visible');
+    expect(headerBack).toHaveAttribute('tabindex', '-1');
+
+    await user.click(await screen.findByRole('listitem', { name: /chrome\.exe/ }));
+    expect(await screen.findByText('Drill-down: chrome.exe')).toBeInTheDocument();
+
+    expect(headerBack).toHaveClass('visible');
+    expect(headerBack).toHaveAttribute('tabindex', '0');
+    expect(screen.getByText('chrome.exe', { selector: '.header-crumb-name' })).toBeInTheDocument();
+
+    await user.click(headerBack);
+
+    await waitFor(() =>
+      expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
+    expect(headerBack).not.toHaveClass('visible');
+  });
+
+  it('hides the header back button when data is wiped out from under an open drill-down', async () => {
+    // The wipe dialog is reachable while a drill-down is open (its header
+    // button isn't gated on selectedProcess), so onWiped has to reset the
+    // drill-down itself, not just the date range — otherwise the back
+    // button would keep pointing at a process whose data no longer exists.
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('listitem', { name: /chrome\.exe/ }));
+    expect(await screen.findByText('Drill-down: chrome.exe')).toBeInTheDocument();
+
+    const headerBack = screen.getByRole('button', { name: 'Back to dashboard' });
+    expect(headerBack).toHaveClass('visible');
+
+    await user.click(screen.getByRole('button', { name: 'Delete recorded data' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm wipe' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
+    expect(headerBack).not.toHaveClass('visible');
   });
 
   it('leaves plain date-paging ArrowLeft/ArrowRight alone when no drill-down is open', async () => {

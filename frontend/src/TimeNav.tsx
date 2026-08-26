@@ -30,8 +30,49 @@ export function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }
 
+// getWeekRange in utils.ts anchors a week on the Sunday on or before `day`
+// and runs 7 days from there; this mirrors that boundary so the collapsed
+// label describes the same span the view actually shows, rather than the
+// single anchor date (which reads as a day-scale label, not a week one).
+function formatWeekRange(year: number, month: number, day: number): string {
+  const anchor = new Date(year, month - 1, day);
+  const start = new Date(year, month - 1, day - anchor.getDay());
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+
+  if (start.getFullYear() === end.getFullYear()) {
+    if (start.getMonth() === end.getMonth()) {
+      return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
+    }
+    return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()} – ${MONTH_NAMES[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()}, ${start.getFullYear()} – ${MONTH_NAMES[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
+}
+
+function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null): string {
+  const scaleLabel = view.scale.charAt(0).toUpperCase() + view.scale.slice(1);
+
+  const dateLabel = view.scale === 'year' || !view.month
+    ? String(view.year)
+    : view.scale === 'week' && view.day
+    ? formatWeekRange(view.year, view.month, view.day)
+    : view.scale === 'month' || !view.day
+    ? `${MONTH_NAMES[view.month - 1]} ${view.year}`
+    : `${MONTH_NAMES[view.month - 1]} ${view.day}, ${view.year}`;
+
+  if (view.scale !== 'day') return `${scaleLabel} · ${dateLabel}`;
+
+  const hourLabel = !selectedHourRange
+    ? 'All hours'
+    : selectedHourRange.startHour === selectedHourRange.endHour
+    ? `${pad2(selectedHourRange.startHour)}:00–${pad2(selectedHourRange.startHour + 1)}:00`
+    : `${pad2(selectedHourRange.startHour)}:00–${pad2(selectedHourRange.endHour + 1)}:00`;
+
+  return `${scaleLabel} · ${dateLabel} · ${hourLabel}`;
+}
+
 export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs }: TimeNavProps) {
   const now = new Date();
+  const [expanded, setExpanded] = useState(false);
 
   function prev() {
     switch (view.scale) {
@@ -94,109 +135,121 @@ export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, min
 
   return (
     <nav className="time-nav" aria-label="Time navigation">
-      <div className="time-nav-scales" role="tablist">
-        {SCALES.map(s => (
-          <button
-            key={s}
-            role="tab"
-            aria-selected={view.scale === s}
-            className={`scale-btn ${view.scale === s ? 'active' : ''}`}
-            onClick={() => {
-              const newView: ViewState = { scale: s, year: view.year };
-              if (s !== 'year') newView.month = view.month ?? now.getMonth() + 1;
-              if (s === 'day' || s === 'week') newView.day = view.day ?? now.getDate();
-              onNavigate(newView);
-            }}
-          >
-            {s.charAt(0).toUpperCase() + s.slice(1)}
-          </button>
-        ))}
-      </div>
+      <button
+        type="button"
+        className={`date-chip ${expanded ? 'open' : ''}`}
+        onClick={() => setExpanded(e => !e)}
+        aria-expanded={expanded}
+      >
+        <span>{summaryLabel(view, selectedHourRange)}</span>
+        <span className="date-chip-icon" aria-hidden="true">&#9662;</span>
+      </button>
 
-      <div className="time-nav-controls">
-        <div className="date-stepper">
-          <button className="nav-btn step-btn" onClick={prev} aria-label="Previous">&lsaquo;</button>
-
-          <ol className="breadcrumbs" aria-label="Current time position">
-            {breadcrumbs.map((b, i) => (
-              <li key={i}>
-                {i < breadcrumbs.length - 1
-                  ? <button className="breadcrumb-link" onClick={b.onClick}>{b.label}</button>
-                  : <span className="breadcrumb-current" aria-current="page">{b.label}</span>}
-              </li>
-            ))}
-          </ol>
-
-          <button className="nav-btn step-btn" onClick={next} aria-label="Next">&rsaquo;</button>
+      <div className={`date-panel ${expanded ? 'open' : ''}`}>
+        <div className="time-nav-scales" role="tablist">
+          {SCALES.map(s => (
+            <button
+              key={s}
+              role="tab"
+              aria-selected={view.scale === s}
+              className={`scale-btn ${view.scale === s ? 'active' : ''}`}
+              onClick={() => {
+                const newView: ViewState = { scale: s, year: view.year };
+                if (s !== 'year') newView.month = view.month ?? now.getMonth() + 1;
+                if (s === 'day' || s === 'week') newView.day = view.day ?? now.getDate();
+                onNavigate(newView);
+              }}
+            >
+              {s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
         </div>
 
-        <div className="time-nav-secondary">
-          <button
-            className="nav-btn today-btn"
-            onClick={() => onNavigate({
-              scale: 'day',
-              year: now.getFullYear(),
-              month: now.getMonth() + 1,
-              day: now.getDate(),
-            })}
-          >
-            Today
-          </button>
+        <div className="time-nav-controls">
+          <div className="date-stepper">
+            <button className="nav-btn step-btn" onClick={prev} aria-label="Previous">&lsaquo;</button>
 
-          <JumpToTimestamp onJump={(ts) => {
-            const d = new Date(ts);
-            onNavigate({
-              scale: 'day',
-              year: d.getFullYear(),
-              month: d.getMonth() + 1,
-              day: d.getDate(),
-            });
-          }} />
-        </div>
-      </div>
+            <ol className="breadcrumbs" aria-label="Current time position">
+              {breadcrumbs.map((b, i) => (
+                <li key={i}>
+                  {i < breadcrumbs.length - 1
+                    ? <button className="breadcrumb-link" onClick={b.onClick}>{b.label}</button>
+                    : <span className="breadcrumb-current" aria-current="page">{b.label}</span>}
+                </li>
+              ))}
+            </ol>
 
-      {view.scale === 'year' && (
-        <YearGrid
-          year={view.year}
-          onSelectMonth={(m) => onNavigate({ scale: 'month', year: view.year, month: m })}
-          minTs={minTs}
-          maxTs={maxTs}
-        />
-      )}
-      {view.scale === 'month' && view.month && (
-        <MonthGrid
-          year={view.year}
-          month={view.month}
-          selectedDay={view.day}
-          onSelectDay={(d) => onNavigate({ scale: 'day', year: view.year, month: view.month, day: d })}
-          minTs={minTs}
-          maxTs={maxTs}
-        />
-      )}
-      {view.scale === 'day' && view.month && view.day && onHourSelect && (
-        <HourGrid
-          year={view.year}
-          month={view.month}
-          day={view.day}
-          selectedRange={selectedHourRange ?? null}
-          onSelectRange={(range) => {
-            if (range === null) {
-              onHourSelect(null);
-            } else {
-              const start = new Date(view.year, view.month! - 1, view.day!, range.startHour);
-              const end = new Date(view.year, view.month! - 1, view.day!, range.endHour + 1);
-              onHourSelect({
-                from: start.getTime(),
-                to: end.getTime() - 1,
-                startHour: range.startHour,
-                endHour: range.endHour,
+            <button className="nav-btn step-btn" onClick={next} aria-label="Next">&rsaquo;</button>
+          </div>
+
+          <div className="time-nav-secondary">
+            <button
+              className="nav-btn today-btn"
+              onClick={() => onNavigate({
+                scale: 'day',
+                year: now.getFullYear(),
+                month: now.getMonth() + 1,
+                day: now.getDate(),
+              })}
+            >
+              Today
+            </button>
+
+            <JumpToTimestamp onJump={(ts) => {
+              const d = new Date(ts);
+              onNavigate({
+                scale: 'day',
+                year: d.getFullYear(),
+                month: d.getMonth() + 1,
+                day: d.getDate(),
               });
-            }
-          }}
-          minTs={minTs}
-          maxTs={maxTs}
-        />
-      )}
+            }} />
+          </div>
+        </div>
+
+        {view.scale === 'year' && (
+          <YearGrid
+            year={view.year}
+            onSelectMonth={(m) => onNavigate({ scale: 'month', year: view.year, month: m })}
+            minTs={minTs}
+            maxTs={maxTs}
+          />
+        )}
+        {view.scale === 'month' && view.month && (
+          <MonthGrid
+            year={view.year}
+            month={view.month}
+            selectedDay={view.day}
+            onSelectDay={(d) => onNavigate({ scale: 'day', year: view.year, month: view.month, day: d })}
+            minTs={minTs}
+            maxTs={maxTs}
+          />
+        )}
+        {view.scale === 'day' && view.month && view.day && onHourSelect && (
+          <HourGrid
+            year={view.year}
+            month={view.month}
+            day={view.day}
+            selectedRange={selectedHourRange ?? null}
+            onSelectRange={(range) => {
+              if (range === null) {
+                onHourSelect(null);
+              } else {
+                const start = new Date(view.year, view.month! - 1, view.day!, range.startHour);
+                const end = new Date(view.year, view.month! - 1, view.day!, range.endHour + 1);
+                onHourSelect({
+                  from: start.getTime(),
+                  to: end.getTime() - 1,
+                  startHour: range.startHour,
+                  endHour: range.endHour,
+                });
+              }
+            }}
+            minTs={minTs}
+            maxTs={maxTs}
+          />
+        )}
+      </div>
     </nav>
   );
 }

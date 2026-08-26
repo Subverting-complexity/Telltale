@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { TopConsumers } from './TopConsumers';
 import type { ProcessGroupRow } from './types';
+import { CHART_COLORS } from './chartTheme';
 
 /** Sixteen cores, and a process recorded at 151% of one of them: 9.44% here. */
 const LOGICAL_PROCESSORS = 16;
@@ -41,5 +43,24 @@ describe('TopConsumers CPU denominator', () => {
 
     expect(screen.getByText('9.44%')).toBeInTheDocument();
     expect(screen.queryByText('151%')).not.toBeInTheDocument();
+  });
+});
+
+describe('TopConsumers metric color', () => {
+  it('reuses the line chart\'s CPU color rather than a color of its own', () => {
+    renderPanel();
+
+    const panel = screen.getByRole('region', { name: 'Top resource consumers' });
+    expect(panel.style.getPropertyValue('--metric-color')).toBe(CHART_COLORS.cpu);
+  });
+
+  it('switches the metric color when the Memory toggle is selected', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('radio', { name: 'Memory' }));
+
+    const panel = screen.getByRole('region', { name: 'Top resource consumers' });
+    expect(panel.style.getPropertyValue('--metric-color')).toBe(CHART_COLORS.memory);
   });
 });
