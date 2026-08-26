@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
@@ -57,6 +57,13 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/');
   localStorage.clear();
   getTimeline.mockClear();
+});
+
+// Here rather than at the end of the one test that installs a spy: an assertion
+// that throws would skip a restore written inline, and a store left throwing
+// turns one real failure into a run of misleading ones after it.
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('restoring the view a window was left on', () => {
@@ -155,6 +162,11 @@ describe('restoring the view a window was left on', () => {
     // read from the same store without a guard of its own (#150). That is out of
     // this story's scope; refusing every key here would test that gap instead of
     // this one. Once #150 is fixed this can refuse every key.
+    // Seeded first, so falling back to Day and Overview proves the throw was
+    // caught and the entry discarded. Without something on disk to ignore, the
+    // assertion would read the same whether the store threw or was simply empty.
+    saved({ scale: 'month', granularityScale: 'month', tab: 'processes' });
+
     const real = Storage.prototype.getItem;
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key: string) {
       if (key === VIEW_PREFERENCES_KEY) throw new DOMException('The operation is insecure.');
@@ -165,7 +177,7 @@ describe('restoring the view a window was left on', () => {
     await waitFor(() => expect(getTimeline).toHaveBeenCalled());
 
     expect(screen.getByRole('tab', { name: 'Day' })).toHaveAttribute('aria-selected', 'true');
-    vi.restoreAllMocks();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
   });
 });
 
