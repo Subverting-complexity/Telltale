@@ -169,13 +169,29 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
           document before its content changes for the change to be announced, so
           one that arrives already full is usually announced as nothing at all.
         */}
-        <p className={`dialog-say ${!done && choice ? 'warning' : ''}`} aria-live="polite">
+        <p className={`dialog-say ${!done && !busy && choice ? 'warning' : ''}`} aria-live="polite">
           {done
             ? describeResult(done.rowsDeleted, done.bytesFreed)
-            : choice
-              ? `This deletes ${describe}. Are you sure?`
-              : ''}
+            : busy
+              ? 'Deleting. This can take a minute on a large recording, and this window '
+                + 'will say when it is done.'
+              : choice
+                ? `This deletes ${describe}. Are you sure?`
+                : ''}
         </p>
+
+        {/*
+          The only thing on screen that says the window is still working.
+          Deleting a large recording runs for tens of seconds inside one request,
+          with nothing to report until it returns, and every control here is
+          disabled while it does. Without this the dialog reads as frozen, and a
+          person watching a button that says Deleting and does nothing else is
+          left deciding whether to close the window on a delete that is still
+          running.
+        */}
+        {busy && (
+          <div className="dialog-progress" aria-hidden="true"><span /></div>
+        )}
 
         {done ? (
           <>

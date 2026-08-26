@@ -1785,6 +1785,46 @@ body {
   border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 
+/*
+  Shown only while a delete is running, because that is the one thing this dialog
+  does that a person waits on. A wipe of a large recording takes tens of seconds
+  and reports nothing until it is over, so the bar carries the only signal that
+  the window is still working while every control is disabled.
+*/
+.dialog-progress {
+  height: 4px;
+  margin: 0 0 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+}
+
+.dialog-progress span {
+  display: block;
+  width: 35%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--danger);
+  animation: dialog-progress-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes dialog-progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+/*
+  The global reduced motion rule cuts every animation to 0.01ms, which would
+  leave this one parked at the end of its travel and off the end of the bar. A
+  full width band says the same thing without moving.
+*/
+@media (prefers-reduced-motion: reduce) {
+  .dialog-progress span {
+    width: 100%;
+    animation: none;
+  }
+}
+
 .dialog-error {
   margin: 0 0 14px;
   color: var(--danger);
