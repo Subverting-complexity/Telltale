@@ -17,6 +17,9 @@ function lastRequestedBucket(): number | null | undefined {
  */
 let minBucketMs = 0;
 
+/** The finest the tiers themselves store, which is what separates the two reasons. */
+let tierFloorMs = 5_000;
+
 /** What the server serves, when a test wants it to differ from what was asked. */
 let servedBucketMs: number | null = null;
 
@@ -31,6 +34,7 @@ vi.mock('./api', () => ({
       bucketMs: servedBucketMs ?? bucketMs ?? 0,
       bucketRequestMs: bucketMs ?? null,
       minBucketMs,
+      tierFloorMs,
       points: [],
     });
   },
@@ -51,6 +55,7 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/');
   getTimeline.mockClear();
   minBucketMs = 0;
+  tierFloorMs = 5_000;
   servedBucketMs = null;
 });
 
@@ -109,26 +114,54 @@ describe('timeline granularity', () => {
     window.history.replaceState(null, '',
       `?year=${today.getFullYear()}&month=${today.getMonth() + 1}&day=${today.getDate()}&scale=day&g=5s`);
     servedBucketMs = 600_000;
+    tierFloorMs = 600_000;
 
     render(<App />);
 
     // Queried by its text rather than its role: the collector status bar is a
     // live region too, so `role="status"` alone does not identify this one.
     const notice = await screen.findByText(/Showing 10 minute detail\./);
-    expect(notice).toHaveTextContent('You asked for 5 second');
+    expect(notice).toHaveTextContent('You asked for 5 second detail');
     expect(notice).toHaveAttribute('role', 'status');
   });
 
-  it('withholds detail the recording no longer holds, with the reason on the button', async () => {
+  it('withholds detail the recording no longer holds, and says why without a mouse', async () => {
+    const user = userEvent.setup();
     minBucketMs = 600_000;
+    tierFloorMs = 600_000;
     render(<App />);
 
     await waitFor(() => expect(getTimeline).toHaveBeenCalled());
 
-    const fiveSeconds = await screen.findByRole('button', { name: /^5 sec \(unavailable/ });
-    expect(fiveSeconds).toBeDisabled();
-    expect(fiveSeconds).toHaveAttribute('title', expect.stringMatching(/retained/));
+    const fiveSeconds = await screen.findByRole('button', { name: '5 sec' });
+    await waitFor(() => expect(fiveSeconds).toHaveAttribute('aria-disabled', 'true'));
 
-    expect(screen.getByRole('button', { name: '10 min' })).toBeEnabled();
+    // The reason is in the accessible description rather than only the tooltip,
+    // because a tooltip reaches neither a keyboard nor a touch user.
+    expect(fiveSeconds).toHaveAccessibleDescription(/retained/);
+
+    // And it stays focusable and inert rather than being taken out of the page.
+    const before = getTimeline.mock.calls.length;
+    await user.click(fiveSeconds);
+    expect(getTimeline.mock.calls.length).toBe(before);
+
+    expect(screen.getByRole('button', { name: '10 min' })).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('keeps the chosen detail when stepping within the same scale', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(getTimeline).toHaveBeenCalled());
+
+    await user.click(screen.getByRole('button', { name: '1 hour' }));
+    await waitFor(() => expect(lastRequestedBucket()).toBe(3_600_000));
+
+    // The previous day is the same width of window, so the reason for resetting
+    // to Auto does not apply and the choice has to survive.
+    await user.click(screen.getByRole('button', { name: 'Previous' }));
+
+    await waitFor(() => expect(getTimeline.mock.calls.length).toBeGreaterThan(2));
+    expect(lastRequestedBucket()).toBe(3_600_000);
+    expect(screen.getByRole('button', { name: '1 hour' })).toHaveAttribute('aria-pressed', 'true');
   });
 });

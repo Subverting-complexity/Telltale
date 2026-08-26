@@ -18,19 +18,36 @@ public sealed record TimelinePoint(
 /// <summary>
 /// A timeline answer and the granularity behind it.
 ///
-/// <paramref name="BucketMs"/> is the width each point covers, where <c>0</c>
-/// means the points are the stored samples themselves rather than an aggregate.
-/// <paramref name="BucketRequestMs"/> echoes what the caller asked for, so the
-/// caller can see when its request was widened and say so.
-/// <paramref name="MinBucketMs"/> is the finest this window could have been
-/// served at, which is what tells a caller which granularities are worth
-/// offering.
+/// <c>0</c> appears in two of these and does not mean the same thing twice. In
+/// <see cref="BucketMs"/> it says the points were not aggregated at all; in
+/// <see cref="MinBucketMs"/> and <see cref="TierFloorMs"/> it says there is no
+/// floor to speak of, which is the ordinary reading of the number rather than a
+/// sentinel.
 /// </summary>
+/// <param name="Resolution">The tables read, oldest first.</param>
+/// <param name="BucketMs">
+/// The width each point covers. <c>0</c> means the points are the stored samples
+/// themselves rather than an aggregate of them.
+/// </param>
+/// <param name="BucketRequestMs">
+/// What the caller asked for, or null if it asked for nothing. A caller compares
+/// it against <paramref name="BucketMs"/> to see whether it got what it wanted.
+/// </param>
+/// <param name="MinBucketMs">
+/// The finest this window could have been served at, whichever limit bound it.
+/// </param>
+/// <param name="TierFloorMs">
+/// The finest interval the tiers themselves store. Below this the recording no
+/// longer holds the detail; between this and <paramref name="MinBucketMs"/> the
+/// window is merely too wide to return that many points.
+/// </param>
+/// <param name="Points">The series itself.</param>
 public sealed record TimelineResult(
     string Resolution,
     long BucketMs,
     long? BucketRequestMs,
     long MinBucketMs,
+    long TierFloorMs,
     IReadOnlyList<TimelinePoint> Points);
 
 public static class TimelineQuery
@@ -103,6 +120,7 @@ public static class TimelineQuery
         }
 
         return new TimelineResult(
-            plan.Resolution, bucket, plan.RequestedBucket, plan.SmallestServableBucket, points);
+            plan.Resolution, bucket, plan.RequestedBucket,
+            plan.SmallestServableBucket, plan.TierFloorMs, points);
     }
 }

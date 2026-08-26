@@ -73,16 +73,23 @@ public class TimelineGranularityTests
     [Fact]
     public void ABucketThatWouldReturnTooManyPoints_IsRaisedToTheCap()
     {
-        // A week of five second buckets is about 120,000 points, six times what a
-        // single response is allowed to carry.
-        var plan = PlanFor(Now - 7 * Day, Now, requested: 5 * Second);
+        // One raw tier, forty hours wide. Nothing but the cap can move a request
+        // here: the tier floor is 5,000 and the answer has to be 10,000, so
+        // deleting the cap would leave this at 5,000 and fail.
+        long span = 40 * Hour;
+        var coverage = new Dictionary<string, TierCoverage>
+        {
+            ["machine"] = new TierCoverage(Now - span, Now),
+        };
 
-        long points = 7 * Day / plan.EffectiveBucket;
-        Assert.InRange(points, 1, TierSelection.MaxRawOnlyPoints);
+        var plan = TierSelection.Plan(Now - span, Now, isMachine: true, coverage, requestedBucketMs: 5 * Second);
 
-        // And it stopped at the cap rather than overshooting to something coarser.
-        Assert.True(plan.EffectiveBucket <= 2 * TierSelection.SmallestBucketWithinCap(7 * Day, plan.CoarsestIntervalMs),
-            $"expected the cap floor, got {plan.EffectiveBucket}ms");
+        Assert.Equal(5 * Second, plan.TierFloorMs);
+
+        // 144,000,000ms over 20,000 points is 7,200ms per point, which rounds up
+        // to the next whole tier interval.
+        Assert.Equal(7_200L, span / TierSelection.MaxRawOnlyPoints);
+        Assert.Equal(10_000L, plan.EffectiveBucket);
     }
 
     [Fact]
@@ -139,23 +146,59 @@ public class TimelineGranularityTests
         // On the 10 minute rollup it is that tier's interval.
         Assert.Equal(600_000L, PlanFor(Now - 21 * Day, Now - 20 * Day, requested: null).SmallestServableBucket);
 
-        // Over a week the cap binds before the tiers do, so the floor is higher
-        // than any single tier's interval.
+        // And the floor is always something a response can actually carry.
         var week = PlanFor(Now - 7 * Day, Now, requested: null);
-        Assert.True(week.SmallestServableBucket >= week.CoarsestIntervalMs);
         Assert.InRange(7 * Day / week.SmallestServableBucket, 1, TierSelection.MaxRawOnlyPoints);
+    }
+
+    [Fact]
+    public void TierFloorAndServableFloor_SeparateTheTwoReasonsARequestIsRefused()
+    {
+        // Only the tiers bind: the 10 minute rollup over one day is far inside the
+        // point cap, so the two floors agree.
+        var rollup = PlanFor(Now - 21 * Day, Now - 20 * Day, requested: null);
+        Assert.Equal(600_000L, rollup.TierFloorMs);
+        Assert.Equal(600_000L, rollup.SmallestServableBucket);
+
+        // Only the cap binds: one raw tier over forty hours still stores five
+        // second detail, but not that many points of it at once.
+        long span = 40 * Hour;
+        var wide = TierSelection.Plan(Now - span, Now, isMachine: true,
+            new Dictionary<string, TierCoverage> { ["machine"] = new TierCoverage(Now - span, Now) });
+        Assert.Equal(5 * Second, wide.TierFloorMs);
+        Assert.Equal(10_000L, wide.SmallestServableBucket);
+    }
+
+    [Fact]
+    public void AFallbackSliceKeepsTheCallersOwnBounds_AndStillDoesNotOverflow()
+    {
+        // No tier holds anything, so the plan falls back to a slice carrying the
+        // caller's unvalidated from and to. This is the only path where a span
+        // spanning the whole of long survives into the arithmetic, and the only
+        // one that reaches the Int128 widening on ReadSpanMs.
+        var plan = TierSelection.Plan(long.MinValue, long.MaxValue, isMachine: true,
+            new Dictionary<string, TierCoverage>(), requestedBucketMs: 5 * Second);
+
+        Assert.Equal(922_337_203_690_000L, plan.EffectiveBucket);
     }
 
     [Fact]
     public void AWindowSpanningTheWholeOfLong_StillProducesAFiniteBucket()
     {
-        // The widest window expressible. Both the span and the cap arithmetic
-        // overflow a 64 bit subtraction, so this is the request that would come
-        // back unbounded if either were left narrow.
+        // The widest window expressible. The slices are clamped to what the tiers
+        // hold, so the arithmetic here never sees the full span; the case that
+        // does is AFallbackSliceKeepsTheCallersOwnBounds above.
         var plan = PlanFor(long.MinValue, long.MaxValue, requested: 5 * Second);
 
         Assert.True(plan.EffectiveBucket > 0);
         Assert.Equal(0, plan.EffectiveBucket % plan.CoarsestIntervalMs);
+    }
+
+    [Fact]
+    public void SmallestBucketWithinCap_RefusesATierIntervalItCannotDivideBy()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => TierSelection.SmallestBucketWithinCap(Day, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => TierSelection.SmallestBucketWithinCap(Day, -1));
     }
 
     [Fact]

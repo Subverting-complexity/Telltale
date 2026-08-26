@@ -99,6 +99,18 @@ public sealed record TierPlan
     public long SmallestServableBucket => Clamp(1);
 
     /// <summary>
+    /// The finest interval the tiers serving this window store, ignoring how many
+    /// points that would come to.
+    ///
+    /// Paired with <see cref="SmallestServableBucket"/> it separates the two
+    /// reasons a bucket can be refused: below this one the recording no longer
+    /// holds that detail, between the two the window is simply too wide to return
+    /// that many points. A caller cannot work the difference out for itself, and
+    /// the two want different words in front of a person.
+    /// </summary>
+    public long TierFloorMs => CoarsestIntervalMs;
+
+    /// <summary>
     /// Brings a requested bucket to something the selected tiers can serve. It
     /// widens, never narrows, so a request is answered with at least the detail
     /// asked for or the closest the recording still holds.
@@ -248,11 +260,14 @@ public static class TierSelection
     /// leaves the caller's own floor standing.
     ///
     /// The span arrives as <see cref="Int128"/> because a window spanning most of
-    /// long overflows a 64 bit subtraction. The result cannot: the widest span
-    /// expressible divided by 20,000 is about 1.8e15.
+    /// long overflows a 64 bit subtraction. The result cannot: the widest span two
+    /// longs can produce is about 1.8e19, and divided by 20,000 that is about
+    /// 9.2e14, four orders of magnitude inside long.
     /// </summary>
     public static long SmallestBucketWithinCap(Int128 spanMs, long tierInterval)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(tierInterval);
+
         if (spanMs <= 0) return 0;
 
         Int128 perPoint = (spanMs + MaxRawOnlyPoints - 1) / MaxRawOnlyPoints;

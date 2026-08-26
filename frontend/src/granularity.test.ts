@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  GRANULARITIES, granularityById, granularityAvailability, clampNotice, describeBucket, MAX_POINTS,
+  GRANULARITIES, granularityById, granularityAvailability, clampNotice, describeBucket,
 } from './granularity';
+import type { TimelineDetail } from './granularity';
 
 const DAY = 86_400_000;
 const YEAR = 365 * DAY;
@@ -10,6 +11,11 @@ function option(id: string) {
   const found = GRANULARITIES.find(g => g.id === id);
   if (!found) throw new Error(`no such granularity: ${id}`);
   return found;
+}
+
+/** How the server answered, with sensible defaults for the fields a test ignores. */
+function served(overrides: Partial<TimelineDetail> = {}): TimelineDetail {
+  return { bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 5_000, ...overrides };
 }
 
 describe('granularityById', () => {
@@ -23,87 +29,114 @@ describe('granularityById', () => {
 
 describe('granularityAvailability', () => {
   it('always offers Auto', () => {
-    expect(granularityAvailability(option('auto'), YEAR, 600_000).available).toBe(true);
+    expect(granularityAvailability(option('auto'), YEAR, served({ minBucketMs: 600_000 })).available)
+      .toBe(true);
   });
 
-  it('offers every option on a day served at full detail', () => {
+  it('offers every fine option on a day served at full detail', () => {
     for (const g of GRANULARITIES) {
-      expect(granularityAvailability(g, DAY, 0).available, g.id).toBe(true);
+      if (g.id === '1d') continue;
+      expect(granularityAvailability(g, DAY, served()).available, g.id).toBe(true);
     }
-  });
-
-  it('withholds anything that would exceed the point cap for the span', () => {
-    // A year at ten minute buckets is about 52,000 points, well past the cap.
-    const tenMinutes = granularityAvailability(option('10m'), YEAR, 0);
-    expect(tenMinutes.available).toBe(false);
-    expect(tenMinutes.reason).toMatch(/points/);
-
-    // An hour clears it, so the cap is the thing being tested rather than the
-    // whole control being switched off.
-    expect(granularityAvailability(option('1h'), YEAR, 0).available).toBe(true);
-  });
-
-  it('withholds anything finer than the recording still holds', () => {
-    const fineness = 600_000;
-    const fiveSeconds = granularityAvailability(option('5s'), DAY, fineness);
-    expect(fiveSeconds.available).toBe(false);
-    expect(fiveSeconds.reason).toMatch(/retained/);
-
-    expect(granularityAvailability(option('10m'), DAY, fineness).available).toBe(true);
   });
 
   it('offers everything before the first response has arrived', () => {
-    // minBucketMs is unknown until the server has answered once. Greying the
+    // The server's floors are unknown until it has answered once. Greying the
     // control out and back in on every navigation would be worse than briefly
     // offering an option the server then widens.
     for (const g of GRANULARITIES) {
-      expect(granularityAvailability(g, DAY, null).available, g.id).toBe(true);
+      if (g.id === '1d') continue;
+      expect(granularityAvailability(g, YEAR, null).available, g.id).toBe(true);
     }
   });
 
-  it('treats an empty span as unconstrained by the cap', () => {
-    expect(granularityAvailability(option('5s'), 0, 0).available).toBe(true);
+  it('takes the floor from the server rather than from the span on screen', () => {
+    // This is the case a local estimate gets wrong. A Year view holding three
+    // days of recording is 3.15e10ms wide, which by the point cap alone would
+    // rule out anything under about 26 minutes. The server measures the three
+    // days it actually reads and says one minute is fine, so one minute is
+    // offered.
+    const threeDaysInAYearView = served({ minBucketMs: 15_000 });
+
+    expect(granularityAvailability(option('1m'), YEAR, threeDaysInAYearView).available).toBe(true);
+    expect(granularityAvailability(option('10m'), YEAR, threeDaysInAYearView).available).toBe(true);
+
+    // And what the server does rule out is still ruled out.
+    expect(granularityAvailability(option('5s'), YEAR, threeDaysInAYearView).available).toBe(false);
   });
 
-  it('keeps the cap threshold in step with the constant it is derived from', () => {
-    // One point per bucket exactly at the cap is allowed; one finer is not.
-    const span = MAX_POINTS * 60_000;
-    expect(granularityAvailability(option('1m'), span, 0).available).toBe(true);
-    expect(granularityAvailability(option('5s'), span, 0).available).toBe(false);
+  it('blames retention for anything below the tier floor', () => {
+    const rollupOnly = served({ minBucketMs: 600_000, tierFloorMs: 600_000 });
+
+    const oneMinute = granularityAvailability(option('1m'), YEAR, rollupOnly);
+    expect(oneMinute.available).toBe(false);
+    expect(oneMinute.reason).toMatch(/retained/);
+  });
+
+  it('blames the point cap for anything above the tier floor the window cannot carry', () => {
+    // The tiers still hold five second detail; there is just too much of it.
+    const wideRaw = served({ minBucketMs: 60_000, tierFloorMs: 5_000 });
+
+    const fiveSeconds = granularityAvailability(option('5s'), YEAR, wideRaw);
+    expect(fiveSeconds.available).toBe(false);
+    expect(fiveSeconds.reason).toMatch(/points/);
+  });
+
+  it('withholds a bucket too wide to draw a line with', () => {
+    // One day divided into one day is a single point.
+    const oneDay = granularityAvailability(option('1d'), DAY, served());
+    expect(oneDay.available).toBe(false);
+    expect(oneDay.reason).toMatch(/span on screen/);
+
+    // A week of daily points is seven, which is a chart.
+    expect(granularityAvailability(option('1d'), 7 * DAY, served()).available).toBe(true);
+  });
+
+  it('treats an empty span as unconstrained', () => {
+    expect(granularityAvailability(option('5s'), 0, served()).available).toBe(true);
   });
 });
 
 describe('clampNotice', () => {
   it('says nothing when no granularity was asked for', () => {
-    expect(clampNotice({ bucketMs: 600_000, bucketRequestMs: null }, DAY)).toBeNull();
+    expect(clampNotice(served({ bucketMs: 600_000 }))).toBeNull();
   });
 
   it('says nothing when the request was served as asked', () => {
-    expect(clampNotice({ bucketMs: 600_000, bucketRequestMs: 600_000 }, DAY)).toBeNull();
+    expect(clampNotice(served({ bucketMs: 600_000, bucketRequestMs: 600_000 }))).toBeNull();
   });
 
   it('says nothing when every recorded sample came back', () => {
     // A bucket of zero is full detail, which is never less than what was asked
     // for however fine the request was.
-    expect(clampNotice({ bucketMs: 0, bucketRequestMs: 5_000 }, DAY)).toBeNull();
+    expect(clampNotice(served({ bucketMs: 0, bucketRequestMs: 5_000 }))).toBeNull();
   });
 
-  it('blames retention when the span could have carried the request', () => {
-    const notice = clampNotice({ bucketMs: 600_000, bucketRequestMs: 5_000 }, DAY);
+  it('blames retention when the request was below the tier floor', () => {
+    const notice = clampNotice(served({
+      bucketMs: 600_000, bucketRequestMs: 5_000, tierFloorMs: 600_000,
+    }));
     expect(notice).toBe(
-      'Showing 10 minute detail. You asked for 5 second, but finer detail is not retained this far back.');
+      'Showing 10 minute detail. You asked for 5 second detail, '
+      + 'but finer detail is not retained this far back.');
   });
 
-  it('blames the point cap when the span could not have carried the request', () => {
-    const notice = clampNotice({ bucketMs: 3_600_000, bucketRequestMs: 5_000 }, YEAR);
-    expect(notice).toMatch(/more points than one response carries/);
-    expect(notice).toMatch(/^Showing 1 hour detail\./);
+  it('blames the point cap when the tiers held the detail but the window was too wide', () => {
+    const notice = clampNotice(served({
+      bucketMs: 3_600_000, bucketRequestMs: 60_000, tierFloorMs: 5_000,
+    }));
+    expect(notice).toBe(
+      'Showing 1 hour detail. You asked for 1 minute detail, '
+      + 'but that would be more points than one response carries.');
   });
 });
 
 describe('describeBucket', () => {
-  it('uses the wording of an offered option where one matches', () => {
+  it('describes each offered width the way its button is labelled', () => {
+    expect(describeBucket(5_000)).toBe('5 second');
+    expect(describeBucket(60_000)).toBe('1 minute');
     expect(describeBucket(600_000)).toBe('10 minute');
+    expect(describeBucket(3_600_000)).toBe('1 hour');
     expect(describeBucket(86_400_000)).toBe('1 day');
   });
 

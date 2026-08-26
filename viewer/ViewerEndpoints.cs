@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -149,7 +150,12 @@ public static class ViewerEndpoints
         // chart back, not a 400.
         app.MapGet("/api/timeline", (long from, long to, string? bucket) =>
         {
-            long? requestedBucket = long.TryParse(bucket, out long parsed) && parsed > 0 ? parsed : null;
+            // Parsed as invariant, matching how minimal APIs bind `from` and `to`.
+            // A value off the wire should not read differently under a different
+            // machine locale.
+            long? requestedBucket =
+                long.TryParse(bucket, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed)
+                && parsed > 0 ? parsed : null;
 
             try
             {
@@ -157,14 +163,7 @@ public static class ViewerEndpoints
                 using var checkCmd = conn.CreateCommand();
                 checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine'";
                 if (checkCmd.ExecuteScalar() == null)
-                    return Results.Json(new
-                    {
-                        resolution = "machine",
-                        bucketMs = 0L,
-                        bucketRequestMs = requestedBucket,
-                        minBucketMs = 0L,
-                        points = Array.Empty<object>(),
-                    }, jsonOptions);
+                    return Results.Json(EmptyTimeline(requestedBucket), jsonOptions);
 
                 var result = TimelineQuery.Execute(conn, from, to, requestedBucket);
 
@@ -189,20 +188,14 @@ public static class ViewerEndpoints
                     bucketMs = result.BucketMs,
                     bucketRequestMs = result.BucketRequestMs,
                     minBucketMs = result.MinBucketMs,
+                    tierFloorMs = result.TierFloorMs,
                     points,
                 }, jsonOptions);
             }
             catch (SqliteException ex)
             {
                 ReportQueryFailure(ex, "/api/timeline");
-                return Results.Json(new
-                {
-                    resolution = "machine",
-                    bucketMs = 0L,
-                    bucketRequestMs = requestedBucket,
-                    minBucketMs = 0L,
-                    points = Array.Empty<object>(),
-                }, jsonOptions);
+                return Results.Json(EmptyTimeline(requestedBucket), jsonOptions);
             }
         });
 
@@ -887,6 +880,25 @@ public static class ViewerEndpoints
 
         return app;
     }
+
+    /// <summary>
+    /// The timeline answer for a window nothing can be read from, either because
+    /// the capture holds no machine table or because the query failed.
+    ///
+    /// Both floors come back as zero, which says there is nothing constraining
+    /// what a caller may ask for next. That is not a claim that full detail is
+    /// available: there are no points at all, so there is nothing to be detailed
+    /// about. Shared between the two paths so the shape cannot drift apart.
+    /// </summary>
+    static object EmptyTimeline(long? requestedBucket) => new
+    {
+        resolution = "machine",
+        bucketMs = 0L,
+        bucketRequestMs = requestedBucket,
+        minBucketMs = 0L,
+        tierFloorMs = 0L,
+        points = Array.Empty<object>(),
+    };
 
     static TierPlan PlanTiers(SqliteConnection conn, long from, long to, bool isMachine)
         => TierSelection.Plan(from, to, isMachine, TierCoverageReader.Read(conn, isMachine));

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ViewState, ViewScale } from './types';
 import { getDaysInMonth } from './utils';
 import { GranularitySelect } from './GranularitySelect';
-import type { GranularityId } from './granularity';
+import type { GranularityId, TimelineDetail } from './granularity';
 
 export interface HourSelection {
   from: number;
@@ -27,8 +27,8 @@ interface TimeNavProps {
   onGranularityChange: (id: GranularityId) => void;
   /** Width of the window on screen, for deciding which granularities are offerable. */
   rangeMs: number;
-  /** Finest bucket the last response said this window can serve; null before the first one. */
-  minBucketMs: number | null;
+  /** How the last response was served; null before the first one arrives. */
+  servedDetail: TimelineDetail | null;
 }
 
 const SCALES: ViewScale[] = ['day', 'week', 'month', 'year'];
@@ -80,7 +80,7 @@ function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null)
 
 export function TimeNav({
   view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs,
-  granularity, onGranularityChange, rangeMs, minBucketMs,
+  granularity, onGranularityChange, rangeMs, servedDetail,
 }: TimeNavProps) {
   const now = new Date();
   const [expanded, setExpanded] = useState(false);
@@ -180,7 +180,7 @@ export function TimeNav({
           value={granularity}
           onChange={onGranularityChange}
           rangeMs={rangeMs}
-          minBucketMs={minBucketMs}
+          served={servedDetail}
         />
 
         <div className="time-nav-controls">

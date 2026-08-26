@@ -1,43 +1,56 @@
+import { useId } from 'react';
 import { GRANULARITIES, granularityAvailability } from './granularity';
-import type { GranularityId } from './granularity';
+import type { GranularityId, TimelineDetail } from './granularity';
 
 interface GranularitySelectProps {
   value: GranularityId;
   onChange: (id: GranularityId) => void;
-  /** Width of the window on screen, used to work out what is offerable. */
+  /** Width of the window on screen, used to work out what is legible. */
   rangeMs: number;
-  /** Finest bucket the server said this window can serve; null before the first response. */
-  minBucketMs: number | null;
+  /** How the last response was served; null before the first one arrives. */
+  served: TimelineDetail | null;
 }
 
 /**
  * Picks how finely the timeline divides the span on screen.
  *
- * Options the current span cannot serve are disabled rather than hidden. Hiding
- * them would make the control change width as you move between a day and a
- * year, and the reason an option is missing is worth reading.
+ * Options the current span cannot serve are shown as unavailable rather than
+ * hidden. Hiding them would make the control change width as you move between a
+ * day and a year, and the reason an option is out of reach is worth reading.
+ *
+ * They stay focusable, using `aria-disabled` rather than `disabled`, because the
+ * reason has to reach a keyboard or touch user too and a `disabled` button can
+ * be neither focused nor hovered. It also means focus is never yanked out from
+ * under someone when the range changes beneath their cursor.
  */
-export function GranularitySelect({ value, onChange, rangeMs, minBucketMs }: GranularitySelectProps) {
+export function GranularitySelect({ value, onChange, rangeMs, served }: GranularitySelectProps) {
+  const labelId = useId();
+  const reasonId = useId();
+
   return (
     <div className="granularity-select">
-      <span className="nav-subgrid-label" id="granularity-label">Detail</span>
-      <div className="granularity-options" role="group" aria-labelledby="granularity-label">
-        {GRANULARITIES.map(option => {
-          const { available, reason } = granularityAvailability(option, rangeMs, minBucketMs);
+      <span className="nav-subgrid-label" id={labelId}>Detail</span>
+      <div className="granularity-options" role="group" aria-labelledby={labelId}>
+        {GRANULARITIES.map((option, i) => {
+          const { available, reason } = granularityAvailability(option, rangeMs, served);
           const selected = option.id === value;
           return (
-            <button
-              key={option.id}
-              type="button"
-              className={`granularity-btn ${selected ? 'active' : ''}`}
-              disabled={!available}
-              aria-pressed={selected}
-              title={reason || undefined}
-              aria-label={available ? option.label : `${option.label} (unavailable: ${reason})`}
-              onClick={() => onChange(option.id)}
-            >
-              {option.label}
-            </button>
+            <span key={option.id} className="granularity-option">
+              <button
+                type="button"
+                className={`granularity-btn ${selected ? 'active' : ''}`}
+                aria-disabled={!available}
+                aria-pressed={selected}
+                aria-describedby={available ? undefined : `${reasonId}-${i}`}
+                title={reason || undefined}
+                onClick={() => { if (available) onChange(option.id); }}
+              >
+                {option.label}
+              </button>
+              {!available && (
+                <span className="sr-only" id={`${reasonId}-${i}`}>{reason}</span>
+              )}
+            </span>
           );
         })}
       </div>

@@ -11,7 +11,7 @@ import { StatusBar } from './StatusBar';
 import { TimeNav, pad2 } from './TimeNav';
 import type { HourSelection } from './TimeNav';
 import { GRANULARITIES, granularityById, clampNotice } from './granularity';
-import type { GranularityId } from './granularity';
+import type { GranularityId, TimelineDetail } from './granularity';
 import { Timeline } from './Timeline';
 import { ProcessTable } from './ProcessTable';
 import { ProcessDetail } from './ProcessDetail';
@@ -101,7 +101,7 @@ function buildUrlParams(view: ViewState, granularity: GranularityId): URLSearchP
   if (view.month) params.set('month', String(view.month));
   if (view.day) params.set('day', String(view.day));
   params.set('scale', view.scale);
-  // Auto is the default, so it is left out rather than written — a shared link
+  // Auto is the default, so it is left out rather than written. A shared link
   // then carries a granularity only when one was actually chosen.
   if (granularity !== 'auto') params.set('g', granularity);
   const token = new URLSearchParams(window.location.search).get('s');
@@ -122,7 +122,7 @@ function updateUrl(view: ViewState, granularity: GranularityId) {
  *
  * Changing how finely the chart is divided does not change which range is on
  * screen, so any drill-down entry pushed for that range is still valid and must
- * survive — unlike a navigation, which invalidates it.
+ * survive, unlike a navigation, which invalidates it.
  */
 function updateGranularityUrl(view: ViewState, granularity: GranularityId) {
   window.history.replaceState(window.history.state, '', `?${buildUrlParams(view, granularity)}`);
@@ -146,9 +146,7 @@ export default function App() {
   // What the last response was actually served at, which is what the picker
   // needs to know which options this window can offer and what the chart needs
   // to say when a request was widened.
-  const [timelineDetail, setTimelineDetail] = useState<{
-    bucketMs: number; bucketRequestMs: number | null; minBucketMs: number;
-  } | null>(null);
+  const [timelineDetail, setTimelineDetail] = useState<TimelineDetail | null>(null);
   const [processes, setProcesses] = useState<ProcessGroupRow[]>([]);
   const [processFilter, setProcessFilter] = useState('');
   const [processSort, setProcessSort] = useState('cpu');
@@ -218,12 +216,9 @@ export default function App() {
               break;
             }
           }
-          updateUrl(newView, 'auto');
+          updateUrl(newView, granularity);
           return newView;
         });
-        // Stepping with the arrow keys moves the range the same way the buttons
-        // do, so it resets the granularity the same way too.
-        setGranularity('auto');
         setCustomRange(null);
         setSelectedHourRange(null);
       }
@@ -231,7 +226,9 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedProcess, wipeOpen]);
+    // The arrow keys rewrite the URL, which has to carry the granularity in
+    // force, so the handler is re-bound when that changes.
+  }, [selectedProcess, wipeOpen, granularity]);
 
   // Refreshed rather than read once. Deleting the earliest or the latest day
   // moves where the recording starts and ends, and the navigation is built from
@@ -244,24 +241,23 @@ export default function App() {
   }, [refreshKey]);
 
   const navigate = useCallback((newView: ViewState) => {
+    // Back to Auto when the scale changes, and only then. A five second bucket
+    // that made sense on a day is meaningless on a year, but stepping to the next
+    // day is the same width of window and the choice still applies to it.
+    const next = newView.scale === view.scale ? granularity : 'auto';
+
     setView(newView);
-    // Back to Auto on every move. A five second bucket that made sense on a day
-    // is meaningless on a year, so carrying the choice across would mostly
-    // produce a notice saying the server had widened it again.
-    setGranularity('auto');
-    updateUrl(newView, 'auto');
+    setGranularity(next);
+    updateUrl(newView, next);
     setSelectedProcess(null);
     setCustomRange(null);
     setSelectedHourRange(null);
-  }, []);
+  }, [view.scale, granularity]);
 
   const changeGranularity = useCallback((id: GranularityId) => {
     setGranularity(id);
-    setView(current => {
-      updateGranularityUrl(current, id);
-      return current;
-    });
-  }, []);
+    updateGranularityUrl(view, id);
+  }, [view]);
 
   // Drilling into a process (group, instance, or comparison) pushes a
   // history entry so the browser's own Back/Forward controls, and the
@@ -286,6 +282,14 @@ export default function App() {
     setRefreshKey(k => k + 1);
   }, []);
 
+  // The floors describe one window, so they stop meaning anything the moment the
+  // window changes. Cleared here rather than in the fetch below, because that one
+  // also runs on the ninety second refresh and on a granularity change, where the
+  // floors are still true and clearing them would flash the notice off.
+  useEffect(() => {
+    setTimelineDetail(null);
+  }, [view, customRange]);
+
   useEffect(() => {
     setLoading(true);
     const { from, to } = customRange ?? getViewRange(view);
@@ -294,7 +298,7 @@ export default function App() {
 
     Promise.all([
       getTimeline(from, to, bucketMs).catch(() => ({
-        resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, points: [],
+        resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0, points: [],
       })),
       getProcesses(from, to, {
         limit: 50,
@@ -307,6 +311,7 @@ export default function App() {
         bucketMs: tl.bucketMs,
         bucketRequestMs: tl.bucketRequestMs,
         minBucketMs: tl.minBucketMs,
+        tierFloorMs: tl.tierFloorMs,
       });
       setProcesses(procs.processes as ProcessGroupRow[]);
       setLoading(false);
@@ -464,9 +469,7 @@ export default function App() {
 
   const drillDown = renderDrillDown();
 
-  const granularityNotice = timelineDetail
-    ? clampNotice(timelineDetail, activeRange.to - activeRange.from)
-    : null;
+  const granularityNotice = timelineDetail ? clampNotice(timelineDetail) : null;
 
   return (
     <div className="app">
@@ -521,7 +524,7 @@ export default function App() {
         granularity={granularity}
         onGranularityChange={changeGranularity}
         rangeMs={activeRange.to - activeRange.from}
-        minBucketMs={timelineDetail?.minBucketMs ?? null}
+        servedDetail={timelineDetail}
       />
 
       <main className="app-main" role="main">
@@ -604,9 +607,7 @@ export default function App() {
                     />
                   ) : (
                     <>
-                      {granularityNotice && (
-                        <p className="granularity-notice" role="status">{granularityNotice}</p>
-                      )}
+                      <p className="granularity-notice" role="status">{granularityNotice}</p>
                       <Timeline
                         data={timeline}
                         onRangeSelect={handleRangeSelect}

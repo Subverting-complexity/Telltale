@@ -20,6 +20,8 @@ export interface TimelineResponse {
   bucketRequestMs: number | null;
   /** The finest width this window could have been served at. 0 means full stored detail. */
   minBucketMs: number;
+  /** The finest width the tiers themselves store, ignoring how many points that comes to. */
+  tierFloorMs: number;
   points: TimelinePoint[];
 }
 
