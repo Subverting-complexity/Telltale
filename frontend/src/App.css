@@ -440,6 +440,75 @@ body {
   color: var(--text-primary);
 }
 
+/* Sits under the scale buttons: the scale picks the span, this picks how
+   finely the chart divides it. */
+.granularity-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.granularity-select .nav-subgrid-label {
+  display: inline;
+  margin-bottom: 0;
+}
+
+.granularity-options {
+  display: inline-flex;
+  /* Six labels are wider than a phone, and the pill background survives being
+     two rows where a horizontal scrollbar on the whole page does not. */
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  width: fit-content;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.granularity-btn {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.granularity-btn.active {
+  background: var(--bg-primary);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.granularity-btn:hover:not(.active):not([aria-disabled='true']) {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* Unavailable rather than absent, so the control keeps its shape as the span
+   changes. Left focusable so the reason is reachable without a mouse. */
+.granularity-btn[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.granularity-notice {
+  margin: 0 0 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* The notice is a live region, so it stays in the page with nothing in it
+   rather than being mounted alongside its own text, which announces nothing. */
+.granularity-notice:empty {
+  margin: 0;
+}
+
 .time-nav-controls {
   display: flex;
   align-items: center;

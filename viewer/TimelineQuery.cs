@@ -15,19 +15,61 @@ public sealed record TimelinePoint(
     double? NetKbps,
     double? GpuBusyPct);
 
-public sealed record TimelineResult(string Resolution, IReadOnlyList<TimelinePoint> Points);
+/// <summary>
+/// A timeline answer and the granularity behind it.
+///
+/// <c>0</c> appears in two of these and does not mean the same thing twice. In
+/// <see cref="BucketMs"/> it says the points were not aggregated at all; in
+/// <see cref="MinBucketMs"/> and <see cref="TierFloorMs"/> it says there is no
+/// floor to speak of, which is the ordinary reading of the number rather than a
+/// sentinel.
+/// </summary>
+/// <param name="Resolution">The tables read, oldest first.</param>
+/// <param name="BucketMs">
+/// The width each point covers. <c>0</c> means the points are the stored samples
+/// themselves rather than an aggregate of them.
+/// </param>
+/// <param name="BucketRequestMs">
+/// What the caller asked for, or null if it asked for nothing. A caller compares
+/// it against <paramref name="BucketMs"/> to see whether it got what it wanted.
+/// </param>
+/// <param name="MinBucketMs">
+/// The finest this window could have been served at, whichever limit bound it.
+/// </param>
+/// <param name="TierFloorMs">
+/// The finest interval the tiers themselves store. Below this the recording no
+/// longer holds the detail; between this and <paramref name="MinBucketMs"/> the
+/// window is merely too wide to return that many points.
+/// </param>
+/// <param name="Points">The series itself.</param>
+public sealed record TimelineResult(
+    string Resolution,
+    long BucketMs,
+    long? BucketRequestMs,
+    long MinBucketMs,
+    long TierFloorMs,
+    IReadOnlyList<TimelinePoint> Points);
 
 public static class TimelineQuery
 {
-    public static TimelineResult Execute(SqliteConnection conn, long from, long to)
+    /// <summary>
+    /// Reads the machine timeline for a window. <paramref name="requestedBucketMs"/>
+    /// is the granularity the caller asked for, if any; the plan clamps it to
+    /// something the tiers holding this window can serve.
+    /// </summary>
+    public static TimelineResult Execute(SqliteConnection conn, long from, long to, long? requestedBucketMs = null)
     {
         var plan = TierSelection.Plan(from, to, isMachine: true,
-            TierCoverageReader.Read(conn, isMachine: true));
+            TierCoverageReader.Read(conn, isMachine: true), requestedBucketMs);
         TierSource source = TierSql.Source(plan, isMachine: true);
+
+        // One number decides the shape of the query. Whether it came from the
+        // caller or from the range is already settled by the plan.
+        long bucket = plan.EffectiveBucket;
 
         using var cmd = conn.CreateCommand();
 
-        if (!plan.ServesFullResolution && plan.Bucket > 0)
+        if (bucket > 0)
         {
             cmd.CommandText = $"""
                 SELECT (ts / @bucket) * @bucket as ts,
@@ -43,7 +85,7 @@ public static class TimelineQuery
                 FROM {source.Sql} WHERE ts >= @from AND ts <= @to
                 GROUP BY ts / @bucket ORDER BY ts
                 """;
-            cmd.Parameters.AddWithValue("@bucket", plan.Bucket);
+            cmd.Parameters.AddWithValue("@bucket", bucket);
         }
         else
         {
@@ -77,6 +119,8 @@ public static class TimelineQuery
                 GpuBusyPct: reader.IsDBNull(10) ? null : reader.GetDouble(10)));
         }
 
-        return new TimelineResult(plan.Resolution, points);
+        return new TimelineResult(
+            plan.Resolution, bucket, plan.RequestedBucket,
+            plan.SmallestServableBucket, plan.TierFloorMs, points);
     }
 }

@@ -15,7 +15,10 @@ const busyProcess: ProcessGroupRow = {
 
 vi.mock('./api', () => ({
   getRange: () => Promise.resolve({ min: Date.now() - 86_400_000, max: Date.now() }),
-  getTimeline: () => Promise.resolve({ resolution: '1m', points: [] }),
+  getTimeline: () => Promise.resolve({
+    resolution: '1m', bucketMs: 0, bucketRequestMs: null,
+    minBucketMs: 0, tierFloorMs: 5_000, points: [],
+  }),
   getProcesses: () => Promise.resolve({ grouped: true, processes: [busyProcess] }),
   getHealth: () => Promise.resolve({
     collectorRunning: true, lastSampleTs: 0, dbSizeMb: 1, logicalProcessors: 8,

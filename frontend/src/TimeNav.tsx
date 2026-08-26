@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { ViewState, ViewScale } from './types';
 import { getDaysInMonth } from './utils';
+import { GranularitySelect } from './GranularitySelect';
+import { granularityById } from './granularity';
+import type { GranularityId, TimelineDetail } from './granularity';
 
 export interface HourSelection {
   from: number;
@@ -21,6 +24,12 @@ interface TimeNavProps {
   selectedHourRange?: HourSelection | null;
   minTs: number | null;
   maxTs: number | null;
+  granularity: GranularityId;
+  onGranularityChange: (id: GranularityId) => void;
+  /** Width of the window on screen, for deciding which granularities are offerable. */
+  rangeMs: number;
+  /** How the last response was served; null before the first one arrives. */
+  servedDetail: TimelineDetail | null;
 }
 
 const SCALES: ViewScale[] = ['day', 'week', 'month', 'year'];
@@ -48,7 +57,11 @@ function formatWeekRange(year: number, month: number, day: number): string {
   return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()}, ${start.getFullYear()} – ${MONTH_NAMES[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
 }
 
-function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null): string {
+function summaryLabel(
+  view: ViewState,
+  selectedHourRange?: HourSelection | null,
+  detailLabel?: string,
+): string {
   const scaleLabel = view.scale.charAt(0).toUpperCase() + view.scale.slice(1);
 
   const dateLabel = view.scale === 'year' || !view.month
@@ -59,7 +72,9 @@ function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null)
     ? `${MONTH_NAMES[view.month - 1]} ${view.year}`
     : `${MONTH_NAMES[view.month - 1]} ${view.day}, ${view.year}`;
 
-  if (view.scale !== 'day') return `${scaleLabel} · ${dateLabel}`;
+  const detailSuffix = detailLabel ? ` · ${detailLabel} detail` : '';
+
+  if (view.scale !== 'day') return `${scaleLabel} · ${dateLabel}${detailSuffix}`;
 
   const hourLabel = !selectedHourRange
     ? 'All hours'
@@ -67,10 +82,13 @@ function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null)
     ? `${pad2(selectedHourRange.startHour)}:00–${pad2(selectedHourRange.startHour + 1)}:00`
     : `${pad2(selectedHourRange.startHour)}:00–${pad2(selectedHourRange.endHour + 1)}:00`;
 
-  return `${scaleLabel} · ${dateLabel} · ${hourLabel}`;
+  return `${scaleLabel} · ${dateLabel} · ${hourLabel}${detailSuffix}`;
 }
 
-export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs }: TimeNavProps) {
+export function TimeNav({
+  view, onNavigate, onHourSelect, selectedHourRange, minTs, maxTs,
+  granularity, onGranularityChange, rangeMs, servedDetail,
+}: TimeNavProps) {
   const now = new Date();
   const [expanded, setExpanded] = useState(false);
 
@@ -141,7 +159,13 @@ export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, min
         onClick={() => setExpanded(e => !e)}
         aria-expanded={expanded}
       >
-        <span>{summaryLabel(view, selectedHourRange)}</span>
+        <span>
+          {summaryLabel(
+            view,
+            selectedHourRange,
+            granularity === 'auto' ? undefined : granularityById(granularity).label,
+          )}
+        </span>
         <span className="date-chip-icon" aria-hidden="true">&#9662;</span>
       </button>
 
@@ -164,6 +188,13 @@ export function TimeNav({ view, onNavigate, onHourSelect, selectedHourRange, min
             </button>
           ))}
         </div>
+
+        <GranularitySelect
+          value={granularity}
+          onChange={onGranularityChange}
+          rangeMs={rangeMs}
+          served={servedDetail}
+        />
 
         <div className="time-nav-controls">
           <div className="date-stepper">

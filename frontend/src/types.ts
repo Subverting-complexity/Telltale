@@ -14,6 +14,14 @@ export interface TimelinePoint {
 
 export interface TimelineResponse {
   resolution: string;
+  /** Width each point covers. 0 means the points are the recorded samples themselves. */
+  bucketMs: number;
+  /** The width that was asked for, or null when nothing was asked for. */
+  bucketRequestMs: number | null;
+  /** The finest width this window could have been served at. 0 means full stored detail. */
+  minBucketMs: number;
+  /** The finest width the tiers themselves store, ignoring how many points that comes to. */
+  tierFloorMs: number;
   points: TimelinePoint[];
 }
 

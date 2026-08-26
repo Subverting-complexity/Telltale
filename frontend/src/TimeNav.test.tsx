@@ -15,6 +15,10 @@ function renderNav(view: ViewState = dayView, extra: Partial<React.ComponentProp
       selectedHourRange={null}
       minTs={null}
       maxTs={null}
+      granularity="auto"
+      onGranularityChange={() => {}}
+      rangeMs={86_400_000}
+      servedDetail={null}
       {...extra}
     />,
   );
@@ -72,6 +76,19 @@ describe('TimeNav collapse', () => {
     renderNav({ scale: 'week', year: 2026, month: 8, day: 26 }, { onHourSelect: vi.fn() });
 
     expect(screen.getByRole('button', { name: 'Week · Aug 23–29, 2026' })).toBeInTheDocument();
+  });
+
+  it('carries a chosen detail in the collapsed summary, since its control is inside the panel', () => {
+    renderNav(dayView, { granularity: '1h' });
+
+    expect(screen.getByRole('button', { name: /Day · Aug 26, 2026 · All hours · 1 hour detail/ }))
+      .toBeInTheDocument();
+  });
+
+  it('leaves the summary alone while the detail is on Auto', () => {
+    renderNav(dayView);
+
+    expect(screen.getByRole('button', { name: 'Day · Aug 26, 2026 · All hours' })).toBeInTheDocument();
   });
 
   it('summarises a week that crosses a month boundary with both month names', () => {

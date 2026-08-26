@@ -10,6 +10,8 @@ type DashboardTab = 'overview' | 'alerts' | 'processes';
 import { StatusBar } from './StatusBar';
 import { TimeNav, pad2 } from './TimeNav';
 import type { HourSelection } from './TimeNav';
+import { GRANULARITIES, granularityById, clampNotice } from './granularity';
+import type { GranularityId, TimelineDetail } from './granularity';
 import { Timeline } from './Timeline';
 import { ProcessTable } from './ProcessTable';
 import { ProcessDetail } from './ProcessDetail';
@@ -88,19 +90,42 @@ function parseUrlParams(): ViewState | null {
   return state;
 }
 
-function updateUrl(view: ViewState) {
+function parseUrlGranularity(): GranularityId {
+  const g = new URLSearchParams(window.location.search).get('g');
+  return GRANULARITIES.some(o => o.id === g) ? g as GranularityId : 'auto';
+}
+
+function buildUrlParams(view: ViewState, granularity: GranularityId): URLSearchParams {
   const params = new URLSearchParams();
   params.set('year', String(view.year));
   if (view.month) params.set('month', String(view.month));
   if (view.day) params.set('day', String(view.day));
   params.set('scale', view.scale);
+  // Auto is the default, so it is left out rather than written. A shared link
+  // then carries a granularity only when one was actually chosen.
+  if (granularity !== 'auto') params.set('g', granularity);
   const token = new URLSearchParams(window.location.search).get('s');
   if (token) params.set('s', token);
+  return params;
+}
+
+function updateUrl(view: ViewState, granularity: GranularityId) {
   // Changing the date range invalidates any drill-down history entry
   // pushed for the previous range, so the history state is reset to
   // `null` alongside the URL — otherwise Forward could resurface a
   // process detail view for data that's no longer the active range.
-  window.history.replaceState({ selectedProcess: null }, '', `?${params}`);
+  window.history.replaceState({ selectedProcess: null }, '', `?${buildUrlParams(view, granularity)}`);
+}
+
+/**
+ * Records a granularity change in the URL without touching the history state.
+ *
+ * Changing how finely the chart is divided does not change which range is on
+ * screen, so any drill-down entry pushed for that range is still valid and must
+ * survive, unlike a navigation, which invalidates it.
+ */
+function updateGranularityUrl(view: ViewState, granularity: GranularityId) {
+  window.history.replaceState(window.history.state, '', `?${buildUrlParams(view, granularity)}`);
 }
 
 export default function App() {
@@ -117,6 +142,11 @@ export default function App() {
   });
 
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
+  const [granularity, setGranularity] = useState<GranularityId>(parseUrlGranularity);
+  // What the last response was actually served at, which is what the picker
+  // needs to know which options this window can offer and what the chart needs
+  // to say when a request was widened.
+  const [timelineDetail, setTimelineDetail] = useState<TimelineDetail | null>(null);
   const [processes, setProcesses] = useState<ProcessGroupRow[]>([]);
   const [processFilter, setProcessFilter] = useState('');
   const [processSort, setProcessSort] = useState('cpu');
@@ -133,6 +163,9 @@ export default function App() {
   const [selectedHourRange, setSelectedHourRange] = useState<HourSelection | null>(null);
 
   const chartSectionRef = useRef<HTMLElement>(null);
+
+  /** Sequence number of the most recent timeline request, so stale ones can be dropped. */
+  const latestRequest = useRef(0);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
 
@@ -186,7 +219,7 @@ export default function App() {
               break;
             }
           }
-          updateUrl(newView);
+          updateUrl(newView, granularity);
           return newView;
         });
         setCustomRange(null);
@@ -196,7 +229,9 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedProcess, wipeOpen]);
+    // The arrow keys rewrite the URL, which has to carry the granularity in
+    // force, so the handler is re-bound when that changes.
+  }, [selectedProcess, wipeOpen, granularity]);
 
   // Refreshed rather than read once. Deleting the earliest or the latest day
   // moves where the recording starts and ends, and the navigation is built from
@@ -209,12 +244,23 @@ export default function App() {
   }, [refreshKey]);
 
   const navigate = useCallback((newView: ViewState) => {
+    // Back to Auto when the scale changes, and only then. A five second bucket
+    // that made sense on a day is meaningless on a year, but stepping to the next
+    // day is the same width of window and the choice still applies to it.
+    const next = newView.scale === view.scale ? granularity : 'auto';
+
     setView(newView);
-    updateUrl(newView);
+    setGranularity(next);
+    updateUrl(newView, next);
     setSelectedProcess(null);
     setCustomRange(null);
     setSelectedHourRange(null);
-  }, []);
+  }, [view.scale, granularity]);
+
+  const changeGranularity = useCallback((id: GranularityId) => {
+    setGranularity(id);
+    updateGranularityUrl(view, id);
+  }, [view]);
 
   // Drilling into a process (group, instance, or comparison) pushes a
   // history entry so the browser's own Back/Forward controls, and the
@@ -239,23 +285,55 @@ export default function App() {
     setRefreshKey(k => k + 1);
   }, []);
 
+  const activeRange = customRange ?? getViewRange(view);
+
+  // The floors describe one window, so they stop meaning anything the moment the
+  // window changes. Cleared here rather than in the fetch below, because that one
+  // also runs on the ninety second refresh and on a granularity change, where the
+  // floors are still true and clearing them would flash the notice off.
+  //
+  // Keyed on the bounds rather than on `view`, because re-selecting the scale
+  // already in force builds a fresh but equal object, and a reference comparison
+  // would throw the floors away for a window that had not moved.
+  useEffect(() => {
+    setTimelineDetail(null);
+  }, [activeRange.from, activeRange.to]);
+
   useEffect(() => {
     setLoading(true);
-    const { from, to } = customRange ?? getViewRange(view);
+
+    // Two requests can be in flight after a quick second click, and the first
+    // is not guaranteed to answer first. Only the newest is allowed to land,
+    // otherwise a stale answer overwrites both the series and the floors the
+    // picker reads, and the picker starts describing a window nobody is on.
+    const request = ++latestRequest.current;
+
+    const { from, to } = activeRange;
+    const bucketMs = granularityById(granularity).bucketMs;
 
     Promise.all([
-      getTimeline(from, to).catch(() => ({ resolution: '', points: [] })),
+      getTimeline(from, to, bucketMs).catch(() => ({
+        resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0, points: [],
+      })),
       getProcesses(from, to, {
         limit: 50,
         sort: processSort,
         q: processFilter || undefined,
       }).catch(() => ({ grouped: true, processes: [] })),
     ]).then(([tl, procs]) => {
+      if (request !== latestRequest.current) return;
+
       setTimeline(tl.points);
+      setTimelineDetail({
+        bucketMs: tl.bucketMs,
+        bucketRequestMs: tl.bucketRequestMs,
+        minBucketMs: tl.minBucketMs,
+        tierFloorMs: tl.tierFloorMs,
+      });
       setProcesses(procs.processes as ProcessGroupRow[]);
       setLoading(false);
     });
-  }, [view, processSort, processFilter, customRange, refreshKey]);
+  }, [activeRange.from, activeRange.to, processSort, processFilter, refreshKey, granularity]);
 
   useEffect(() => {
     const id = setInterval(refreshData, 90_000);
@@ -354,8 +432,6 @@ export default function App() {
     );
   }
 
-  const activeRange = customRange ?? getViewRange(view);
-
   function renderDrillDown() {
     if (selectedProcess?.type === 'comparison') {
       return (
@@ -408,6 +484,8 @@ export default function App() {
 
   const drillDown = renderDrillDown();
 
+  const granularityNotice = timelineDetail ? clampNotice(timelineDetail) : null;
+
   return (
     <div className="app">
       <header className="app-header" role="banner">
@@ -458,6 +536,10 @@ export default function App() {
         selectedHourRange={selectedHourRange}
         minTs={range?.min ?? null}
         maxTs={range?.max ?? null}
+        granularity={granularity}
+        onGranularityChange={changeGranularity}
+        rangeMs={activeRange.to - activeRange.from}
+        servedDetail={timelineDetail}
       />
 
       <main className="app-main" role="main">
@@ -539,11 +621,14 @@ export default function App() {
                       onNavigateToDay={handleNavigateToDay}
                     />
                   ) : (
-                    <Timeline
-                      data={timeline}
-                      onRangeSelect={handleRangeSelect}
-                      thresholds={thresholds}
-                    />
+                    <>
+                      <p className="granularity-notice" role="status">{granularityNotice}</p>
+                      <Timeline
+                        data={timeline}
+                        onRangeSelect={handleRangeSelect}
+                        thresholds={thresholds}
+                      />
+                    </>
                   )}
                 </section>
               </div>

@@ -14,7 +14,10 @@ const wipeCapture = vi.fn();
 
 vi.mock('./api', () => ({
   getRange: () => Promise.resolve(range),
-  getTimeline: () => Promise.resolve({ resolution: '1m', points: [] }),
+  getTimeline: () => Promise.resolve({
+    resolution: '1m', bucketMs: 0, bucketRequestMs: null,
+    minBucketMs: 0, tierFloorMs: 5_000, points: [],
+  }),
   getProcesses: () => Promise.resolve({ grouped: true, processes: [] }),
   getHealth: () => Promise.resolve({
     collectorRunning: true, lastSampleTs: 0, dbSizeMb: 1, logicalProcessors: 8,
