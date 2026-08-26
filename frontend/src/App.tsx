@@ -38,6 +38,17 @@ function applyTheme(theme: Theme) {
 
 const validScales: ViewScale[] = ['year', 'month', 'week', 'day'];
 
+function drillDownLabel(selection: ProcessSelection): string {
+  switch (selection.type) {
+    case 'group':
+      return selection.name;
+    case 'instance':
+      return selection.groupName;
+    case 'comparison':
+      return selection.names.join(', ');
+  }
+}
+
 function getViewRange(view: ViewState): { from: number; to: number } {
   switch (view.scale) {
     case 'year':
@@ -401,9 +412,26 @@ export default function App() {
     <div className="app">
       <header className="app-header" role="banner">
         <div className="header-brand">
+          <span className="back-slot">
+            <button
+              className={`back-btn ${selectedProcess ? 'visible' : ''}`}
+              onClick={() => window.history.back()}
+              aria-label="Back to dashboard"
+              title="Back to dashboard"
+              tabIndex={selectedProcess ? 0 : -1}
+            >
+              &larr;
+            </button>
+          </span>
           <span className="brand-mark" aria-hidden="true" />
           <h1>Telltale</h1>
           <StatusBar />
+          {selectedProcess && (
+            <div className="header-crumb-current">
+              <span className="header-crumb-divider" aria-hidden="true" />
+              <span className="header-crumb-name">{drillDownLabel(selectedProcess)}</span>
+            </div>
+          )}
         </div>
         <div className="header-actions">
           <button className="icon-btn" onClick={refreshData} aria-label="Refresh data" title="Refresh data">

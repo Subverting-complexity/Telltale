@@ -104,6 +104,33 @@ describe('App drill-down history navigation', () => {
       expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
   });
 
+  it('shows a back button in the header only once a drill-down is open, and it steps back through history', async () => {
+    // The back button stays mounted at all times (a fixed-width slot in the
+    // header so nothing else shifts when it appears) — App.css hides it via
+    // a CSS class jsdom doesn't apply, so the "hidden" half of this is
+    // asserted on the class/tabIndex the CSS keys off, not on presence.
+    const user = userEvent.setup();
+    render(<App />);
+
+    const headerBack = await screen.findByRole('button', { name: 'Back to dashboard' });
+    expect(headerBack).toHaveClass('back-btn');
+    expect(headerBack).not.toHaveClass('visible');
+    expect(headerBack).toHaveAttribute('tabindex', '-1');
+
+    await user.click(await screen.findByRole('listitem', { name: /chrome\.exe/ }));
+    expect(await screen.findByText('Drill-down: chrome.exe')).toBeInTheDocument();
+
+    expect(headerBack).toHaveClass('visible');
+    expect(headerBack).toHaveAttribute('tabindex', '0');
+    expect(screen.getByText('chrome.exe', { selector: '.header-crumb-name' })).toBeInTheDocument();
+
+    await user.click(headerBack);
+
+    await waitFor(() =>
+      expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
+    expect(headerBack).not.toHaveClass('visible');
+  });
+
   it('leaves plain date-paging ArrowLeft/ArrowRight alone when no drill-down is open', async () => {
     const user = userEvent.setup();
     render(<App />);

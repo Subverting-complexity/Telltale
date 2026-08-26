@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { TimelinePoint } from './types';
 import { formatRate, formatSizeGb } from './utils';
+import { CHART_COLORS } from './chartTheme';
 
 interface HealthSummaryProps {
   timeline: TimelinePoint[];
@@ -14,30 +15,49 @@ function getZoneClass(pct: number): string {
   return 'zone-ok';
 }
 
-function Sparkline({ values }: { values: (number | null)[] }) {
+// Area fill plus an end-point dot, matching the line charts (chartTheme.ts's
+// pointsConfig) instead of a bare stroke, so the tiles read as part of the
+// same chart system rather than a smaller, plainer copy of it.
+function Sparkline({ id, values, color }: { id: string; values: (number | null)[]; color: string }) {
   const filtered = values.map(v => v ?? 0);
   if (filtered.length < 2) return null;
   const max = Math.max(...filtered, 1);
   const w = 80;
-  const h = 24;
-  const points = filtered.map((v, i) =>
-    `${(i / (filtered.length - 1)) * w},${h - (v / max) * h}`
-  ).join(' ');
+  const h = 22;
+  const points = filtered.map((v, i): [number, number] => [
+    (i / (filtered.length - 1)) * w,
+    h - (v / max) * h,
+  ]);
+  const linePath = 'M' + points.map(p => p.join(',')).join(' L');
+  const areaPath = `${linePath} L${w},${h} L0,${h} Z`;
+  const [lastX, lastY] = points[points.length - 1];
+  const gradientId = `sparkline-fill-${id}`;
 
   return (
-    <svg className="sparkline" viewBox={`0 0 ${w} ${h}`} width={w} height={h}
-         aria-hidden="true">
-      <polyline points={points} fill="none" stroke="var(--accent)" strokeWidth="1.5" />
+    <svg className="sparkline" viewBox={`0 0 ${w} ${h}`} width={w} height={h} aria-hidden="true">
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.32" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={areaPath} fill={`url(#${gradientId})`} />
+      <path d={linePath} fill="none" stroke={color} strokeWidth="1.4" />
+      <circle cx={lastX} cy={lastY} r="2" fill={color} />
     </svg>
   );
 }
 
 export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: HealthSummaryProps) {
   const latest = timeline.length > 0 ? timeline[timeline.length - 1] : null;
-  const sparklineData = useMemo(() => {
-    const slice = timeline.slice(-60);
-    return slice.map(p => p.netKbps);
-  }, [timeline]);
+
+  const cpuSeries = useMemo(() => timeline.slice(-60).map(p => p.cpuPct), [timeline]);
+  const memSeries = useMemo(() => timeline.slice(-60).map(p => {
+    if (p.memoryAvailMb == null || p.memoryTotalMb == null || p.memoryTotalMb <= 0) return null;
+    return Math.min(((p.memoryTotalMb - p.memoryAvailMb) / p.memoryTotalMb) * 100, 100);
+  }), [timeline]);
+  const diskSeries = useMemo(() => timeline.slice(-60).map(p => p.diskBusyPct), [timeline]);
+  const netSeries = useMemo(() => timeline.slice(-60).map(p => p.netKbps), [timeline]);
 
   if (!latest) return null;
 
@@ -65,6 +85,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
             style={{ width: `${Math.min(cpuPct, 100)}%` }}
           />
         </div>
+        <Sparkline id="cpu" values={cpuSeries} color={CHART_COLORS.cpu} />
         <div className="tile-label">{logicalProcessors} cores</div>
       </button>
 
@@ -85,6 +106,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
                 style={{ width: `${Math.min(memPct, 100)}%` }}
               />
             </div>
+            <Sparkline id="memory" values={memSeries} color={CHART_COLORS.memory} />
             <div className="tile-label">{formatSizeGb(memUsedMb!)} / {formatSizeGb(memTotalMb)}</div>
           </>
         ) : (
@@ -105,6 +127,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
             style={{ width: `${Math.min(diskPct, 100)}%` }}
           />
         </div>
+        <Sparkline id="disk" values={diskSeries} color={CHART_COLORS.disk} />
         {diskPct >= 1 && <div className="tile-label">busy</div>}
       </button>
 
@@ -115,7 +138,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
       >
         <div className="tile-header">Network</div>
         <div className="tile-value">{formatRate(netKbps)}</div>
-        <Sparkline values={sparklineData} />
+        <Sparkline id="network" values={netSeries} color={CHART_COLORS.network} />
       </button>
     </section>
   );

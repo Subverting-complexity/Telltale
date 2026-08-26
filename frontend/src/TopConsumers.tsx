@@ -1,7 +1,8 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, type CSSProperties } from 'react';
 import type { ProcessGroupRow } from './types';
 import { formatSize, formatIo, categoriseProcess, formatCpuOfAllCores } from './utils';
 import type { ProcessCategory } from './utils';
+import { CHART_COLORS } from './chartTheme';
 
 interface TopConsumersProps {
   processes: ProcessGroupRow[];
@@ -10,14 +11,13 @@ interface TopConsumersProps {
   categoryFilter: ProcessCategory | 'all';
 }
 
-const PROCESS_COLORS = [
-  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
-  '#06b6d4', '#f97316', '#ec4899', '#84cc16', '#6366f1',
-];
-
 const MAX_ITEMS = 8;
 
 type MetricView = 'cpu' | 'memory' | 'io';
+
+interface MetricColorVars extends CSSProperties {
+  '--metric-color': string;
+}
 
 export function TopConsumers({ processes, logicalProcessors, onSelectProcess, categoryFilter }: TopConsumersProps) {
   const [metric, setMetric] = useState<MetricView>('cpu');
@@ -41,7 +41,7 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
       : sorted[0].ioKb
       : 1;
 
-    return sorted.map((p, i) => {
+    return sorted.map(p => {
       const value = metric === 'cpu' ? p.cpuPct / logicalProcessors
         : metric === 'memory' ? p.privateMb
         : p.ioKb;
@@ -53,7 +53,6 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
         value,
         label,
         pct: maxVal > 0 ? (value / maxVal) * 100 : 0,
-        color: PROCESS_COLORS[i % PROCESS_COLORS.length],
       };
     });
   }, [filtered, metric, logicalProcessors]);
@@ -63,8 +62,13 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
   const metricLabel = metric === 'cpu' ? 'CPU, as a share of all cores'
     : metric === 'memory' ? 'memory usage' : 'I/O activity';
 
+  // Reuses chartTheme's per-series color instead of the panel picking its
+  // own, so switching CPU / Memory / I/O recolors the whole panel to match
+  // the same line the System Overview chart draws for that metric.
+  const metricColorVars: MetricColorVars = { '--metric-color': CHART_COLORS[metric] };
+
   return (
-    <section className="top-consumers" aria-label="Top resource consumers">
+    <section className="top-consumers" aria-label="Top resource consumers" style={metricColorVars}>
       <div className="top-consumers-header">
         <div>
           <h2>Top Consumers</h2>
@@ -94,18 +98,10 @@ export function TopConsumers({ processes, logicalProcessors, onSelectProcess, ca
             role="listitem"
             aria-label={`${item.name}: ${item.label}`}
           >
+            <span className="consumer-wash" style={{ width: `${Math.min(item.pct, 100)}%` }} aria-hidden="true" />
+            <span className="consumer-tick" aria-hidden="true" />
             <span className="consumer-rank">{idx + 1}</span>
             <span className="consumer-name">{item.name}</span>
-            <div className="consumer-bar-track">
-              <div
-                className="consumer-bar-fill"
-                style={{
-                  width: `${Math.min(item.pct, 100)}%`,
-                  background: `linear-gradient(90deg, ${item.color}, ${item.color}cc)`,
-                  boxShadow: `0 0 8px ${item.color}40`,
-                }}
-              />
-            </div>
             <span className="consumer-value">{item.label}</span>
           </button>
         ))}
