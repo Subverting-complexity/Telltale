@@ -1,65 +1,11 @@
+/* Colour tokens are not declared here.
+   Every colour in the application comes from src/palette.ts, which emits these
+   custom properties into the document at startup (see src/theme.ts). That is
+   what keeps one definition per colour: the charts paint onto a canvas and
+   cannot read a var(), so they resolve the same palette entries directly.
+   Only the non-colour tokens below are authored in CSS. */
 :root {
-  --bg-primary: #ffffff;
-  --bg-secondary: #f7f8fb;
-  --bg-tertiary: #eef0f5;
-  --surface-toolbar: #ffffff;
-  --text-primary: #161c2c;
-  --text-secondary: #5b6478;
-  --text-muted: #94a0b8;
-  --border: #e2e5ee;
-  --border-strong: #ccd1e0;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-  --success: #10b981;
-  --warning: #f59e0b;
-  --danger: #ef4444;
-  --bar-cpu: #3b82f6;
-  --bar-mem: #10b981;
-  --focus-ring: 0 0 0 2px var(--accent);
   --radius: 6px;
-  --shadow-sm: 0 1px 3px rgba(20, 25, 40, 0.07);
-  --shadow-card: 0 1px 2px rgba(20, 25, 40, 0.06), 0 0 0 1px var(--border);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg-primary: #0a0f1a;
-    --bg-secondary: #121a2b;
-    --bg-tertiary: #1a2338;
-    --surface-toolbar: #0d1422;
-    --text-primary: #eef1f8;
-    --text-secondary: #9aa4c0;
-    --text-muted: #6b7590;
-    --border: #232c42;
-    --border-strong: #34405e;
-    --accent: #60a5fa;
-    --accent-hover: #93bbfd;
-    --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-    --bar-cpu: #60a5fa;
-    --bar-mem: #34d399;
-    --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.3);
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border);
-  }
-}
-
-:root[data-theme="dark"] {
-  --bg-primary: #0a0f1a;
-  --bg-secondary: #121a2b;
-  --bg-tertiary: #1a2338;
-  --surface-toolbar: #0d1422;
-  --text-primary: #eef1f8;
-  --text-secondary: #9aa4c0;
-  --text-muted: #6b7590;
-  --border: #232c42;
-  --border-strong: #34405e;
-  --accent: #60a5fa;
-  --accent-hover: #93bbfd;
-  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
-  --bar-cpu: #60a5fa;
-  --bar-mem: #34d399;
-  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.3);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--border);
 }
 
 *,
@@ -432,7 +378,7 @@ body {
 .scale-btn.active {
   background: var(--bg-primary);
   color: var(--accent);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-control);
 }
 
 .scale-btn:hover:not(.active) {
@@ -708,7 +654,7 @@ body {
 .day-cell.selected,
 .hour-cell.selected {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--accent);
   opacity: 1;
 }
@@ -740,7 +686,7 @@ body {
 .day-cell.selected:hover,
 .hour-cell.selected:hover {
   background: var(--accent-hover);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* Charts */
@@ -798,7 +744,7 @@ body {
 .overlay-btn.active {
   background: var(--bg-secondary);
   color: var(--text-primary);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-control);
 }
 
 .overlay-btn:hover:not(.active) {
@@ -956,8 +902,8 @@ body {
   opacity: 0.2;
 }
 
-.cpu-bar { background: var(--bar-cpu); }
-.mem-bar { background: var(--bar-mem); }
+.cpu-bar { background: var(--metric-cpu); }
+.mem-bar { background: var(--metric-memory); }
 
 .bar-label {
   position: relative;
@@ -1064,7 +1010,7 @@ body {
 
 .period-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 
@@ -1180,7 +1126,7 @@ body {
   background: var(--bg-tertiary);
   border-color: var(--accent);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-raised);
 }
 
 .tile-header {
@@ -1274,8 +1220,8 @@ body {
 
 .metric-toggle.active {
   background: var(--metric-color, var(--accent));
-  color: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  color: var(--on-accent);
+  box-shadow: var(--shadow-control);
 }
 
 .metric-toggle:hover:not(.active) {
@@ -1295,7 +1241,7 @@ body {
 
 .toggle-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: var(--accent);
 }
 
@@ -1551,7 +1497,7 @@ body {
   color: var(--text-primary);
   z-index: 100;
   pointer-events: none;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  box-shadow: var(--shadow-popover);
   white-space: nowrap;
 }
 
@@ -1677,7 +1623,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: color-mix(in srgb, #000 55%, transparent);
+  background: var(--scrim);
 }
 
 .dialog {
@@ -1689,7 +1635,7 @@ body {
   background: var(--bg-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 12px 32px color-mix(in srgb, #000 35%, transparent);
+  box-shadow: var(--shadow-overlay);
 }
 
 .dialog h2 {
@@ -1800,12 +1746,12 @@ body {
 .dialog-btn.danger {
   background: var(--danger);
   border-color: var(--danger);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .dialog-btn.danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--danger) 85%, #000);
-  border-color: color-mix(in srgb, var(--danger) 85%, #000);
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
 }
 
 .dialog-btn:disabled {

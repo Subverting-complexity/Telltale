@@ -1,18 +1,26 @@
 import type uPlot from 'uplot';
+import type { MetricKey, ThemeMode } from './palette';
+import { METRIC_KEYS, chartColor, metricColor } from './palette';
 
 // Shared across every uPlot line chart (Timeline's ChartPanel and
 // ProcessComparison's CompareChart) so they read as one visual system
 // instead of two independently-tuned charts.
+//
+// No colour is chosen here any more. uPlot paints onto a canvas and cannot
+// read a CSS variable, so this file resolves palette.ts's values for the
+// mode it is given; everything that renders DOM or SVG uses the var() instead
+// and needs none of this.
 
-export const CHART_COLORS = {
-  cpu: '#3b82f6',
-  memory: '#10b981',
-  disk: '#f59e0b',
-  network: '#8b5cf6',
-  io: '#ef4444',
-};
+// Comparison series are assigned metric colours in declaration order. The
+// palette has five, so five processes can be compared before two of them share
+// a colour, rather than the four the old hard-coded list allowed.
+export function compareColors(mode: ThemeMode): string[] {
+  return METRIC_KEYS.map(key => metricColor(key, mode));
+}
 
-export const COMPARE_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
+export function seriesColor(key: MetricKey, mode: ThemeMode): string {
+  return metricColor(key, mode);
+}
 
 export interface ChartThemeColors {
   axes: string;
@@ -25,20 +33,19 @@ export interface ChartThemeColors {
   trendLine: string;
 }
 
-export function getThemeColors(): ChartThemeColors {
-  const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
-    (!document.documentElement.getAttribute('data-theme') &&
-     window.matchMedia('(prefers-color-scheme: dark)').matches);
-
+// Takes the mode rather than reading the document, so a caller has to hold the
+// mode as a value it can depend on. That is what makes a theme switch repaint
+// the charts: useThemeMode feeds this, and the chart rebuild depends on it.
+export function getThemeColors(mode: ThemeMode): ChartThemeColors {
   return {
-    axes: isDark ? '#9ca3af' : '#6b7280',
-    grid: isDark ? '#374151' : '#e5e7eb',
-    bg: isDark ? '#111827' : '#ffffff',
-    thresholdLine: isDark ? 'rgba(156,163,175,0.4)' : 'rgba(107,114,128,0.3)',
-    thresholdText: isDark ? '#9ca3af' : '#9ca3af',
-    meanLine: isDark ? 'rgba(251,191,36,0.7)' : 'rgba(217,119,6,0.6)',
-    meanText: isDark ? '#fbbf24' : '#d97706',
-    trendLine: isDark ? 'rgba(244,114,182,0.6)' : 'rgba(219,39,119,0.5)',
+    axes: chartColor('chart-axis', mode),
+    grid: chartColor('chart-grid', mode),
+    bg: chartColor('chart-bg', mode),
+    thresholdLine: chartColor('chart-threshold-line', mode),
+    thresholdText: chartColor('chart-threshold-text', mode),
+    meanLine: chartColor('chart-mean-line', mode),
+    meanText: chartColor('chart-mean-text', mode),
+    trendLine: chartColor('chart-trend-line', mode),
   };
 }
 
