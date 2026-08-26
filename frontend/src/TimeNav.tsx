@@ -30,11 +30,31 @@ export function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }
 
+// getWeekRange in utils.ts anchors a week on the Sunday on or before `day`
+// and runs 7 days from there; this mirrors that boundary so the collapsed
+// label describes the same span the view actually shows, rather than the
+// single anchor date (which reads as a day-scale label, not a week one).
+function formatWeekRange(year: number, month: number, day: number): string {
+  const anchor = new Date(year, month - 1, day);
+  const start = new Date(year, month - 1, day - anchor.getDay());
+  const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+
+  if (start.getFullYear() === end.getFullYear()) {
+    if (start.getMonth() === end.getMonth()) {
+      return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
+    }
+    return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()} – ${MONTH_NAMES[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  return `${MONTH_NAMES[start.getMonth()]} ${start.getDate()}, ${start.getFullYear()} – ${MONTH_NAMES[end.getMonth()]} ${end.getDate()}, ${end.getFullYear()}`;
+}
+
 function summaryLabel(view: ViewState, selectedHourRange?: HourSelection | null): string {
   const scaleLabel = view.scale.charAt(0).toUpperCase() + view.scale.slice(1);
 
   const dateLabel = view.scale === 'year' || !view.month
     ? String(view.year)
+    : view.scale === 'week' && view.day
+    ? formatWeekRange(view.year, view.month, view.day)
     : view.scale === 'month' || !view.day
     ? `${MONTH_NAMES[view.month - 1]} ${view.year}`
     : `${MONTH_NAMES[view.month - 1]} ${view.day}, ${view.year}`;

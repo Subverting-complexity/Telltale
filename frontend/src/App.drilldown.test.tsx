@@ -37,6 +37,11 @@ vi.mock('./ProcessDetail', () => ({
     </div>
   ),
 }));
+vi.mock('./WipeDataDialog', () => ({
+  WipeDataDialog: ({ onWiped }: { onWiped: () => void }) => (
+    <button onClick={onWiped}>Confirm wipe</button>
+  ),
+}));
 
 beforeEach(() => {
   window.history.replaceState(null, '', '/');
@@ -125,6 +130,28 @@ describe('App drill-down history navigation', () => {
     expect(screen.getByText('chrome.exe', { selector: '.header-crumb-name' })).toBeInTheDocument();
 
     await user.click(headerBack);
+
+    await waitFor(() =>
+      expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());
+    expect(headerBack).not.toHaveClass('visible');
+  });
+
+  it('hides the header back button when data is wiped out from under an open drill-down', async () => {
+    // The wipe dialog is reachable while a drill-down is open (its header
+    // button isn't gated on selectedProcess), so onWiped has to reset the
+    // drill-down itself, not just the date range — otherwise the back
+    // button would keep pointing at a process whose data no longer exists.
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(await screen.findByRole('listitem', { name: /chrome\.exe/ }));
+    expect(await screen.findByText('Drill-down: chrome.exe')).toBeInTheDocument();
+
+    const headerBack = screen.getByRole('button', { name: 'Back to dashboard' });
+    expect(headerBack).toHaveClass('visible');
+
+    await user.click(screen.getByRole('button', { name: 'Delete recorded data' }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm wipe' }));
 
     await waitFor(() =>
       expect(screen.queryByText('Drill-down: chrome.exe')).not.toBeInTheDocument());

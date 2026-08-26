@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import type { TimelinePoint } from './types';
 import { formatRate, formatSizeGb } from './utils';
 import { CHART_COLORS } from './chartTheme';
@@ -9,10 +9,16 @@ interface HealthSummaryProps {
   onScrollTo: (metric: 'cpu' | 'memory' | 'disk' | 'network') => void;
 }
 
-function getZoneClass(pct: number): string {
-  if (pct >= 80) return 'zone-danger';
-  if (pct >= 50) return 'zone-warning';
-  return 'zone-ok';
+interface TileColorVars extends CSSProperties {
+  '--tile-color': string;
+}
+
+// Same per-metric color as the sparkline and the line charts, rather than a
+// green/amber/red health-status color — the sparkline already makes a busy
+// metric visible through its own shape, so the bar doesn't need to repeat
+// that signal in a second color scheme.
+function tileColorVars(color: string): TileColorVars {
+  return { '--tile-color': color };
 }
 
 // Area fill plus an end-point dot, matching the line charts (chartTheme.ts's
@@ -76,14 +82,12 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('cpu')}
         aria-label={`CPU: ${cpuPct.toFixed(0)}% of ${logicalProcessors} cores`}
+        style={tileColorVars(CHART_COLORS.cpu)}
       >
         <div className="tile-header">CPU</div>
         <div className="tile-value">{cpuPct.toFixed(0)}%</div>
         <div className="tile-bar-track">
-          <div
-            className={`tile-bar-fill ${getZoneClass(cpuPct)}`}
-            style={{ width: `${Math.min(cpuPct, 100)}%` }}
-          />
+          <div className="tile-bar-fill" style={{ width: `${Math.min(cpuPct, 100)}%` }} />
         </div>
         <Sparkline id="cpu" values={cpuSeries} color={CHART_COLORS.cpu} />
         <div className="tile-label">{logicalProcessors} cores</div>
@@ -95,16 +99,14 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         aria-label={memPct !== null
           ? `Memory: ${formatSizeGb(memUsedMb!)} / ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%)`
           : `Memory: no data`}
+        style={tileColorVars(CHART_COLORS.memory)}
       >
         <div className="tile-header">Memory</div>
         <div className="tile-value">{memPct !== null ? `${memPct.toFixed(0)}%` : '-'}</div>
         {memPct !== null ? (
           <>
             <div className="tile-bar-track">
-              <div
-                className={`tile-bar-fill ${getZoneClass(memPct)}`}
-                style={{ width: `${Math.min(memPct, 100)}%` }}
-              />
+              <div className="tile-bar-fill" style={{ width: `${Math.min(memPct, 100)}%` }} />
             </div>
             <Sparkline id="memory" values={memSeries} color={CHART_COLORS.memory} />
             <div className="tile-label">{formatSizeGb(memUsedMb!)} / {formatSizeGb(memTotalMb)}</div>
@@ -118,14 +120,12 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('disk')}
         aria-label={`Disk: ${diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}% busy`}`}
+        style={tileColorVars(CHART_COLORS.disk)}
       >
         <div className="tile-header">Disk</div>
         <div className="tile-value">{diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}%`}</div>
         <div className="tile-bar-track">
-          <div
-            className={`tile-bar-fill ${getZoneClass(diskPct)}`}
-            style={{ width: `${Math.min(diskPct, 100)}%` }}
-          />
+          <div className="tile-bar-fill" style={{ width: `${Math.min(diskPct, 100)}%` }} />
         </div>
         <Sparkline id="disk" values={diskSeries} color={CHART_COLORS.disk} />
         {diskPct >= 1 && <div className="tile-label">busy</div>}
@@ -135,6 +135,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
         className="health-tile"
         onClick={() => onScrollTo('network')}
         aria-label={`Network: ${formatRate(netKbps)}`}
+        style={tileColorVars(CHART_COLORS.network)}
       >
         <div className="tile-header">Network</div>
         <div className="tile-value">{formatRate(netKbps)}</div>

@@ -65,4 +65,19 @@ describe('TimeNav collapse', () => {
 
     expect(screen.getByRole('button', { name: 'Month · Aug 2026' })).toBeInTheDocument();
   });
+
+  it('summarises a week scale as the Sunday-start range it actually shows, not the anchor day alone', () => {
+    // Aug 26, 2026 is a Wednesday; the week it falls in runs Sun Aug 23 - Sat Aug 29,
+    // matching utils.ts's getWeekRange (day - getDay() through +7 days).
+    renderNav({ scale: 'week', year: 2026, month: 8, day: 26 }, { onHourSelect: vi.fn() });
+
+    expect(screen.getByRole('button', { name: 'Week · Aug 23–29, 2026' })).toBeInTheDocument();
+  });
+
+  it('summarises a week that crosses a month boundary with both month names', () => {
+    // Sep 1, 2026 is a Tuesday; its week runs Sun Aug 30 - Sat Sep 5.
+    renderNav({ scale: 'week', year: 2026, month: 9, day: 1 }, { onHourSelect: vi.fn() });
+
+    expect(screen.getByRole('button', { name: 'Week · Aug 30 – Sep 5, 2026' })).toBeInTheDocument();
+  });
 });
