@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Telltale.Collector;
 
 namespace Collector.Tests;
@@ -32,7 +31,8 @@ public class DatabaseConnectionStringTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            // Nothing to release first: Database does not pool, so disposing it
+            // above closed the file and removed its WAL sidecars.
             try { Directory.Delete(dir, recursive: true); } catch { /* best effort cleanup */ }
         }
     }
@@ -55,7 +55,8 @@ public class DatabaseConnectionStringTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            // Nothing to release first: Database does not pool, so disposing it
+            // above closed the file and removed its WAL sidecars.
             try { Directory.Delete(dir, recursive: true); } catch { /* best effort cleanup */ }
         }
     }

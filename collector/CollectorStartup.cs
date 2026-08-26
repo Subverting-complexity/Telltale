@@ -86,14 +86,11 @@ public static class CollectorStartup
     /// Closes the database before the process exits on a startup failure.
     /// </summary>
     /// <remarks>
-    /// Disposing the host disposes the connection, but Microsoft.Data.Sqlite pools
-    /// connections, so the handle returns to the pool rather than closing and the
-    /// -wal and -shm sidecars stay beside the file. On the refusal path that would
-    /// leave traces next to a database this build has just declined to touch.
+    /// Disposing the host disposes the connection, and the collector opens that
+    /// connection with pooling off, so the file and its -wal and -shm sidecars are
+    /// released here rather than held until the process exits. On the refusal path
+    /// that is the point: anything left open would leave traces beside a database
+    /// this build has just declined to touch.
     /// </remarks>
-    static void ReleaseDatabaseFiles(IHost host)
-    {
-        host.Dispose();
-        SqliteConnection.ClearAllPools();
-    }
+    static void ReleaseDatabaseFiles(IHost host) => host.Dispose();
 }

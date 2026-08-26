@@ -613,17 +613,7 @@ public class SchemaMigrationTests : IDisposable
         return Convert.ToDouble(cmd.ExecuteScalar());
     }
 
-    private static SqliteConnection Connect(string path)
-    {
-        var conn = new SqliteConnection(new SqliteConnectionStringBuilder
-        {
-            DataSource = path,
-            Pooling = false,
-        }.ToString());
-        conn.Open();
-
-        return conn;
-    }
+    private static SqliteConnection Connect(string path) => TestConnection.Open(path);
 
     private TrackedDatabase OpenCollectorDatabase(string path) => new(path, new CapturingLogger());
 
@@ -637,10 +627,9 @@ public class SchemaMigrationTests : IDisposable
 
     public void Dispose()
     {
-        // The pool keeps the WAL sidecar files open, which makes the deletes
-        // below fail on Windows.
-        SqliteConnection.ClearAllPools();
-
+        // Nothing to release first. Neither Database nor TestConnection pools, so
+        // every connection this suite opened closed its file and removed the WAL
+        // sidecars when it was disposed.
         foreach (string path in _dbPaths)
         {
             foreach (string suffix in new[] { "", "-wal", "-shm" })

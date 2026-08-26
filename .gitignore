@@ -23,6 +23,7 @@ deploy.bat
 .claude/label-cache.json
 .claude/issue-fields-cache.json
 .claude/candidates.json
+.claude/bulk-set.json
 .claude/claim-*.sha
 .claude/wf-config.json
 .claude/*.flag

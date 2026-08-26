@@ -61,7 +61,8 @@ public class DatabaseOpenFailureTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
+            // The constructor disposes its connection on the way out and does not
+            // pool, so the file is already closed by the time the deletes run.
             foreach (string suffix in new[] { "", "-wal", "-shm" })
             {
                 try { File.Delete(path + suffix); } catch { /* best effort cleanup */ }

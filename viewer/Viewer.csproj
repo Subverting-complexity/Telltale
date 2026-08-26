@@ -13,7 +13,19 @@
   </ItemGroup>
 
   <Target Name="BuildFrontend" BeforeTargets="Build;Publish" Condition="Exists('../frontend/package.json')">
-    <Exec Command="npm install" WorkingDirectory="../frontend" Condition="!Exists('../frontend/node_modules')" />
+    <!--
+      The install runs every build. It used to be conditioned on
+      ../frontend/node_modules being absent, which tested that a directory
+      exists rather than that its contents match package-lock.json, so a partial
+      install was never repaired and surfaced as missing-module errors from the
+      line below. npm install is a no-op against a complete tree and repairs an
+      incomplete one.
+
+      The no-audit and no-fund flags are there because the audit request is the
+      only part of the command that wants the network, and a build should not
+      need it. XML comments cannot carry the flags with their own hyphens.
+    -->
+    <Exec Command="npm install --no-audit --no-fund" WorkingDirectory="../frontend" />
     <Exec Command="npm run build" WorkingDirectory="../frontend" />
   </Target>
 

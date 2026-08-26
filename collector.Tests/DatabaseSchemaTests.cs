@@ -1,4 +1,3 @@
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Telltale.Collector;
 
@@ -283,12 +282,11 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
     /// The read-only attribute is what does the work: SQLite marks the connection
     /// read-only when it cannot open the file for writing, and the VACUUM then fails
     /// immediately. The log files are deleted first only as belt and braces. By this
-    /// point CreateLegacyDatabase has closed its connection and cleared the pool, so
-    /// SQLite has already removed them and the loop normally finds nothing.
+    /// point CreateLegacyDatabase has closed its connection, and nothing here pools,
+    /// so SQLite has already removed them and the loop normally finds nothing.
     /// </summary>
     private static void MakeUnwritable(string path)
     {
-        SqliteConnection.ClearAllPools();
         foreach (var suffix in new[] { "-wal", "-shm" })
         {
             try { File.Delete(path + suffix); } catch { /* may not exist */ }
@@ -297,15 +295,14 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
     }
 
     /// <summary>
-    /// Undoes <see cref="MakeUnwritable"/>. The pool has to be cleared as well as
-    /// the attribute: SQLite decides a connection is read-only when it opens the
-    /// file, and a pooled connection opened while the file was read-only keeps that
-    /// decision however the attribute changes afterwards.
+    /// Undoes <see cref="MakeUnwritable"/>. Clearing the attribute is enough only
+    /// because nothing here pools: SQLite decides a connection is read-only when it
+    /// opens the file, and a pooled connection opened while the file was read-only
+    /// would keep that decision however the attribute changed afterwards.
     /// </summary>
     private static void MakeWritable(string path)
     {
         try { File.SetAttributes(path, FileAttributes.Normal); } catch { /* already gone */ }
-        SqliteConnection.ClearAllPools();
     }
 
     /// <summary>
@@ -318,9 +315,8 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
     {
         string path = Path.Combine(Path.GetTempPath(), $"telltale_legacy_{Guid.NewGuid()}.db");
 
-        using (var conn = new SqliteConnection($"Data Source={path}"))
+        using (var conn = TestConnection.Open(path))
         {
-            conn.Open();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "PRAGMA journal_mode = WAL;";
             cmd.ExecuteNonQuery();
@@ -329,7 +325,6 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
             cmd.CommandText = DdlOnly(File.ReadAllText(SchemaSqlPath()));
             cmd.ExecuteNonQuery();
         }
-        SqliteConnection.ClearAllPools();
 
         Assert.Equal(AutoVacuumNone, Convert.ToInt64(ScalarOn(path, "PRAGMA auto_vacuum")));
         return path;
@@ -344,14 +339,10 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
 
     private static void RunScript(string path, string script)
     {
-        using (var conn = new SqliteConnection($"Data Source={path}"))
-        {
-            conn.Open();
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = script;
-            cmd.ExecuteNonQuery();
-        }
-        SqliteConnection.ClearAllPools();
+        using var conn = TestConnection.Open(path);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = script;
+        cmd.ExecuteNonQuery();
     }
 
     private static string[] ObjectNames(string path, string type) =>
@@ -361,8 +352,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
     /// <summary>Flattens a pragma result into comparable text, one row per line.</summary>
     private static string Describe(string path, string pragma)
     {
-        using var conn = new SqliteConnection($"Data Source={path}");
-        conn.Open();
+        using var conn = TestConnection.Open(path);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = pragma;
         using var reader = cmd.ExecuteReader();
@@ -380,8 +370,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
 
     private static string[] Strings(string path, string sql)
     {
-        using var conn = new SqliteConnection($"Data Source={path}");
-        conn.Open();
+        using var conn = TestConnection.Open(path);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         using var reader = cmd.ExecuteReader();
@@ -394,8 +383,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
 
     private static object? ScalarOn(string path, string sql)
     {
-        using var conn = new SqliteConnection($"Data Source={path}");
-        conn.Open();
+        using var conn = TestConnection.Open(path);
         using var cmd = conn.CreateCommand();
         cmd.CommandText = sql;
         return cmd.ExecuteScalar();
@@ -403,7 +391,6 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
 
     private static void Cleanup(string path)
     {
-        SqliteConnection.ClearAllPools();
         foreach (var suffix in new[] { "", "-wal", "-shm" })
         {
             try { File.Delete(path + suffix); } catch { /* best effort cleanup */ }

@@ -30,12 +30,7 @@ public abstract class SqliteTestBase : IDisposable
         Db = new Database(DbPath, new SilentLogger());
     }
 
-    protected SqliteConnection Connect()
-    {
-        var conn = new SqliteConnection($"Data Source={DbPath}");
-        conn.Open();
-        return conn;
-    }
+    protected SqliteConnection Connect() => TestConnection.Open(DbPath);
 
     protected object? Scalar(string sql)
     {
@@ -76,8 +71,10 @@ public abstract class SqliteTestBase : IDisposable
 
     public void Dispose()
     {
+        // Disposing the database closes its connection for real, because neither
+        // it nor TestConnection pools, so the sidecar files are already gone by
+        // the time the loop runs.
         Db.Dispose();
-        SqliteConnection.ClearAllPools();
         foreach (var suffix in new[] { "", "-wal", "-shm" })
         {
             try { File.Delete(DbPath + suffix); } catch { /* best effort cleanup */ }

@@ -57,8 +57,17 @@ public sealed class Database : IDisposable
         // interpolating a path that contains one produced a malformed string and
         // an ArgumentException, which is not among the types the collector
         // startup path catches and explains.
+        //
+        // Pooling is off. The collector opens one connection and holds it for as
+        // long as the process runs, so a pool has nothing to hand back, and all it
+        // did was keep the handle alive past Dispose with the -wal and -shm
+        // sidecars still locked beside the file. Releasing them then needed
+        // SqliteConnection.ClearAllPools, which is process wide: clearing the pools
+        // on one thread can hand an already disposed handle to a connection being
+        // opened on another, which is what failed about one migration test run in
+        // twenty-five (#91).
         _conn = new SqliteConnection(
-            new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString());
+            new SqliteConnectionStringBuilder { DataSource = dbPath, Pooling = false }.ToString());
         _conn.Open();
 
         try
