@@ -86,6 +86,32 @@ describe('WipeDataDialog', () => {
       .toBeInTheDocument();
   });
 
+  it('says the delete is running rather than leaving the dialog looking frozen', async () => {
+    // A wipe of a large recording is a single request that runs for tens of
+    // seconds: 6.3 million rows took 47 of them on a 500 MB capture. Everything
+    // in the dialog is disabled for all of it, so without something saying so it
+    // reads as a dialog that has stopped responding rather than one that is
+    // working, and the person is left deciding whether to close it mid delete.
+    let finish: (result: { rowsDeleted: number; bytesFreed: number }) => void = () => {};
+    wipeCapture.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+
+    const user = userEvent.setup();
+    const { container } = open();
+    const region = container.querySelector('[aria-live="polite"]');
+
+    await user.click(screen.getByRole('radio', { name: /Everything recorded so far/ }));
+    await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+
+    expect(region).toHaveTextContent(/Deleting\. This can take a minute/);
+    expect(container.querySelector('.dialog-progress')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Deleting...' })).toBeDisabled();
+
+    finish({ rowsDeleted: 42, bytesFreed: 2 * 1024 * 1024 });
+
+    expect(await screen.findByText(/Deleted 42 recorded rows/)).toBeInTheDocument();
+    expect(container.querySelector('.dialog-progress')).toBeNull();
+  });
+
   it('says nothing was there rather than reporting an empty delete as a success', async () => {
     wipeCapture.mockResolvedValue({ rowsDeleted: 0, bytesFreed: 0 });
     const user = userEvent.setup();
