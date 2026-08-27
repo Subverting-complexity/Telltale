@@ -55,6 +55,34 @@ public class BaselineEndpointTests : IClassFixture<BaselineTestFactory>
     }
 
     [Fact]
+    public async Task ProcessRecordedUnderSeveralInstances_IsOneAnswerAcrossAllOfThem()
+    {
+        // The grouping mistake this refactor could actually make is grouping by
+        // instance rather than by name, and every other test here would pass if
+        // it did, because they use processes with a single instance each. A
+        // process that restarts has several, which over seven days is the
+        // ordinary case rather than the exception.
+        var byName = await GetBaselines(BaselineTestFactory.RestartedProcessName);
+
+        var restarted = byName[BaselineTestFactory.RestartedProcessName];
+
+        // One row, not one per run.
+        Assert.Single(byName);
+
+        // The mean of both runs together. Either run on its own would report
+        // its own figure instead, and neither run on its own has enough points
+        // to clear the 24 hour minimum, so grouping by instance would drop this
+        // process from the answer altogether.
+        Assert.Equal(
+            BaselineTestFactory.RestartedCombinedCpuMean,
+            restarted.GetProperty("avgCpu").GetDouble(),
+            2);
+
+        double expectedHours = Math.Round(2 * BaselineTestFactory.RestartedRunPoints / 60.0, 1);
+        Assert.Equal(expectedHours, restarted.GetProperty("dataHours").GetDouble(), 1);
+    }
+
+    [Fact]
     public async Task ProcessBelowTheDataMinimum_IsLeftOutEntirely()
     {
         // The 24 hour minimum has to survive as a per-name cut. A HAVING clause

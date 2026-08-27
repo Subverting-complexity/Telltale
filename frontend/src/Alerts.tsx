@@ -23,6 +23,22 @@ type AlertTab = 'threshold' | 'anomalies';
 type AlertSortCol = 'name' | 'avgCpu' | 'peakCpu' | 'peakMem' | 'totalIo' | 'count';
 type SortDir = 'asc' | 'desc';
 
+/**
+ * How long a cached period stays good for.
+ *
+ * The recorder is still sampling, so "the last 1 day" genuinely changes as time
+ * passes and a cached answer cannot be right forever. Ninety seconds is the
+ * interval the rest of the dashboard refreshes on, so the Alerts tab is never
+ * staler than the page around it, and the rapid back and forth between periods
+ * that this cache exists for happens far inside it.
+ */
+const CACHE_TTL_MS = 90_000;
+
+interface CachedAlerts {
+  rows: AlertProcess[];
+  fetchedAt: number;
+}
+
 interface AnomalyInfo {
   name: string;
   metric: string;
@@ -77,6 +93,12 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
   const [activeTab, setActiveTab] = useState<AlertTab>('threshold');
   const [sortCol, setSortCol] = useState<AlertSortCol>('avgCpu');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  // Tracked separately from `loading`, which now clears as soon as the alerts
+  // land. Without it, the moment between the alerts arriving and the baselines
+  // arriving looks exactly like a finished answer of "no anomalies", and the
+  // Anomalies tab says there is not enough baseline data when the request for
+  // it is still in flight.
+  const [baselinesPending, setBaselinesPending] = useState(false);
 
   // Everything below lives for as long as this tab is mounted and no longer.
   // Nothing here is written to storage: the point is to stop asking for the
@@ -87,7 +109,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
   // about. A process with under 24 hours of rollup data returns no row at all,
   // so without recording that it was asked, it would be requested again on
   // every single period change for as long as the window stayed open.
-  const alertsByPeriod = useRef(new Map<number, AlertProcess[]>());
+  const alertsByPeriod = useRef(new Map<number, CachedAlerts>());
   const baselinesByName = useRef(new Map<string, BaselineData>());
   const baselinesAsked = useRef(new Set<string>());
 
@@ -121,29 +143,44 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
       // Marked before the request goes out rather than after it lands, so a
       // second period change arriving mid-flight does not ask for the same
       // names over again.
+      //
+      // Nothing here chunks the list, because nothing can overflow the fifty
+      // name cap on /api/baselines: these names come from /api/alerts, which
+      // is itself LIMIT 50. If that limit is ever raised, the names past the
+      // fiftieth would be marked asked here, dropped by the server, and never
+      // requested again for the life of the mount.
       for (const name of missing) baselinesAsked.current.add(name);
+      setBaselinesPending(true);
 
       getBaselines(missing)
         .then(res => {
+          if (res.baselines.length === 0) return;
           for (const b of res.baselines) baselinesByName.current.set(b.name, b);
           // Deliberately not gated on the sequence number, unlike the alerts
           // below. A baseline covers the same seven days whichever period asked
           // for it, so a late answer is still the right answer, and dropping it
           // would throw away data that is not going to be requested again.
+          //
+          // Skipped entirely when the answer added nothing, because a fresh
+          // array here is a new reference and would rebuild the anomaly list
+          // for no change.
           if (mounted.current) setBaselines([...baselinesByName.current.values()]);
         })
         .catch(() => {
           // A failed request is not a settled answer of "this process has no
           // baseline", so let a later switch try these names again.
           for (const name of missing) baselinesAsked.current.delete(name);
+        })
+        .finally(() => {
+          if (mounted.current) setBaselinesPending(false);
         });
     }
 
     const cached = alertsByPeriod.current.get(selectedDays);
-    if (cached) {
-      setAlerts(cached);
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      setAlerts(cached.rows);
       setLoading(false);
-      ensureBaselines(cached);
+      ensureBaselines(cached.rows);
       return;
     }
 
@@ -154,7 +191,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
         // Cached whether or not this request is still the current one. The rows
         // are a true answer for the period that asked for them either way, and
         // only the state update below has to care which period is on screen.
-        alertsByPeriod.current.set(selectedDays, filtered);
+        alertsByPeriod.current.set(selectedDays, { rows: filtered, fetchedAt: Date.now() });
 
         // Two requests can be in flight after a quick second click, and the
         // first is not guaranteed to answer first. Only the newest is allowed
@@ -361,9 +398,17 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
         )
       ) : (
         anomalies.length === 0 ? (
-          <p className="no-data-msg">
-            No anomalies detected. Anomaly detection requires at least 24 hours of baseline data.
-          </p>
+          // The alerts and the baselines land separately, so an empty anomaly
+          // list means "none found" only once the baselines are actually in.
+          // Saying there is not enough baseline data while still waiting for it
+          // states as settled something that is not yet known.
+          baselinesPending ? (
+            <p className="loading">Loading baselines...</p>
+          ) : (
+            <p className="no-data-msg">
+              No anomalies detected. Anomaly detection requires at least 24 hours of baseline data.
+            </p>
+          )
         ) : (
           <div className="alerts-table-wrapper" role="region" aria-label="Anomalies table" tabIndex={0}>
             <table className="alerts-table">

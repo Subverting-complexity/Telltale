@@ -37,11 +37,33 @@ public class BaselineTestFactory : TelltaleTestFactory
     /// <summary>Below the 24 hour minimum, so it must not appear in a response.</summary>
     public const string ShortHistoryProcessName = "shorthistory.exe";
 
+    /// <summary>
+    /// Recorded under two process_instance rows, which is what a process that
+    /// restarts during the window looks like: process_instance is unique on
+    /// (pid, create_time), so every start makes another row. Grouping by name
+    /// has to fold them back into one answer, and grouping by instance instead
+    /// would return this name twice.
+    /// </summary>
+    public const string RestartedProcessName = "restarted.exe";
+    public const double RestartedFirstRunCpu = 12.0;
+    public const double RestartedSecondRunCpu = 24.0;
+
+    /// <summary>Both runs are the same length, so the combined mean is the midpoint.</summary>
+    public const double RestartedCombinedCpuMean = 18.0;
+
     /// <summary>Comfortably past the 1440 points that make up 24 hours.</summary>
     public const int LongHistoryPoints = 1500;
 
     /// <summary>Well short of it.</summary>
     public const int ShortHistoryPoints = 100;
+
+    /// <summary>
+    /// Points in each of the restarted process's two runs. Deliberately under
+    /// the 1440 minimum on its own and over it once the two are added together,
+    /// so grouping by instance would not merely split this process into two
+    /// rows, it would drop it from the answer entirely.
+    /// </summary>
+    public const int RestartedRunPoints = 800;
 
     static readonly long _now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
@@ -68,6 +90,10 @@ public class BaselineTestFactory : TelltaleTestFactory
         SeedInstance(conn, 1, SteadyProcessName);
         SeedInstance(conn, 2, SwingingProcessName);
         SeedInstance(conn, 3, ShortHistoryProcessName);
+        // Two instances, one name. Different pids, as two runs of the same
+        // executable would have.
+        SeedInstance(conn, 4, RestartedProcessName);
+        SeedInstance(conn, 5, RestartedProcessName);
 
         SeedRollup(conn, instanceId: 1, points: LongHistoryPoints,
             cpuAt: _ => SteadyCpuPct,
@@ -79,6 +105,17 @@ public class BaselineTestFactory : TelltaleTestFactory
 
         SeedRollup(conn, instanceId: 3, points: ShortHistoryPoints,
             cpuAt: _ => SteadyCpuPct,
+            privateMb: SteadyPrivateMb, ioKb: SteadyIoKb);
+
+        // The earlier run is pushed back far enough that the two do not share a
+        // single timestamp, so COUNT(DISTINCT ts) over the pair is the sum.
+        SeedRollup(conn, instanceId: 4, points: RestartedRunPoints,
+            cpuAt: _ => RestartedFirstRunCpu,
+            privateMb: SteadyPrivateMb, ioKb: SteadyIoKb,
+            endsMinutesAgo: RestartedRunPoints);
+
+        SeedRollup(conn, instanceId: 5, points: RestartedRunPoints,
+            cpuAt: _ => RestartedSecondRunCpu,
             privateMb: SteadyPrivateMb, ioKb: SteadyIoKb);
 
         return path;
@@ -105,7 +142,8 @@ public class BaselineTestFactory : TelltaleTestFactory
     /// </summary>
     static void SeedRollup(
         SqliteConnection conn, int instanceId, int points,
-        Func<int, double> cpuAt, double privateMb, double ioKb)
+        Func<int, double> cpuAt, double privateMb, double ioKb,
+        int endsMinutesAgo = 0)
     {
         using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
@@ -123,7 +161,7 @@ public class BaselineTestFactory : TelltaleTestFactory
         cmd.Parameters.AddWithValue("@mem", privateMb);
         cmd.Parameters.AddWithValue("@io", ioKb);
 
-        long start = _now - points * 60_000L;
+        long start = _now - (points + endsMinutesAgo) * 60_000L;
         for (int i = 0; i < points; i++)
         {
             tsParam.Value = start + i * 60_000L;

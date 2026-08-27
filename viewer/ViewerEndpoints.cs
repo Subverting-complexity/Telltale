@@ -739,6 +739,17 @@ public static class ViewerEndpoints
                 // walks of the same rows to produce fifty rows of output. Grouping
                 // by name reads that slice once.
                 //
+                // There is deliberately no index on process_instance(name), and adding
+                // one would make this slower rather than faster. Measured against a
+                // seven day capture of 150 processes: without it, both shapes walk
+                // sample_1m by ts through ux_s1m_ts_inst and this query answers fifty
+                // names in about half a second. With it, the planner flips to driving
+                // off process_instance and using ix_s1m_inst, which is not covering,
+                // so every matching row pays a rowid lookup into a large table in a
+                // scattered order, and the same query takes about three times as long.
+                // The gap widens over time, because process_instance gains a row per
+                // process start and most of them have nothing in the last seven days.
+                //
                 // The placeholders are generated rather than interpolated: the names
                 // arrive in a query string, and the only safe place for a caller's
                 // text is a parameter value.

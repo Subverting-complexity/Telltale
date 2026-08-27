@@ -205,6 +205,53 @@ describe('Alerts switching between periods', () => {
     expect(vi.mocked(getBaselines).mock.calls[1][0]).toContain('app.exe');
   });
 
+  it('does not claim there is no baseline data while it is still being fetched', async () => {
+    // The alerts and the baselines land separately now, and the gap between
+    // them is not a finished answer. Saying anomaly detection needs 24 hours of
+    // history, while the request that would decide that is still out, states
+    // something that is not yet known.
+    const held = deferred<{ baselines: BaselineData[] }>();
+    vi.mocked(getBaselines).mockReturnValue(held.promise);
+
+    renderAlerts();
+    await screen.findByText('app.exe');
+    await userEvent.click(screen.getByRole('tab', { name: /Anomalies/ }));
+
+    expect(screen.queryByText(/requires at least 24 hours of baseline data/)).not.toBeInTheDocument();
+    expect(screen.getByText('Loading baselines...')).toBeInTheDocument();
+
+    held.resolve({ baselines: [] });
+    await held.promise;
+
+    // Once the answer is in, the message is a true statement again.
+    await waitFor(() =>
+      expect(screen.getByText(/requires at least 24 hours of baseline data/)).toBeInTheDocument());
+    expect(screen.queryByText('Loading baselines...')).not.toBeInTheDocument();
+  });
+
+  it('refetches a period whose cached answer has gone stale', async () => {
+    // The recorder keeps sampling, so "the last 1 day" is a moving answer and a
+    // cached one cannot be right forever. Ninety seconds matches the interval
+    // the rest of the dashboard refreshes on.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderAlerts();
+      await screen.findByText('app.exe');
+      expect(getAlerts).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByRole('tab', { name: '3 days' }));
+      await screen.findByText('other.exe');
+
+      vi.advanceTimersByTime(91_000);
+
+      await user.click(screen.getByRole('tab', { name: '1 day' }));
+      await waitFor(() => expect(getAlerts).toHaveBeenCalledTimes(3));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not let a slow answer for an old period land over a newer one', async () => {
     const slow = deferred<AlertsResponse>();
     vi.mocked(getAlerts).mockImplementation(days =>
