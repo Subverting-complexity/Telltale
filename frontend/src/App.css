@@ -1163,14 +1163,32 @@ body {
 
 /* Health summary */
 .health-summary {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
   margin-bottom: 20px;
 }
 
+.health-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 8px;
+}
+
+.health-summary-caption {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.health-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
 @media (max-width: 768px) {
-  .health-summary {
+  .health-tiles {
     grid-template-columns: repeat(2, 1fr);
   }
 }
@@ -1295,6 +1313,57 @@ body {
 
 .metric-toggle:hover:not(.active) {
   color: var(--text-primary);
+}
+
+/* Now / Over time.
+   Deliberately quieter than the metric toggle it sits beside in Top Consumers.
+   The metric toggle picks the subject and is filled with that metric's colour;
+   this one picks which reading the panel answers on, and a second filled pill
+   the same size would read as a second subject. */
+.reading-toggle-group {
+  display: flex;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius);
+  padding: 2px;
+}
+
+.reading-toggle {
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.reading-toggle.active {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: var(--shadow-control);
+}
+
+.reading-toggle:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.top-consumers-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.consumer-empty {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0;
+  padding: 12px 0;
 }
 
 .toggle-btn {

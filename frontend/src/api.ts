@@ -29,15 +29,21 @@ export function getTimeline(from: number, to: number, bucketMs?: number | null):
   return fetchJson(`${API_BASE}/timeline?${params}`);
 }
 
+/**
+ * `latest` asks for the rows at the newest reading inside the range instead of
+ * the aggregate over it, and the response then says which reading that was.
+ * Everything else about the request is the same either way.
+ */
 export function getProcesses(
   from: number, to: number,
-  opts?: { limit?: number; sort?: string; q?: string; group?: boolean }
+  opts?: { limit?: number; sort?: string; q?: string; group?: boolean; latest?: boolean }
 ): Promise<ProcessesResponse> {
   const params = new URLSearchParams({ from: String(from), to: String(to) });
   if (opts?.limit) params.set('limit', String(opts.limit));
   if (opts?.sort) params.set('sort', opts.sort);
   if (opts?.q) params.set('q', opts.q);
   if (opts?.group !== undefined) params.set('group', String(opts.group));
+  if (opts?.latest) params.set('latest', 'true');
   return fetchJson(`${API_BASE}/processes?${params}`);
 }
 

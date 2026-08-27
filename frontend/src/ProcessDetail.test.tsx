@@ -44,7 +44,7 @@ describe('ProcessDetail instances table', () => {
       name: 'app.exe', resolution: 'raw', points: [],
     });
     vi.mocked(getProcesses).mockResolvedValue({
-      grouped: false, processes: [instance],
+      grouped: false, latestTs: null, processes: [instance],
     });
   });
 
