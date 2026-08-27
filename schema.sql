@@ -82,7 +82,8 @@ CREATE TABLE sample_1h (
     private_mb_max REAL,
     working_set_mb_max REAL,
     io_kb_total  REAL,
-    sample_count INTEGER
+    sample_count INTEGER,
+    cpu_pct_sustained_max REAL
 );
 CREATE UNIQUE INDEX ux_s1h_ts_inst ON sample_1h(ts, instance_id);
 CREATE INDEX ix_s1h_inst ON sample_1h(instance_id, ts);
@@ -95,7 +96,8 @@ CREATE TABLE sample_1d (
     private_mb_max REAL,
     working_set_mb_max REAL,
     io_kb_total  REAL,
-    sample_count INTEGER
+    sample_count INTEGER,
+    cpu_pct_sustained_max REAL
 );
 CREATE UNIQUE INDEX ux_s1d_ts_inst ON sample_1d(ts, instance_id);
 CREATE INDEX ix_s1d_inst ON sample_1d(instance_id, ts);
@@ -108,7 +110,8 @@ CREATE TABLE sample_1w (
     private_mb_max REAL,
     working_set_mb_max REAL,
     io_kb_total  REAL,
-    sample_count INTEGER
+    sample_count INTEGER,
+    cpu_pct_sustained_max REAL
 );
 CREATE UNIQUE INDEX ux_s1w_ts_inst ON sample_1w(ts, instance_id);
 CREATE INDEX ix_s1w_inst ON sample_1w(instance_id, ts);
@@ -191,7 +194,8 @@ CREATE TABLE machine_1h (
     disk_busy_pct_max   REAL,
     net_kbps_avg        REAL,
     gpu_busy_pct_avg    REAL,
-    sample_count        INTEGER
+    sample_count        INTEGER,
+    cpu_pct_sustained_max REAL
 );
 
 CREATE TABLE machine_1d (
@@ -208,7 +212,8 @@ CREATE TABLE machine_1d (
     disk_busy_pct_max   REAL,
     net_kbps_avg        REAL,
     gpu_busy_pct_avg    REAL,
-    sample_count        INTEGER
+    sample_count        INTEGER,
+    cpu_pct_sustained_max REAL
 );
 
 CREATE TABLE machine_1w (
@@ -225,7 +230,8 @@ CREATE TABLE machine_1w (
     disk_busy_pct_max   REAL,
     net_kbps_avg        REAL,
     gpu_busy_pct_avg    REAL,
-    sample_count        INTEGER
+    sample_count        INTEGER,
+    cpu_pct_sustained_max REAL
 );
 
 -- How far size pressure has pulled each tier's retention in, keyed on the tier's

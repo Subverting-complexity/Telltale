@@ -319,7 +319,8 @@ public sealed class Database : IDisposable
             private_mb_max REAL,
             working_set_mb_max REAL,
             io_kb_total  REAL,
-            sample_count INTEGER
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
         );
         CREATE UNIQUE INDEX ux_s1h_ts_inst ON sample_1h(ts, instance_id);
         CREATE INDEX ix_s1h_inst ON sample_1h(instance_id, ts);
@@ -332,7 +333,8 @@ public sealed class Database : IDisposable
             private_mb_max REAL,
             working_set_mb_max REAL,
             io_kb_total  REAL,
-            sample_count INTEGER
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
         );
         CREATE UNIQUE INDEX ux_s1d_ts_inst ON sample_1d(ts, instance_id);
         CREATE INDEX ix_s1d_inst ON sample_1d(instance_id, ts);
@@ -345,7 +347,8 @@ public sealed class Database : IDisposable
             private_mb_max REAL,
             working_set_mb_max REAL,
             io_kb_total  REAL,
-            sample_count INTEGER
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
         );
         CREATE UNIQUE INDEX ux_s1w_ts_inst ON sample_1w(ts, instance_id);
         CREATE INDEX ix_s1w_inst ON sample_1w(instance_id, ts);
@@ -428,7 +431,8 @@ public sealed class Database : IDisposable
             disk_busy_pct_max   REAL,
             net_kbps_avg        REAL,
             gpu_busy_pct_avg    REAL,
-            sample_count        INTEGER
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
         );
 
         CREATE TABLE machine_1d (
@@ -445,7 +449,8 @@ public sealed class Database : IDisposable
             disk_busy_pct_max   REAL,
             net_kbps_avg        REAL,
             gpu_busy_pct_avg    REAL,
-            sample_count        INTEGER
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
         );
 
         CREATE TABLE machine_1w (
@@ -462,7 +467,8 @@ public sealed class Database : IDisposable
             disk_busy_pct_max   REAL,
             net_kbps_avg        REAL,
             gpu_busy_pct_avg    REAL,
-            sample_count        INTEGER
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
         );
 
         -- How far size pressure has pulled each tier's retention in, keyed on the tier's
@@ -899,7 +905,8 @@ public sealed class Database : IDisposable
             }
             else if (isMachine && isReRollup)
             {
-                cmd.CommandText = BuildMachineReRollupSql(sourceTable, targetTable);
+                cmd.CommandText = BuildMachineReRollupSql(sourceTable, targetTable,
+                    SustainedMaxProjection(source, target));
             }
             else if (!isMachine && !isReRollup)
             {
@@ -921,14 +928,16 @@ public sealed class Database : IDisposable
             }
             else
             {
+                (string sustainedColumn, string sustainedValue) = SustainedMaxProjection(source, target);
+
                 cmd.CommandText = $"""
                     INSERT INTO {targetTable}
                         (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
-                         working_set_mb_max, io_kb_total, sample_count)
+                         working_set_mb_max, io_kb_total, sample_count{sustainedColumn})
                     SELECT (ts / @bucket) * @bucket, instance_id,
                            {WeightedAvg("cpu_pct_avg", "sample_count")},
                            MAX(cpu_pct_max), MAX(private_mb_max),
-                           MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count)
+                           MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count){sustainedValue}
                     FROM {sourceTable}
                     WHERE ts < @cutoff
                       AND NOT EXISTS (
@@ -1006,7 +1015,36 @@ public sealed class Database : IDisposable
         GROUP BY s.ts / @bucket
         """;
 
-    internal static string BuildMachineReRollupSql(string sourceTable, string targetTable) =>
+    /// <summary>
+    /// The <c>cpu_pct_sustained_max</c> column and its expression for a promotion,
+    /// or two empty strings when the target does not carry that column.
+    /// </summary>
+    /// <remarks>
+    /// The sustained figure is the highest ten minute average inside the bucket,
+    /// which is what makes it readable at a week where the plain maximum is not:
+    /// something spikes at some point in seven days, so a maximum over that span is
+    /// pinned near the top whatever kind of week it was.
+    ///
+    /// It is seeded from the ten minute tier's own averages, and above that it is a
+    /// plain maximum of maxima, because the widest window it is allowed to describe
+    /// never gets wider than ten minutes.
+    ///
+    /// It cannot be computed after the fact. An average and a maximum do not carry
+    /// enough to recover it, so a tier that was filled before this existed holds
+    /// null there for good, and that is the honest answer rather than a figure
+    /// worked back from two that cannot produce it.
+    /// </remarks>
+    private static (string Column, string Value) SustainedMaxProjection(
+        StorageTier source, StorageTier target)
+    {
+        if (!target.HasSustainedMax) return (string.Empty, string.Empty);
+
+        return (", cpu_pct_sustained_max",
+                source.HasSustainedMax ? ", MAX(cpu_pct_sustained_max)" : ", MAX(cpu_pct_avg)");
+    }
+
+    internal static string BuildMachineReRollupSql(string sourceTable, string targetTable,
+        (string Column, string Value) sustained) =>
         $"""
         WITH last_total AS (
             SELECT bucket_ts, memory_total_mb
@@ -1020,7 +1058,7 @@ public sealed class Database : IDisposable
         INSERT INTO {targetTable}
             (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
              commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
-             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count{sustained.Column})
         SELECT (s.ts / @bucket) * @bucket,
                {WeightedAvg("s.cpu_pct_avg", "s.sample_count")},
                MAX(s.cpu_pct_max),
@@ -1033,7 +1071,7 @@ public sealed class Database : IDisposable
                MAX(s.disk_busy_pct_max),
                {WeightedAvg("s.net_kbps_avg", "s.sample_count")},
                {WeightedAvg("s.gpu_busy_pct_avg", "s.sample_count")},
-               SUM(s.sample_count)
+               SUM(s.sample_count){sustained.Value}
         FROM {sourceTable} s
         LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
         WHERE s.ts < @cutoff

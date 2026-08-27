@@ -36,11 +36,26 @@ public enum TierShape
 /// into the raw tier, so its width is never needed as a target.
 /// </param>
 /// <param name="Shape">What a promotion out of this tier has to read.</param>
+/// <param name="HasSustainedMax">
+/// Whether this tier's tables carry <c>cpu_pct_sustained_max</c>, the highest ten
+/// minute average inside the bucket.
+///
+/// The plain <c>cpu_pct_max</c> is the highest single reading, which is useful at
+/// a minute and useless at a week: something spikes at some point in seven days,
+/// so a weekly maximum is pinned near the top whatever kind of week it was. The
+/// sustained figure answers the question people actually have at that range,
+/// which is whether anything was busy for a while rather than for an instant.
+///
+/// It is carried only on the tiers wide enough to need it. Ten minutes is where
+/// they are fed from, so at the hourly tier it is the worst ten minutes of the
+/// hour, and above that it composes as a plain maximum of maxima.
+/// </param>
 public sealed record StorageTier(
     string SampleTable,
     string MachineTable,
     int BucketMinutes,
-    TierShape Shape);
+    TierShape Shape,
+    bool HasSustainedMax = false);
 
 /// <summary>
 /// The ladder recorded history descends as it ages, finest first.
@@ -66,16 +81,16 @@ public static class StorageTiers
 
     public static readonly StorageTier TenMinute = new("sample_10m", "machine_10m", 10, TierShape.Summarised);
 
-    public static readonly StorageTier OneHour = new("sample_1h", "machine_1h", 60, TierShape.Summarised);
+    public static readonly StorageTier OneHour = new("sample_1h", "machine_1h", 60, TierShape.Summarised, HasSustainedMax: true);
 
-    public static readonly StorageTier OneDay = new("sample_1d", "machine_1d", 1_440, TierShape.Summarised);
+    public static readonly StorageTier OneDay = new("sample_1d", "machine_1d", 1_440, TierShape.Summarised, HasSustainedMax: true);
 
     /// <summary>
     /// The floor. Nothing is promoted out of it and nothing is deleted from it on
     /// a schedule, which is what makes keeping a recording indefinitely
     /// affordable: a year of weekly rows is a few hundred of them.
     /// </summary>
-    public static readonly StorageTier OneWeek = new("sample_1w", "machine_1w", 10_080, TierShape.Summarised);
+    public static readonly StorageTier OneWeek = new("sample_1w", "machine_1w", 10_080, TierShape.Summarised, HasSustainedMax: true);
 
     /// <summary>
     /// Every tier, finest first. Consecutive pairs are exactly the promotions the
