@@ -23,6 +23,32 @@ export interface WipeDataDialogProps {
 type Choice = 'day' | 'all';
 
 /**
+ * What is added when the space has been released but the folder has not shrunk.
+ *
+ * Telltale tidies up after a delete by folding its write ahead log back into the
+ * capture file and shortening both, and something reading the recording at that
+ * moment holds the shortening off. The rows have gone and the space is genuinely
+ * released, so the figure is early rather than wrong, but someone who goes and
+ * looks at the folder sees no change and on a large delete briefly sees it grow.
+ *
+ * Saying so is the answer chosen in #176. The alternative was reporting nothing
+ * freed, which is honest about the folder at that moment and tells a person who
+ * has just deleted a year of history that they got nothing back, which is the
+ * more damaging of the two ways to be wrong.
+ *
+ * No cause is named, deliberately. Something reading the recording is the usual
+ * one, but the same flag is set on the narrower path where the tidy-up failed
+ * outright, and nobody need have been reading anything there. Naming a reason
+ * that did not happen would be the same failure this sentence exists to correct.
+ *
+ * No time is promised either. What clears it is a tidy-up that nothing
+ * interrupts, and how long that takes depends on whether Telltale is being used.
+ */
+const PENDING_NOTE =
+  ' The folder has not shrunk yet. The space comes back on its own at the next '
+  + 'tidy-up that nothing interrupts.';
+
+/**
  * What went, as a sentence.
  *
  * The space freed is left out rather than reported as zero when there is none.
@@ -30,18 +56,19 @@ type Choice = 'day' | 'all';
  * frees nothing measurable, and saying "freeing 0 MB" reads as a failure when it
  * is not one.
  */
-function describeResult(rowsDeleted: number, bytesFreed: number): string {
+function describeResult(rowsDeleted: number, bytesFreed: number, spacePending: boolean): string {
   if (rowsDeleted === 0) {
     return 'There was nothing recorded in that range, so nothing was deleted.';
   }
 
   const rows = `Deleted ${rowsDeleted.toLocaleString()} recorded ${rowsDeleted === 1 ? 'row' : 'rows'}`;
-  if (bytesFreed <= 0) return `${rows}.`;
+  const pending = spacePending ? PENDING_NOTE : '';
+  if (bytesFreed <= 0) return `${rows}.${pending}`;
 
   const space = bytesFreed < 1024 * 1024
     ? `${Math.max(1, Math.round(bytesFreed / 1024))} KB`
     : `${(bytesFreed / (1024 * 1024)).toFixed(1)} MB`;
-  return `${rows}, freeing ${space}.`;
+  return `${rows}, freeing ${space}.${pending}`;
 }
 
 /**
@@ -171,7 +198,7 @@ export function WipeDataDialog({ day, onClose, onWiped }: WipeDataDialogProps) {
         */}
         <p className={`dialog-say ${!done && !busy && choice ? 'warning' : ''}`} aria-live="polite">
           {done
-            ? describeResult(done.rowsDeleted, done.bytesFreed)
+            ? describeResult(done.rowsDeleted, done.bytesFreed, done.spacePending)
             : busy
               ? 'Deleting. This can take a minute on a large recording, and this window '
                 + 'will say when it is done.'

@@ -20,6 +20,9 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
 
     readonly FakeCaptureWipe _wipe = new();
 
+    /// <summary>Beside the database, the way the application puts it there.</summary>
+    string _logPath => Path.Combine(Path.GetDirectoryName(_databasePath)!, "telltale.log");
+
     ViewerListener? _listener;
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -38,6 +41,13 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
     async Task<ViewerListener> Started(ICaptureWipe? wipe)
     {
         _listener = new ViewerListener(_databasePath, TestHelpers.FreePort(), log: null, wipe: wipe);
+        await _listener.StartAsync();
+        return _listener;
+    }
+
+    async Task<ViewerListener> StartedWithLog(ICaptureWipe? wipe, RollingLogFile log)
+    {
+        _listener = new ViewerListener(_databasePath, TestHelpers.FreePort(), log: log, wipe: wipe);
         await _listener.StartAsync();
         return _listener;
     }
@@ -123,6 +133,25 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var body = await response.Content.ReadFromJsonAsync<WipeReply>();
         Assert.Equal(1234, body!.RowsDeleted);
         Assert.Equal(56789, body.BytesFreed);
+        Assert.False(body.SpacePending);
+    }
+
+    [Fact]
+    public async Task A_wipe_whose_space_has_not_reached_the_folder_yet_says_so()
+    {
+        // The recorder sets this when something was reading the capture as the delete
+        // finished, so the pages were released but neither file got shorter. The
+        // window shows a different sentence for it, and can only do that if the
+        // endpoint passes it on (#176).
+        _wipe.Result = new CaptureWipeResult(1234, 56789, SpacePending: true);
+        var listener = await Started(_wipe);
+        using var client = new HttpClient();
+
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+
+        var body = await response.Content.ReadFromJsonAsync<WipeReply>();
+        Assert.Equal(56789, body!.BytesFreed);
+        Assert.True(body.SpacePending);
     }
 
     [Fact]
@@ -261,7 +290,41 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
-    sealed record WipeReply(long RowsDeleted, long BytesFreed);
+    [Fact]
+    public async Task The_audit_line_records_the_shape_and_size_of_the_wipe_and_nothing_else()
+    {
+        // The one destructive thing Telltale does on request leaves one line beside the
+        // database, and CLAUDE.md is deliberate about what may be in it: whether it took
+        // a range or everything, and how much went. Never the range itself, because one
+        // of the two reasons to delete a day is that the day was private, and a line
+        // naming it would outlive the rows and undo most of what was asked for.
+        //
+        // Nothing pinned that until now. #176 added the first field that has to be kept
+        // out of this line, so the rule is worth a test rather than only a paragraph.
+        _wipe.Result = new CaptureWipeResult(1234, 56789, SpacePending: true);
+        var log = new RollingLogFile(_logPath);
+        var listener = await StartedWithLog(_wipe, log);
+        using var client = new HttpClient();
+
+        await Post(client, TestHelpers.TokenOf(listener.WindowUrl!),
+            """{"scope":"range","from":1700000000000,"to":1700086399999}""");
+
+        var written = File.ReadAllText(_logPath);
+
+        Assert.Contains("Wiped one range", written);
+        Assert.Contains("1234 rows", written);
+        Assert.Contains("56789 bytes freed", written);
+
+        // The bounds the window asked for, which must not have been recorded.
+        Assert.DoesNotContain("1700000000000", written);
+        Assert.DoesNotContain("1700086399999", written);
+
+        // And nothing about the space being outstanding. That belongs to the window,
+        // which can act on it, rather than to a line that outlives the rows.
+        Assert.DoesNotContain("pending", written, StringComparison.OrdinalIgnoreCase);
+    }
+
+    sealed record WipeReply(long RowsDeleted, long BytesFreed, bool SpacePending);
 
     /// <summary>
     /// Stands in for the recorder's database, so these tests are about the endpoint

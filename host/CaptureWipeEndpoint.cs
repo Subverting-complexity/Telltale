@@ -108,7 +108,7 @@ static class CaptureWipeEndpoint
                 : $"Wiped one range: {result.RowsDeleted} rows, {result.BytesFreed} bytes freed.");
 
             return Results.Json(
-                new WipeResponse(result.RowsDeleted, result.BytesFreed), json);
+                new WipeResponse(result.RowsDeleted, result.BytesFreed, result.SpacePending), json);
         }
         catch (SqliteException ex) when (IsBusy(ex))
         {
@@ -153,7 +153,15 @@ static class CaptureWipeEndpoint
         [property: JsonPropertyName("to")] long? To);
 
     /// <summary>What happened, for the window to show.</summary>
-    sealed record WipeResponse(long RowsDeleted, long BytesFreed);
+    /// <param name="SpacePending">
+    /// Whether the space has been released without the folder shrinking yet, which
+    /// happens when something was reading the recording as the delete finished. The
+    /// window says so rather than reporting a figure the folder does not agree with
+    /// (#176). Deliberately not in the audit line above: the line records the shape
+    /// and size of the wipe, and the housekeeping writes its own line about what it
+    /// could not finish.
+    /// </param>
+    sealed record WipeResponse(long RowsDeleted, long BytesFreed, bool SpacePending);
 
     /// <summary>Why nothing happened.</summary>
     sealed record WipeProblem(string Error);

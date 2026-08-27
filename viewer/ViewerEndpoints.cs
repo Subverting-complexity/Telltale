@@ -40,10 +40,51 @@ public static class ViewerEndpoints
 
         var logger = app.Logger;
 
+        // Pooling is off, matching what the recorder does with its own connection and
+        // for a related reason (#177).
+        //
+        // Microsoft.Data.Sqlite keeps a pooled handle open after Dispose returns, so
+        // one finished request left a read-only handle on the capture file for the
+        // life of the process. SQLite folds the write ahead log back in and removes
+        // it when the last connection to a database closes, which is a free tidy-up
+        // at shutdown, and in the single application build both the recorder and this
+        // listener live in one process, so that pooled handle meant the recorder was
+        // never the last connection. Its close then checkpointed nothing and removed
+        // no log. Measured during the review of #175: one finished pooled request
+        // followed by the recorder disposing left a 2,311,352 byte log and a 4,096
+        // byte database file, and the same run with pooling off deleted the log and
+        // left the database at 2,289,664 bytes. The pooled handle was still held six
+        // minutes later, so this is not a brief window, and a read-only connection
+        // closing last could not have cleaned up even if it had closed.
+        //
+        // What it costs is a fresh SQLite handle per request instead of a reused one,
+        // and both issues asked for that to be measured rather than argued. Measured
+        // on a Windows development machine against a real capture file, five hundred
+        // read-only opens each: a pooled open took 0.0002 ms and an unpooled one
+        // 0.05 to 0.10 ms, against 0.67 ms for an unpooled open plus the cheapest
+        // query worth making, a count and an average over two thousand rows. So the
+        // open is roughly a tenth of the least a request can cost, and a real timeline
+        // query over a real recording is far heavier than that one. A window asking
+        // for several charts at once pays it several times and it is still well under
+        // a millisecond in total.
+        //
+        // The alternative was to keep the pool and accept that a recording carries its
+        // log's high water mark across every restart, which was the cheaper change and
+        // the worse promise. If this ever needs revisiting, the thing to measure is
+        // the open, not the pool.
+        //
+        // Built rather than interpolated, for the reason the recorder records at
+        // Database's constructor: a semicolon is legal in a Windows filename and is
+        // also the separator in a connection string, so interpolating a path holding
+        // one produces a malformed string.
         SqliteConnection OpenDb()
         {
-            string mode = File.Exists(dbPath) ? "ReadOnly" : "ReadWrite";
-            var conn = new SqliteConnection($"Data Source={dbPath};Mode={mode}");
+            var conn = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = dbPath,
+                Mode = File.Exists(dbPath) ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            }.ToString());
             conn.Open();
             return conn;
         }
@@ -662,11 +703,35 @@ public static class ViewerEndpoints
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             bool collectorRunning = lastSampleTs > 0 && (now - lastSampleTs) < 15000;
 
+            // The database and the write ahead log beside it, because that is what the
+            // capture costs in the folder. Reporting the database alone put a number
+            // in the status bar that could be a fraction of the disk actually in use,
+            // and left the person unable to see why their history was being summarised
+            // further: on the recording that prompted #145 it would have read 4.5 MB
+            // beside a 501 MB log. It is also the only signal a person sees on screen.
+            // The collector reports the same footprint in its cycle completion line,
+            // but says nothing when a log alone is what puts the capture over its
+            // limit, deliberately, because a window left open would make that a line
+            // every few minutes (#172).
+            //
+            // The same two files the collector counts, but not the same figure. This
+            // reads their lengths, where the collector's own measurement takes the
+            // database as page count times page size. Those differ whenever pages
+            // have been released and not yet checkpointed, so the two can disagree
+            // briefly. Lengths are the right answer here: they are what the person
+            // sees when they open the folder, which is the whole point of the number.
+            //
+            // Four lines of FileInfo duplicated from Database.GetWalSizeBytes rather
+            // than shared, because collector/ and viewer/ do not reference each other
+            // and this is not worth a third project to hold.
             long dbSizeBytes = 0;
             try
             {
                 var fi = new FileInfo(dbPath);
                 if (fi.Exists) dbSizeBytes = fi.Length;
+
+                var wal = new FileInfo(dbPath + "-wal");
+                if (wal.Exists) dbSizeBytes += wal.Length;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                 or ArgumentException or NotSupportedException)

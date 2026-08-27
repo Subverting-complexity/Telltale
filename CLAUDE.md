@@ -67,22 +67,27 @@ the alternative is a wipe that quietly returns less disk than it reported. A lin
 added here that says anything about what went, rather than about what the
 housekeeping did, is the widening the paragraph above refuses.
 
-Those two lines have to be honest about when the space does come back, and the
-answer is not the same for each. A database file that has not shortened is
-picked up by the next rollup cycle: the wipe has already vacuumed, so the lower
-page count is waiting in the log, and that cycle's passive checkpoint folds it in
-and shortens the file. A log that kept its size is not picked up, because a
-passive checkpoint never shortens it and nothing outside a wipe runs a truncating
-one. So the log waits for the next wipe that is not held off.
+Those two lines have to be honest about when the space does come back, and both
+now answer the same way. The rollup cycle checkpoints with TRUNCATE, so it folds
+in the lower page count the wipe's vacuum already wrote and shortens the log with
+it, and a database file that has not shortened and a log that kept its size are
+both picked up by the next cycle. What that cycle cannot do is get past the thing
+that held the wipe off in the first place: the same open read transaction holds
+its checkpoint off too. So what both are really waiting for is a cycle where
+nothing is reading, and on a machine where the window is left open all day that
+can be a long wait. Neither line may promise a time.
 
-Closing the database is not a third route, however much it looks like one. SQLite
+Closing the database is a third route, and a deliberately unmentioned one. SQLite
 removes the log at close only when the closing connection is the last one on the
-file, and the viewer opens its read connections through the provider's pool,
-which holds a handle open well past the end of a request. The line is only ever
-written because a window held a read transaction, so that handle exists whenever
-it matters. Naming a route that does not exist is the same failure the wipe
-itself was reported for, which is telling someone their disk is coming back when
-it is not.
+file. The viewer used to open its read connections through the provider's pool,
+which held a handle open well past the end of a request, so in the single
+application build the recorder was never last and its close tidied nothing. The
+viewer no longer pools, so a clean close does fold the log in and remove it. What
+has not changed is that this route is not worth telling anyone about: it returns
+the space when they stop using Telltale, which is not an answer to someone asking
+where the disk they just freed has gone. The rule the original paragraph existed
+for still stands. Nothing the application says about where space went may name a
+route that does not exist, because that is the failure the wipe was reported for.
 
 Deleting one day deletes every row holding any part of it, including a rollup
 bucket that only overlaps it, and the bucket goes whole. That over-deletes, and
@@ -112,6 +117,23 @@ Retention now only deletes from `collector_health` and `collector_tick_phase`,
 which record what the recorder cost rather than what it observed. Adding a delete
 to any ageing or size path, including a last resort one, needs a reason written
 down here.
+
+`maxDatabaseSizeMb` is a promise about the whole footprint, the database and the
+write ahead log together, because that is what the folder costs. The rollup cycle
+answers that promise in two halves, in two places, because the two halves have
+different levers. The log's half is answered by the truncating checkpoint the
+cycle runs unconditionally, which is the only thing that shortens a log. The
+database's half is answered by summarising further, and that is steered by the
+database alone: a log cannot be summarised away, so letting one drive the loop
+would spend recorded detail, permanently, on bytes the next checkpoint gives back
+for free. So a capture over its limit only because a reader is holding a large
+log open summarises nothing, and says nothing, because a window left open would
+repeat that line every cycle. There is deliberately no third branch checking the
+footprint: by the time the summarising runs, the log has already had the only
+answer there is applied to it. The footprint reaches a person through the cycle's
+completion line and the status bar instead. Changing which figure either half
+uses, or adding a branch that acts on the footprint, needs a reason written down
+here.
 
 That size pressure is recorded in `tier_pressure` and only ever tightens, because
 coarsening cannot be undone: the finer rows have already been folded away. A wipe

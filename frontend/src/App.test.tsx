@@ -58,7 +58,7 @@ beforeEach(() => {
   range = { min: new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime(),
             max: Date.now() };
   wipeCapture.mockReset();
-  wipeCapture.mockResolvedValue({ rowsDeleted: 1234, bytesFreed: 5 * 1024 * 1024 });
+  wipeCapture.mockResolvedValue({ rowsDeleted: 1234, bytesFreed: 5 * 1024 * 1024, spacePending: false });
   holdRange = false;
   releaseRange = null;
 });
