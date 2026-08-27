@@ -233,6 +233,68 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
     }
 
     [Fact]
+    public void WipeAll_ShortensTheWriteAheadLogInsteadOfLeavingItAtItsOldSize()
+    {
+        for (int i = 0; i < 4000; i++)
+            Db.WriteMachineSample(Day0 + i, Machine());
+
+        // A passive checkpoint first, which is what the rollup cycle runs. It folds
+        // the log's contents back into the database and leaves the log file itself
+        // exactly as large as it had grown, so this is the starting point a wipe
+        // used to be measured against: a full sized log holding nothing.
+        Db.WalCheckpoint();
+        long logBefore = new FileInfo(WalPath).Length;
+        Assert.True(logBefore > 0,
+            "The log needs to have grown, or shortening it afterwards proves nothing.");
+
+        Db.WipeAll();
+
+        Assert.True(new FileInfo(WalPath).Length < logBefore,
+            "The write ahead log should be shorter after everything in the database "
+            + "was deleted, because its space is part of what the wipe gave back.");
+    }
+
+    [Fact]
+    public void WipeAll_WithAReaderHoldingTheLogOpen_StillSucceedsAndStillReportsWhatWent()
+    {
+        for (int i = 0; i < 500; i++)
+            Db.WriteMachineSample(Day0 + i, Machine());
+
+        // A viewer window holds a read connection open for as long as it is on
+        // screen, and that is what stops the log being reset. The wipe has to carry
+        // on anyway: the rows are committed before the checkpoint runs, so refusing
+        // here would report a delete that happened as one that did not.
+        using var reader = Connect();
+        using var read = reader.CreateCommand();
+
+        // A plain BEGIN, which is deferred, so the SELECT below takes a read lock and
+        // nothing more. The provider's own BeginTransaction is IMMEDIATE by default
+        // and would take the write lock instead, which is a different situation
+        // entirely: that blocks the wipe outright rather than only its checkpoint.
+        read.CommandText = "BEGIN";
+        read.ExecuteNonQuery();
+        read.CommandText = "SELECT COUNT(*) FROM machine";
+        read.ExecuteScalar();
+
+        Db.WalCheckpoint();
+        long logBefore = new FileInfo(WalPath).Length;
+
+        var result = Db.WipeAll();
+
+        Assert.True(result.RowsDeleted > 0, "The rows were deleted, so the wipe should say so.");
+        Assert.Equal(0, Count("machine"));
+
+        // The other half of the same case, and what stops this passing whether or not
+        // the reader was ever in the way. A checkpoint that resets the log leaves the
+        // file at nothing, so a log still holding bytes is the evidence that the
+        // reader did hold it off and the wipe went through anyway.
+        Assert.True(new FileInfo(WalPath).Length > 0,
+            "A reader was holding the log open, so it should not have been reset. "
+            + $"It was {logBefore} bytes before the wipe and is empty after it, which "
+            + "means this test is no longer exercising a held off checkpoint at all.");
+    }
+
+    [Fact]
     public void Wipe_ThatFailsPartWayThrough_LeavesEveryRecordedRowWhereItWas()
     {
         SeedDay(Day0);
@@ -259,6 +321,9 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
             Execute("DROP TRIGGER refuse_machine_10m_delete");
         }
     }
+
+    /// <summary>The write ahead log SQLite keeps alongside the database.</summary>
+    private string WalPath => DbPath + "-wal";
 
     /// <summary>Writes one row into every capture table, stamped at the same moment.</summary>
     private void SeedDay(long ts)

@@ -1308,11 +1308,18 @@ public sealed class Database : IDisposable
                 // them whether or not the log has been folded in; what the vacuum
                 // cannot do is shorten the file, because in write-ahead logging
                 // mode its new, smaller page count is written to the log rather
-                // than to the file. The checkpoint is what folds that in and
-                // truncates. Reversed, the file keeps its old size until some later
-                // checkpoint happens along.
+                // than to the file. The checkpoint is what folds that in. Reversed,
+                // the file keeps its old size until some later checkpoint happens
+                // along.
+                //
+                // The truncating checkpoint rather than the routine one, because a
+                // wipe is the one moment someone is watching the folder. Everything
+                // deleted here passed through the log on its way in, so the log is
+                // holding as much of the freed space as the database is, and a
+                // checkpoint that folds it in without shortening it hands back half
+                // of what was asked for.
                 IncrementalVacuumLocked();
-                CheckpointLocked();
+                TruncatingCheckpointLocked();
             }
             catch (SqliteException ex)
             {
@@ -1370,11 +1377,81 @@ public sealed class Database : IDisposable
         }
     }
 
-    private void CheckpointLocked()
+    private void CheckpointLocked() => TryCheckpointLocked(CheckpointMode.Passive);
+
+    /// <summary>
+    /// Folds the log into the database and shortens the log file itself, which no
+    /// other mode does, so the space the log was holding comes back along with the
+    /// space the rows were.
+    /// </summary>
+    /// <remarks>
+    /// PASSIVE copies the log's contents back into the database but leaves the
+    /// <c>-wal</c> file exactly as large as it had grown. On a recording near the
+    /// size limit that is up to another 500 MB still sitting in the folder after
+    /// someone deleted everything to get their disk back, and the figure the window
+    /// reports and the folder they go and look at then disagree by all of it.
+    ///
+    /// TRUNCATE has to wait for every reader to let go before it can reset the log,
+    /// and the viewer holds a read connection open for as long as a window is on
+    /// screen, so it can be held off where PASSIVE would not be. Being held off is
+    /// not a failed wipe: the rows were committed before this runs. It falls back to
+    /// PASSIVE, so the database file gives back its own pages exactly as it did
+    /// before, and says in the log that the log kept its size.
+    /// </remarks>
+    private void TruncatingCheckpointLocked()
+    {
+        if (TryCheckpointLocked(CheckpointMode.Truncate)) return;
+
+        _logger.LogInformation(
+            "A reader held the write ahead log open, so it kept its size and that "
+            + "space has not come back yet. The database file still gave back its own. "
+            + "The next checkpoint that is not held off shortens the log.");
+
+        // Costs nothing and cannot be held off, so the log is folded in as far as it
+        // can be even when it cannot be reset. Without it a wipe that met a reader
+        // would give back less than the passive checkpoint this replaced.
+        TryCheckpointLocked(CheckpointMode.Passive);
+    }
+
+    /// <summary>
+    /// Runs one checkpoint and says whether SQLite finished it.
+    /// </summary>
+    /// <remarks>
+    /// <c>PRAGMA wal_checkpoint</c> reports being held off in the first column of
+    /// the row it answers with rather than by failing, so running it through
+    /// <c>ExecuteNonQuery</c> throws that answer away. Anything that needs to know
+    /// whether the log was actually dealt with has to read the row back.
+    ///
+    /// It answers straight away rather than waiting for the reader to go: measured
+    /// at 2ms against a held open read transaction. Signalling in a result row is
+    /// why. SQLite's own busy handler is not armed here, because this connection
+    /// leaves <c>busy_timeout</c> at zero and the provider implements its thirty
+    /// second timeout by retrying statements that come back SQLITE_BUSY, which this
+    /// pragma never does. So nothing needs to bound the wait, and a wipe cannot be
+    /// made to sit on the recorder's lock waiting for a viewer window to close.
+    /// Arming <c>busy_timeout</c> on this connection would change that.
+    /// </remarks>
+    private bool TryCheckpointLocked(CheckpointMode mode)
     {
         using var cmd = _conn.CreateCommand();
-        cmd.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
-        cmd.ExecuteNonQuery();
+        cmd.CommandText = mode == CheckpointMode.Truncate
+            ? "PRAGMA wal_checkpoint(TRUNCATE);"
+            : "PRAGMA wal_checkpoint(PASSIVE);";
+
+        return cmd.ExecuteScalar() is long busy && busy == 0;
+    }
+
+    /// <summary>
+    /// How hard a checkpoint tries. An enum rather than the pragma's own text,
+    /// so the mode can never arrive from anywhere but this file.
+    /// </summary>
+    private enum CheckpointMode
+    {
+        /// <summary>Folds in what it can reach without waiting for anyone.</summary>
+        Passive,
+
+        /// <summary>Folds in everything and shortens the log, waiting for readers.</summary>
+        Truncate,
     }
 
     public long GetDatabaseSizeBytes()
