@@ -1,0 +1,138 @@
+using Microsoft.Data.Sqlite;
+
+namespace Viewer.Tests;
+
+/// <summary>
+/// Seeds the one minute rollup with three named processes, so /api/baselines
+/// can be asked about several at once and the answer checked name by name.
+///
+/// Two of them carry more than the 24 hours of rollup data the endpoint insists
+/// on before it will report a baseline at all, and the third deliberately does
+/// not. The values are constant or evenly split so every average and standard
+/// deviation below is an exact number rather than an approximation, which is
+/// what lets a test tell a correct group-by from one that has mixed two
+/// processes together.
+/// </summary>
+public class BaselineTestFactory : TelltaleTestFactory
+{
+    /// <summary>Steady process: every figure the same, so its deviation is zero.</summary>
+    public const string SteadyProcessName = "steady.exe";
+    public const double SteadyCpuPct = 10.0;
+    public const double SteadyPrivateMb = 400.0;
+    public const double SteadyIoKb = 20.0;
+
+    /// <summary>
+    /// Swinging process: alternates evenly between two values either side of its
+    /// mean, so the mean and the deviation are both exactly known and differ
+    /// from each other and from the steady process above.
+    /// </summary>
+    public const string SwingingProcessName = "swinging.exe";
+    public const double SwingingCpuLow = 20.0;
+    public const double SwingingCpuHigh = 40.0;
+    public const double SwingingCpuMean = 30.0;
+    public const double SwingingCpuStdDev = 10.0;
+    public const double SwingingPrivateMb = 800.0;
+    public const double SwingingIoKb = 60.0;
+
+    /// <summary>Below the 24 hour minimum, so it must not appear in a response.</summary>
+    public const string ShortHistoryProcessName = "shorthistory.exe";
+
+    /// <summary>Comfortably past the 1440 points that make up 24 hours.</summary>
+    public const int LongHistoryPoints = 1500;
+
+    /// <summary>Well short of it.</summary>
+    public const int ShortHistoryPoints = 100;
+
+    static readonly long _now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+    public BaselineTestFactory() : base(CreateDb())
+    {
+    }
+
+    private static string CreateDb()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"telltale-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "telltale.db");
+
+        using var conn = new SqliteConnection($"Data Source={path}");
+        conn.Open();
+
+        using (var schemaCmd = conn.CreateCommand())
+        {
+            schemaCmd.CommandText = File.ReadAllText(
+                Path.Combine(AppContext.BaseDirectory, "schema.sql"));
+            schemaCmd.ExecuteNonQuery();
+        }
+
+        SeedInstance(conn, 1, SteadyProcessName);
+        SeedInstance(conn, 2, SwingingProcessName);
+        SeedInstance(conn, 3, ShortHistoryProcessName);
+
+        SeedRollup(conn, instanceId: 1, points: LongHistoryPoints,
+            cpuAt: _ => SteadyCpuPct,
+            privateMb: SteadyPrivateMb, ioKb: SteadyIoKb);
+
+        SeedRollup(conn, instanceId: 2, points: LongHistoryPoints,
+            cpuAt: i => i % 2 == 0 ? SwingingCpuLow : SwingingCpuHigh,
+            privateMb: SwingingPrivateMb, ioKb: SwingingIoKb);
+
+        SeedRollup(conn, instanceId: 3, points: ShortHistoryPoints,
+            cpuAt: _ => SteadyCpuPct,
+            privateMb: SteadyPrivateMb, ioKb: SteadyIoKb);
+
+        return path;
+    }
+
+    static void SeedInstance(SqliteConnection conn, int id, string name)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO process_instance (id, pid, create_time, name, path, first_seen, last_seen)
+            VALUES (@id, @id, @start, @name, NULL, @start, @now)
+            """;
+        cmd.Parameters.AddWithValue("@id", id);
+        cmd.Parameters.AddWithValue("@name", name);
+        cmd.Parameters.AddWithValue("@start", _now - LongHistoryPoints * 60_000L);
+        cmd.Parameters.AddWithValue("@now", _now);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Writes one rollup row a minute, ending at the present. An even point
+    /// count matters for the swinging process: an odd one would leave its mean
+    /// slightly off the round number the tests assert.
+    /// </summary>
+    static void SeedRollup(
+        SqliteConnection conn, int instanceId, int points,
+        Func<int, double> cpuAt, double privateMb, double ioKb)
+    {
+        using var tx = conn.BeginTransaction();
+        using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+
+        cmd.CommandText = """
+            INSERT INTO sample_1m (ts, instance_id, cpu_pct_avg, cpu_pct_max,
+                                   private_mb_max, working_set_mb_max, io_kb_total, sample_count)
+            VALUES (@ts, @instance, @cpu, @cpu, @mem, @mem, @io, 12)
+            """;
+
+        var tsParam = cmd.Parameters.Add("@ts", SqliteType.Integer);
+        var cpuParam = cmd.Parameters.Add("@cpu", SqliteType.Real);
+        cmd.Parameters.AddWithValue("@instance", instanceId);
+        cmd.Parameters.AddWithValue("@mem", privateMb);
+        cmd.Parameters.AddWithValue("@io", ioKb);
+
+        long start = _now - points * 60_000L;
+        for (int i = 0; i < points; i++)
+        {
+            tsParam.Value = start + i * 60_000L;
+            cpuParam.Value = cpuAt(i);
+            cmd.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    // Cleanup handled by TelltaleTestFactory.Dispose.
+}

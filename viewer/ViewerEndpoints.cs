@@ -732,47 +732,60 @@ public static class ViewerEndpoints
                 int intervalMinutes = 1;
                 int minDataPoints = 24 * 60 / intervalMinutes; // 1440 for 1m, requires 24h of data
 
-                var baselines = new List<object>();
-                foreach (var name in nameList)
-                {
-                    using var cmd = conn.CreateCommand();
-                    cmd.CommandText = $"""
-                        SELECT pi.name,
-                               AVG(s.cpu_pct_avg) as avg_cpu,
-                               SQRT(MAX(0, AVG(s.cpu_pct_avg * s.cpu_pct_avg) - AVG(s.cpu_pct_avg) * AVG(s.cpu_pct_avg))) as stddev_cpu,
-                               AVG(s.private_mb_max) as avg_memory_mb,
-                               SQRT(MAX(0, AVG(s.private_mb_max * s.private_mb_max) - AVG(s.private_mb_max) * AVG(s.private_mb_max))) as stddev_memory_mb,
-                               AVG(s.io_kb_total) as avg_io_kb,
-                               SQRT(MAX(0, AVG(s.io_kb_total * s.io_kb_total) - AVG(s.io_kb_total) * AVG(s.io_kb_total))) as stddev_io_kb,
-                               COUNT(DISTINCT s.ts) as data_points
-                        FROM {table} s
-                        JOIN process_instance pi ON pi.id = s.instance_id
-                        WHERE pi.name = @name AND s.ts >= @from AND s.ts <= @to
-                        GROUP BY pi.name
-                        HAVING COUNT(DISTINCT s.ts) >= @minPoints
-                        """;
-                    cmd.Parameters.AddWithValue("@name", name);
-                    cmd.Parameters.AddWithValue("@from", sevenDaysAgo);
-                    cmd.Parameters.AddWithValue("@to", now);
-                    cmd.Parameters.AddWithValue("@minPoints", minDataPoints);
+                // One statement for the whole name list rather than one per name.
+                // Every one of those queries walked the same seven day slice of
+                // sample_1m, because neither the ts index nor process_instance can
+                // narrow a filter on the process name, so fifty names meant fifty
+                // walks of the same rows to produce fifty rows of output. Grouping
+                // by name reads that slice once.
+                //
+                // The placeholders are generated rather than interpolated: the names
+                // arrive in a query string, and the only safe place for a caller's
+                // text is a parameter value.
+                var placeholders = string.Join(", ", nameList.Select((_, i) => $"@n{i}"));
 
-                    using var reader = cmd.ExecuteReader();
-                    if (reader.Read())
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = $"""
+                    SELECT pi.name,
+                           AVG(s.cpu_pct_avg) as avg_cpu,
+                           SQRT(MAX(0, AVG(s.cpu_pct_avg * s.cpu_pct_avg) - AVG(s.cpu_pct_avg) * AVG(s.cpu_pct_avg))) as stddev_cpu,
+                           AVG(s.private_mb_max) as avg_memory_mb,
+                           SQRT(MAX(0, AVG(s.private_mb_max * s.private_mb_max) - AVG(s.private_mb_max) * AVG(s.private_mb_max))) as stddev_memory_mb,
+                           AVG(s.io_kb_total) as avg_io_kb,
+                           SQRT(MAX(0, AVG(s.io_kb_total * s.io_kb_total) - AVG(s.io_kb_total) * AVG(s.io_kb_total))) as stddev_io_kb,
+                           COUNT(DISTINCT s.ts) as data_points
+                    FROM {table} s
+                    JOIN process_instance pi ON pi.id = s.instance_id
+                    WHERE s.ts >= @from AND s.ts <= @to
+                      AND pi.name IN ({placeholders})
+                    GROUP BY pi.name
+                    HAVING COUNT(DISTINCT s.ts) >= @minPoints
+                    ORDER BY pi.name
+                    """;
+
+                for (int i = 0; i < nameList.Length; i++)
+                    cmd.Parameters.AddWithValue($"@n{i}", nameList[i]);
+                cmd.Parameters.AddWithValue("@from", sevenDaysAgo);
+                cmd.Parameters.AddWithValue("@to", now);
+                cmd.Parameters.AddWithValue("@minPoints", minDataPoints);
+
+                var baselines = new List<object>();
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    long dataPoints = reader.GetInt64(7);
+                    double dataHours = dataPoints * intervalMinutes / 60.0;
+                    baselines.Add(new
                     {
-                        long dataPoints = reader.GetInt64(7);
-                        double dataHours = dataPoints * intervalMinutes / 60.0;
-                        baselines.Add(new
-                        {
-                            name = reader.GetString(0),
-                            avgCpu = Math.Round(reader.IsDBNull(1) ? 0 : reader.GetDouble(1), 2),
-                            stddevCpu = Math.Round(reader.IsDBNull(2) ? 0 : reader.GetDouble(2), 2),
-                            avgMemoryMb = Math.Round(reader.IsDBNull(3) ? 0 : reader.GetDouble(3), 2),
-                            stddevMemoryMb = Math.Round(reader.IsDBNull(4) ? 0 : reader.GetDouble(4), 2),
-                            avgIoKb = Math.Round(reader.IsDBNull(5) ? 0 : reader.GetDouble(5), 2),
-                            stddevIoKb = Math.Round(reader.IsDBNull(6) ? 0 : reader.GetDouble(6), 2),
-                            dataHours = Math.Round(dataHours, 1),
-                        });
-                    }
+                        name = reader.GetString(0),
+                        avgCpu = Math.Round(reader.IsDBNull(1) ? 0 : reader.GetDouble(1), 2),
+                        stddevCpu = Math.Round(reader.IsDBNull(2) ? 0 : reader.GetDouble(2), 2),
+                        avgMemoryMb = Math.Round(reader.IsDBNull(3) ? 0 : reader.GetDouble(3), 2),
+                        stddevMemoryMb = Math.Round(reader.IsDBNull(4) ? 0 : reader.GetDouble(4), 2),
+                        avgIoKb = Math.Round(reader.IsDBNull(5) ? 0 : reader.GetDouble(5), 2),
+                        stddevIoKb = Math.Round(reader.IsDBNull(6) ? 0 : reader.GetDouble(6), 2),
+                        dataHours = Math.Round(dataHours, 1),
+                    });
                 }
 
                 return Results.Json(new { baselines }, jsonOptions);
