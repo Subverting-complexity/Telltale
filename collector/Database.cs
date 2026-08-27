@@ -874,7 +874,7 @@ public sealed class Database : IDisposable
             using var cmd = _conn.CreateCommand();
             cmd.Transaction = tx;
 
-            long bucketMs = target.BucketMinutes * 60_000L;
+            long bucketMs = target.BucketMs;
 
             // Only ever promote whole buckets. The caller's cutoff is a wall clock
             // instant and rarely lands on a bucket boundary, so without this the bucket
@@ -1163,11 +1163,16 @@ public sealed class Database : IDisposable
     // the same reason the orphan cleanup builds its statement from that list: a
     // tier missing from this one would survive a wipe, which is the one thing a
     // wipe promises not to let happen.
-    private static readonly string[] CaptureTables =
+    //
+    // Each table brings the width of one of its rows with it, which is what a wipe
+    // of a range needs to tell whether a row that starts before the range is still
+    // holding part of it. The two health tables are a millisecond wide because
+    // their rows are moments rather than buckets: they record what one tick cost.
+    private static readonly (string Table, long BucketMs)[] CaptureTables =
     [
-        .. StorageTiers.AllTables,
-        "collector_health",
-        "collector_tick_phase",
+        .. StorageTiers.AllTablesWithWidth,
+        ("collector_health", 1L),
+        ("collector_tick_phase", 1L),
     ];
 
     /// <summary>
@@ -1184,24 +1189,26 @@ public sealed class Database : IDisposable
 
     /// <summary>
     /// Deletes everything recorded between <paramref name="fromMs"/> and
-    /// <paramref name="toMs"/>, both ends included, and leaves the rest alone.
+    /// <paramref name="toMs"/>, both ends included, along with any coarser bucket
+    /// holding part of that span, and leaves the rest alone.
     /// </summary>
     /// <remarks>
-    /// A rollup row is deleted when its own timestamp falls inside the range. A
-    /// bucket is stamped with the moment it starts, so it goes or stays whole
-    /// rather than being half emptied: one that begins before the range and runs
-    /// into it is kept, and one that begins inside the range and runs past its end
-    /// is deleted, taking whatever of the next day it covers with it.
+    /// Every row holding any part of the range is deleted, including a rollup bucket
+    /// that merely overlaps it. A bucket goes or stays whole rather than being half
+    /// emptied, because the readings behind it are long gone and there is nothing
+    /// left to recompute a smaller figure from.
     ///
-    /// How much that comes to depends on which tier still holds the day. Ten
-    /// minutes at most while the ten minute tier does, and that lands on a calendar
-    /// day boundary except in the handful of timezones whose offset is not a whole
-    /// ten minutes. Past rollup10mRetentionDays the hourly, daily and weekly tiers
-    /// hold it instead, and their buckets are aligned to the epoch, so to UTC rather
-    /// than to the local day. Both halves of the rule then bite: a weekly bucket
-    /// beginning inside the range takes six other days with it, and a weekly bucket
-    /// beginning before the range keeps the wiped day's readings inside a row that
-    /// survives. Which way that should be resolved is #170.
+    /// That over-deletes on purpose, and it is the deliberate half of the trade. A
+    /// bucket is stamped with the moment it starts, and past rollup10mRetentionDays
+    /// the tiers holding a day are one hour, one day and one week wide and aligned
+    /// to the epoch, so to UTC rather than to anyone's local day. Deleting only the
+    /// buckets that begin inside the range would leave a wiped day alive inside the
+    /// weekly average that started the day before. One of the two reasons to delete
+    /// a day is that the day was private, which is why the log line about a wipe
+    /// deliberately does not record the range, and a day surviving inside a coarser
+    /// row is a weaker promise than the one already written down. So the promise
+    /// wins, and the cost is that wiping a day old enough to have reached the weekly
+    /// tier can take the week around it.
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// The range ends before it starts, which is a caller error rather than an
@@ -1246,16 +1253,36 @@ public sealed class Database : IDisposable
 
             using (var tx = _conn.BeginTransaction())
             {
-                string where = from is null ? "" : " WHERE ts >= @from AND ts <= @to";
+                // A row stamped ts covers ts up to but not including ts + its width,
+                // so it holds part of the range whenever it starts at or before the
+                // end and finishes after the start. Rearranged into something an
+                // index can use, that is ts > from - width AND ts <= to. A row a
+                // millisecond wide reduces to the plain "is this moment inside the
+                // range" the raw and health tables have always used, so one
+                // expression covers every table and each supplies its own width.
+                string where = from is null ? "" : " WHERE ts > @from AND ts <= @to";
 
-                foreach (var table in CaptureTables)
+                foreach (var (table, bucketMs) in CaptureTables)
                 {
                     using var cmd = _conn.CreateCommand();
                     cmd.Transaction = tx;
                     cmd.CommandText = $"DELETE FROM {table}{where}";
                     if (from is not null)
                     {
-                        cmd.Parameters.AddWithValue("@from", from.Value);
+                        // Widening the start by a bucket has to stop at the bottom
+                        // rather than wrap round it. A range beginning at long.MinValue
+                        // is not a real recording, but subtracting from it silently
+                        // turns the lower bound into a large positive number, and the
+                        // wipe then matches nothing at all and honestly reports that
+                        // it deleted nothing. Clamped, the comparison stays exclusive,
+                        // so a row stamped exactly long.MinValue survives such a wipe.
+                        // That is one unreachable timestamp against the whole range
+                        // silently going unwiped, which is the trade taken here.
+                        long widenedFrom = from.Value < long.MinValue + bucketMs
+                            ? long.MinValue
+                            : from.Value - bucketMs;
+
+                        cmd.Parameters.AddWithValue("@from", widenedFrom);
                         cmd.Parameters.AddWithValue("@to", to!.Value);
                     }
 
@@ -1308,11 +1335,18 @@ public sealed class Database : IDisposable
                 // them whether or not the log has been folded in; what the vacuum
                 // cannot do is shorten the file, because in write-ahead logging
                 // mode its new, smaller page count is written to the log rather
-                // than to the file. The checkpoint is what folds that in and
-                // truncates. Reversed, the file keeps its old size until some later
-                // checkpoint happens along.
+                // than to the file. The checkpoint is what folds that in. Reversed,
+                // the file keeps its old size until some later checkpoint happens
+                // along.
+                //
+                // The truncating checkpoint rather than the routine one, because a
+                // wipe is the one moment someone is watching the folder. Everything
+                // deleted here passed through the log on its way in, so the log is
+                // holding as much of the freed space as the database is, and a
+                // checkpoint that folds it in without shortening it hands back half
+                // of what was asked for.
                 IncrementalVacuumLocked();
-                CheckpointLocked();
+                TruncatingCheckpointLocked();
             }
             catch (SqliteException ex)
             {
@@ -1370,11 +1404,103 @@ public sealed class Database : IDisposable
         }
     }
 
-    private void CheckpointLocked()
+    private void CheckpointLocked() => TryCheckpointLocked(CheckpointMode.Passive);
+
+    /// <summary>
+    /// Folds the log into the database and shortens the log file itself, which no
+    /// other mode does, so the space the log was holding comes back along with the
+    /// space the rows were.
+    /// </summary>
+    /// <remarks>
+    /// PASSIVE copies the log's contents back into the database but leaves the
+    /// <c>-wal</c> file exactly as large as it had grown. On a recording near the
+    /// size limit that is up to another 500 MB still sitting in the folder after
+    /// someone deleted everything to get their disk back, and the figure the window
+    /// reports and the folder they go and look at then disagree by all of it.
+    ///
+    /// TRUNCATE cannot reset the log while a reader is still using it, so it can be
+    /// held off where PASSIVE would not be. That is uncommon rather than the usual
+    /// case: what holds the log is an open read transaction, which here is the span
+    /// of one request the window made, and not the connection itself sitting idle
+    /// between them. Being held off is not a failed wipe either way: the rows were
+    /// committed before this runs, so it says so in the log and leaves it.
+    ///
+    /// There is deliberately no fallback to PASSIVE. TRUNCATE does the same copying
+    /// FULL does and only then resets the log, so a PASSIVE run afterwards can never
+    /// fold in more than the held off TRUNCATE already did. Measured against a held
+    /// open read transaction, TRUNCATE reported four frames left and none copied, and
+    /// PASSIVE straight after it reported the same four frames and none copied. It
+    /// would be dead code with a comforting name.
+    ///
+    /// What is left over when this is held off is a database whose pages have been
+    /// released but whose file has not shortened, and a log still at its old length,
+    /// so nothing in the folder has changed yet. The two come back by different
+    /// routes, and saying otherwise is the same failure this fix was reported for.
+    ///
+    /// The database file shortens on the next rollup cycle, whose PASSIVE checkpoint
+    /// folds in the page count the vacuum above already lowered. The log does not:
+    /// PASSIVE never shortens it, and nothing outside a wipe runs a truncating
+    /// checkpoint, so the log waits for the next wipe that is not held off.
+    ///
+    /// Closing the database is deliberately not offered as a third route. SQLite
+    /// removes the log at close only when the closing connection is the last one on
+    /// the file, and the viewer opens its read connections through the provider's
+    /// pool, which keeps a handle open long after a request finishes. This line is
+    /// only ever reached because a window held a read transaction, so in the single
+    /// application build that handle exists by definition and the recorder is never
+    /// the last connection.
+    /// </remarks>
+    private void TruncatingCheckpointLocked()
+    {
+        if (TryCheckpointLocked(CheckpointMode.Truncate)) return;
+
+        _logger.LogInformation(
+            "A reader held the write ahead log open, so it kept its size and that space "
+            + "has not come back yet. The database released its own pages internally but "
+            + "the file has not shortened either. The next rollup cycle shortens the "
+            + "database file. The log waits for the next wipe that is not held off, "
+            + "because nothing else shortens it.");
+    }
+
+    /// <summary>
+    /// Runs one checkpoint and says whether SQLite finished it.
+    /// </summary>
+    /// <remarks>
+    /// <c>PRAGMA wal_checkpoint</c> reports being held off in the first column of
+    /// the row it answers with rather than by failing, so running it through
+    /// <c>ExecuteNonQuery</c> throws that answer away. Anything that needs to know
+    /// whether the log was actually dealt with has to read the row back.
+    ///
+    /// It answers straight away rather than waiting for the reader to go: measured
+    /// at 2ms against a held open read transaction. Signalling in a result row is
+    /// why. SQLite's own busy handler is not armed here, because this connection
+    /// leaves <c>busy_timeout</c> at zero and the provider implements its thirty
+    /// second timeout by retrying statements that come back SQLITE_BUSY, which this
+    /// pragma never does. So nothing needs to bound the wait, and a wipe cannot be
+    /// made to sit on the recorder's lock waiting for a viewer window to close.
+    /// Arming <c>busy_timeout</c> on this connection would change that.
+    /// </remarks>
+    private bool TryCheckpointLocked(CheckpointMode mode)
     {
         using var cmd = _conn.CreateCommand();
-        cmd.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
-        cmd.ExecuteNonQuery();
+        cmd.CommandText = mode == CheckpointMode.Truncate
+            ? "PRAGMA wal_checkpoint(TRUNCATE);"
+            : "PRAGMA wal_checkpoint(PASSIVE);";
+
+        return cmd.ExecuteScalar() is long busy && busy == 0;
+    }
+
+    /// <summary>
+    /// How hard a checkpoint tries. An enum rather than the pragma's own text,
+    /// so the mode can never arrive from anywhere but this file.
+    /// </summary>
+    private enum CheckpointMode
+    {
+        /// <summary>Folds in what it can reach without waiting for anyone.</summary>
+        Passive,
+
+        /// <summary>Folds in everything and shortens the log, waiting for readers.</summary>
+        Truncate,
     }
 
     public long GetDatabaseSizeBytes()

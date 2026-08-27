@@ -55,7 +55,22 @@ public sealed record StorageTier(
     string MachineTable,
     int BucketMinutes,
     TierShape Shape,
-    bool HasSustainedMax = false);
+    bool HasSustainedMax = false)
+{
+    /// <summary>
+    /// How much recorded time one of this tier's rows stands for, in milliseconds.
+    /// A row stamped <c>ts</c> covers <c>ts</c> up to but not including
+    /// <c>ts + BucketMs</c>, which is what says whether it holds any of a range
+    /// somebody asked to be rid of.
+    /// </summary>
+    /// <remarks>
+    /// One millisecond for <see cref="StorageTiers.Raw"/>, whose rows are single
+    /// readings rather than buckets. A reading covers the moment it was taken and
+    /// nothing else, and a one millisecond bucket is exactly that, so the same
+    /// arithmetic serves both without the raw tier needing a case of its own.
+    /// </remarks>
+    public long BucketMs => BucketMinutes == 0 ? 1 : BucketMinutes * 60_000L;
+}
 
 /// <summary>
 /// The ladder recorded history descends as it ages, finest first.
@@ -130,4 +145,19 @@ public static class StorageTiers
     /// <c>process_instance</c> should go before the orphan cleanup runs.
     /// </summary>
     public static IEnumerable<string> AllTables => SampleTables.Concat(MachineTables);
+
+    /// <summary>
+    /// <see cref="AllTables"/>, each paired with how wide one of its rows is.
+    /// </summary>
+    /// <remarks>
+    /// A wipe of a range needs both halves. Which tables to empty is the easy one;
+    /// the other is how far before the range a row can start and still be holding
+    /// part of it, which is its own tier's width and nothing else. Pairing them
+    /// here keeps that fact with the rung it belongs to, so a rung added to the
+    /// ladder brings its width along instead of needing a second list somewhere to
+    /// be remembered.
+    /// </remarks>
+    public static IEnumerable<(string Table, long BucketMs)> AllTablesWithWidth =>
+        Ordered.Select(t => (Table: t.SampleTable, t.BucketMs))
+            .Concat(Ordered.Select(t => (Table: t.MachineTable, t.BucketMs)));
 }
