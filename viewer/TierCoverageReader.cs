@@ -3,18 +3,41 @@ using Microsoft.Data.Sqlite;
 namespace Telltale.Viewer;
 
 /// <summary>
+/// Which tier tables a database has, and the span each of them holds.
+///
+/// The two travel together because one read answers both. A table missing
+/// entirely and a table present but empty are different situations that a
+/// coverage dictionary alone cannot tell apart: neither has an entry.
+/// </summary>
+public sealed record TierCoverageSet(
+    IReadOnlyList<string> Present,
+    IReadOnlyDictionary<string, TierCoverage> Coverage)
+{
+    public bool Has(string table) => Present.Contains(table);
+}
+
+/// <summary>
 /// Reads the time span each tier table actually holds, so tier selection can be
 /// driven by where the data lives rather than by how old the request is.
 /// </summary>
 public static class TierCoverageReader
 {
-    public static Dictionary<string, TierCoverage> Read(SqliteConnection conn, bool isMachine)
+    public static Dictionary<string, TierCoverage> Read(SqliteConnection conn, bool isMachine) =>
+        new(ReadSet(conn, isMachine).Coverage);
+
+    /// <summary>
+    /// <see cref="Read"/> with the table list it had to gather anyway.
+    ///
+    /// A caller that needs to know whether a tier table exists at all reads this
+    /// rather than asking <c>sqlite_master</c> again beside it.
+    /// </summary>
+    public static TierCoverageSet ReadSet(SqliteConnection conn, bool isMachine)
     {
         var coverage = new Dictionary<string, TierCoverage>();
         IReadOnlyList<string> tiers = TierSelection.TiersFor(isMachine);
 
         List<string> present = PresentTables(conn, tiers);
-        if (present.Count == 0) return coverage;
+        if (present.Count == 0) return new TierCoverageSet(present, coverage);
 
         using var cmd = conn.CreateCommand();
 
@@ -31,7 +54,7 @@ public static class TierCoverageReader
             coverage[reader.GetString(0)] = new TierCoverage(reader.GetInt64(1), reader.GetInt64(2));
         }
 
-        return coverage;
+        return new TierCoverageSet(present, coverage);
     }
 
     /// <summary>

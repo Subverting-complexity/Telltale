@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { getRange, getTimeline, getProcesses, getHealth, getThresholds } from './api';
+import { getRange, getTimeline, getProcesses, getHealth, getThresholds, isAbort } from './api';
 import type {
   ViewState, Theme, RangeResponse,
-  TimelinePoint, ProcessGroupRow, HealthResponse, ThresholdConfig,
+  TimelinePoint, TimelineResponse, ProcessGroupRow, HealthResponse, ThresholdConfig,
   ProcessSelection, DashboardTab, ProcessSort,
 } from './types';
+import { TimelineCache } from './timelineCache';
 import type { ProcessCategory } from './utils';
 import {
   loadViewPreferences, saveViewPreferences, restoredGranularity, viewForScale, isViewScale,
@@ -165,6 +166,17 @@ function updateGranularityUrl(view: ViewState, granularity: GranularityId) {
   window.history.replaceState(window.history.state, '', `?${buildUrlParams(view, granularity)}`);
 }
 
+/**
+ * What the screen falls back to when a timeline request genuinely fails.
+ *
+ * The floors are zero, which the picker reads as "no floor known", so every
+ * option stays offered rather than being greyed out on the strength of a
+ * request that never arrived.
+ */
+const EMPTY_TIMELINE: TimelineResponse = {
+  resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0, points: [],
+};
+
 export default function App() {
   // Read once, when the window opens. From here on the state below is the truth
   // and the effect further down writes it back; nothing reads storage again.
@@ -172,6 +184,8 @@ export default function App() {
 
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [range, setRange] = useState<RangeResponse | null>(null);
+  /** Whether the range request has been answered, successfully or not. */
+  const [rangeLoaded, setRangeLoaded] = useState(false);
   const [view, setView] = useState<ViewState>(initial.view);
 
   const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
@@ -188,6 +202,12 @@ export default function App() {
   const [processSort, setProcessSort] = useState<ProcessSort>(initial.preferences.sort);
   const [selectedProcess, setSelectedProcess] = useState<ProcessSelection | null>(null);
   const [loading, setLoading] = useState(true);
+  // The chart's own wait, separate from the dashboard's. A granularity change
+  // cannot alter the process table, the health summary or the heatmap, so
+  // blanking the page for one said the whole screen was out of date when only
+  // the chart was. This is also false for an answer served from memory, which
+  // arrives in the same tick and has nothing to wait for.
+  const [timelineLoading, setTimelineLoading] = useState(true);
   const [customRange, setCustomRange] = useState<{ from: number; to: number } | null>(null);
   const [wipeOpen, setWipeOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -206,6 +226,29 @@ export default function App() {
 
   /** Sequence number of the most recent timeline request, so stale ones can be dropped. */
   const latestRequest = useRef(0);
+
+  /**
+   * The same guard for the process list, which now runs on its own schedule.
+   * Changing the sort and changing it back quickly can leave two in flight, and
+   * the first is not guaranteed to answer first.
+   */
+  const latestProcessRequest = useRef(0);
+
+  /**
+   * Puts a timeline answer on screen, whether it came from the network or from
+   * the cache. Both paths have to set the floors as well as the series: the
+   * picker reads them to decide what to offer, and the clamp notice reads them
+   * to explain a width the server widened.
+   */
+  const applyTimeline = useCallback((tl: TimelineResponse) => {
+    setTimeline(tl.points);
+    setTimelineDetail({
+      bucketMs: tl.bucketMs,
+      bucketRequestMs: tl.bucketRequestMs,
+      minBucketMs: tl.minBucketMs,
+      tierFloorMs: tl.tierFloorMs,
+    });
+  }, []);
 
   useEffect(() => { applyTheme(theme); }, [theme]);
 
@@ -299,7 +342,15 @@ export default function App() {
   // exactly those two numbers, so a stale pair leaves the user able to walk into
   // days that no longer exist.
   useEffect(() => {
-    getRange().then(setRange).catch(() => {});
+    // `rangeLoaded` only ever goes true, including when the request failed. The
+    // "No data yet" screen is a statement about the recording, so it waits for
+    // this rather than for the dashboard's loading flag, which used to stand in
+    // for it: that flag now clears when the process list lands, and the process
+    // list landing says nothing about whether the recording has a start and an
+    // end yet. A failed range request still has to reach an answer, otherwise
+    // the screen would wait forever on a question that is not going to be
+    // answered.
+    getRange().then(setRange).catch(() => {}).finally(() => setRangeLoaded(true));
     getHealth().then(setHealth).catch(() => {});
     getThresholds().then(setThresholds).catch(() => {});
   }, [refreshKey]);
@@ -360,41 +411,96 @@ export default function App() {
     setTimelineDetail(null);
   }, [activeRange.from, activeRange.to]);
 
+  // Answers already fetched for the window on screen. Held in a ref rather than
+  // in state because filling it must not cause a render: what is on screen comes
+  // from `timeline` and `timelineDetail`, and the cache only decides whether a
+  // request has to go out to set them.
+  const timelineCache = useRef(new TimelineCache());
+
+  // Emptied whenever an entry in it could have gone out of date, which is when
+  // the window moves and when either refresh fires. Ageing individual entries
+  // would be the wrong shape: the recording only grows on a refresh, so between
+  // two refreshes every held answer is as current as an uncached one would be.
   useEffect(() => {
-    setLoading(true);
+    timelineCache.current.clear();
+  }, [activeRange.from, activeRange.to, refreshKey]);
+
+  // The timeline, on its own. It is the only request a granularity change
+  // changes the answer to, so it is the only one a granularity change makes.
+  useEffect(() => {
+    const { from, to } = activeRange;
+    const bucketMs = granularityById(granularity).bucketMs;
 
     // Two requests can be in flight after a quick second click, and the first
     // is not guaranteed to answer first. Only the newest is allowed to land,
     // otherwise a stale answer overwrites both the series and the floors the
     // picker reads, and the picker starts describing a window nobody is on.
+    //
+    // The abort below and this sequence number are not the same guard. Aborting
+    // stops the server working on an answer nobody will read; the sequence
+    // number covers the case where the answer was already on the wire when the
+    // abort went out.
     const request = ++latestRequest.current;
 
-    const { from, to } = activeRange;
-    const bucketMs = granularityById(granularity).bucketMs;
+    const held = timelineCache.current.get(from, to, bucketMs);
+    if (held) {
+      applyTimeline(held);
+      setTimelineLoading(false);
+      return;
+    }
 
-    Promise.all([
-      getTimeline(from, to, bucketMs).catch(() => ({
-        resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0, points: [],
-      })),
-      getProcesses(from, to, {
-        limit: 50,
-        sort: processSort,
-        q: processFilter || undefined,
-      }).catch(() => ({ grouped: true, processes: [] })),
-    ]).then(([tl, procs]) => {
-      if (request !== latestRequest.current) return;
+    setTimelineLoading(true);
+    const controller = new AbortController();
 
-      setTimeline(tl.points);
-      setTimelineDetail({
-        bucketMs: tl.bucketMs,
-        bucketRequestMs: tl.bucketRequestMs,
-        minBucketMs: tl.minBucketMs,
-        tierFloorMs: tl.tierFloorMs,
+    getTimeline(from, to, bucketMs, controller.signal)
+      .then(tl => {
+        if (request !== latestRequest.current) return;
+        timelineCache.current.set(from, to, bucketMs, tl);
+        applyTimeline(tl);
+        setTimelineLoading(false);
+      })
+      .catch(err => {
+        // A call-off is not a failure, and neither is an answer that has been
+        // overtaken. Either way a newer request is already running and will set
+        // the screen; clearing the series here would blank a chart that has an
+        // answer, on the strength of a request nobody is waiting for.
+        //
+        // In practice the sequence check alone catches a supersede today, because
+        // React runs the replacement effect before the rejection reaches this
+        // handler. That ordering is React's own and not something to depend on,
+        // and it does not hold on unmount, where the cleanup aborts with no
+        // replacement behind it. Saying what is meant is worth the extra test.
+        if (isAbort(err) || request !== latestRequest.current) return;
+        applyTimeline(EMPTY_TIMELINE);
+        setTimelineLoading(false);
       });
-      setProcesses(procs.processes as ProcessGroupRow[]);
-      setLoading(false);
-    });
-  }, [activeRange.from, activeRange.to, processSort, processFilter, refreshKey, granularity]);
+
+    return () => controller.abort();
+  }, [activeRange.from, activeRange.to, refreshKey, granularity, applyTimeline]);
+
+  // The process list, on its own. Nothing about it depends on how finely the
+  // chart beside it is divided: /api/processes takes no bucket, and its answer
+  // for a window cannot change when one is chosen. It used to be fetched from
+  // the same effect as the timeline, so every click on the detail picker re-ran
+  // the more expensive of the two queries to arrive back at the rows already on
+  // screen.
+  useEffect(() => {
+    setLoading(true);
+    const request = ++latestProcessRequest.current;
+    const { from, to } = activeRange;
+
+    getProcesses(from, to, {
+      limit: 50,
+      sort: processSort,
+      q: processFilter || undefined,
+    })
+      .catch(() => ({ grouped: true, processes: [] }))
+      .then(procs => {
+        if (request !== latestProcessRequest.current) return;
+        setProcesses(procs.processes as ProcessGroupRow[]);
+        setLoading(false);
+      });
+  }, [activeRange.from, activeRange.to, processSort, processFilter, refreshKey]);
 
   useEffect(() => {
     const id = setInterval(refreshData, 90_000);
@@ -470,7 +576,7 @@ export default function App() {
   // just been deleted for exactly as long as it took the range endpoint to
   // answer. Nothing is hidden by waiting, because the dialog is on top of the
   // page anyway, and the screen appears as soon as it is closed.
-  if (!hasData && !loading && !wipeOpen) {
+  if (!hasData && rangeLoaded && !wipeOpen) {
     return (
       <div className="app">
         <header className="app-header" role="banner">
@@ -684,11 +790,24 @@ export default function App() {
                   ) : (
                     <>
                       <p className="granularity-notice" role="status">{granularityNotice}</p>
-                      <Timeline
-                        data={timeline}
-                        onRangeSelect={handleRangeSelect}
-                        thresholds={thresholds}
-                      />
+                      {/*
+                        The chart says when it is fetching, rather than the page
+                        saying it for the chart. A detail change cannot alter the
+                        process table, the summary above it or the heatmap, so
+                        putting the whole screen into a loading state for one
+                        overstated what was out of date. The chart already drawn
+                        stays on screen underneath while the finer one arrives.
+                      */}
+                      <div className={`timeline-frame${timelineLoading ? ' pending' : ''}`}>
+                        {timelineLoading && (
+                          <p className="timeline-pending" role="status">Updating chart...</p>
+                        )}
+                        <Timeline
+                          data={timeline}
+                          onRangeSelect={handleRangeSelect}
+                          thresholds={thresholds}
+                        />
+                      </div>
                     </>
                   )}
                 </section>
