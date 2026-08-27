@@ -55,4 +55,23 @@ public class ReadConnectionPoolingTests
 
         Assert.False(File.Exists(factory.DbPath));
     }
+
+    [Fact]
+    public async Task ADisposedFactory_ActuallyRemovesItsTemporaryDirectory()
+    {
+        // The factory's own cleanup, which is what used to need ClearAllPools (#116).
+        // It swallows a failed delete, so on its own it can leave a directory behind
+        // in silence and nothing notices. This is the assertion the swallow hides.
+        var factory = new SeededTelltaleTestFactory();
+        var dir = Path.GetDirectoryName(factory.DbPath)!;
+
+        using (var client = factory.CreateClient())
+            (await client.GetAsync("/api/range")).EnsureSuccessStatusCode();
+
+        factory.Dispose();
+
+        Assert.False(Directory.Exists(dir),
+            "The factory should be able to delete its own temporary directory without "
+            + "clearing every SQLite pool in the process.");
+    }
 }
