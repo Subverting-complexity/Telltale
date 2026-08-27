@@ -80,27 +80,7 @@ public sealed class RollupWorker : BackgroundService
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        long rawCutoff = now - (long)TimeSpan.FromHours(_config.RawRetentionHours).TotalMilliseconds;
-        _db.RollupSamples(rawCutoff, "sample", "sample_1m", 1, isMachine: false);
-        _db.RollupSamples(rawCutoff, "machine", "machine_1m", 1, isMachine: true);
-        _logger.LogDebug("Tier 1 rollup complete (cutoff: {Cutoff}).", rawCutoff);
-
-        // Never let tier two run ahead of tier one. If it did, it would promote a ten
-        // minute bucket that tier one has not finished filling, and the minutes still
-        // to come would then land in a bucket the target already holds and be
-        // discarded. A configuration whose one minute retention is shorter than the
-        // raw retention would otherwise cause exactly that; Config.Validate now
-        // rejects those, and this clamp keeps the invariant even if one slips through.
-        long tier1Cutoff = Math.Min(
-            now - (long)TimeSpan.FromDays(_config.Rollup1mRetentionDays).TotalMilliseconds,
-            rawCutoff);
-        _db.RollupSamples(tier1Cutoff, "sample_1m", "sample_10m", 10, isMachine: false);
-        _db.RollupSamples(tier1Cutoff, "machine_1m", "machine_10m", 10, isMachine: true);
-        _logger.LogDebug("Tier 2 rollup complete (cutoff: {Cutoff}).", tier1Cutoff);
-
-        long tier2Cutoff = now - (long)TimeSpan.FromDays(_config.Rollup10mRetentionDays).TotalMilliseconds;
-        _db.DeleteOldData("sample_10m", tier2Cutoff);
-        _db.DeleteOldData("machine_10m", tier2Cutoff);
+        PromoteThroughTiers(now);
 
         long healthCutoff = now - (long)TimeSpan.FromDays(_config.HealthRetentionDays).TotalMilliseconds;
         _db.DeleteOldData("collector_health", healthCutoff);
@@ -119,5 +99,55 @@ public sealed class RollupWorker : BackgroundService
 
         _logger.LogInformation("Rollup cycle complete. DB size: {Size:F1} MB.",
             _db.GetDatabaseSizeBytes() / (1024.0 * 1024.0));
+    }
+
+    /// <summary>
+    /// Walks every rung of <see cref="StorageTiers.Ordered"/> in turn, folding what
+    /// has aged out of each one into the tier below it.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here deletes a recorded reading. Ageing gives up detail and only
+    /// detail: a row leaves a tier by being folded into the tier below, and the
+    /// coarsest tier is never promoted out of and never trimmed, so a recording is
+    /// kept indefinitely at a width that costs a few hundred rows a year.
+    ///
+    /// This used to end at the ten minute tier, with anything older than
+    /// <c>rollup10mRetentionDays</c> deleted outright. That deletion is gone. The
+    /// hourly, daily and weekly tiers below it are where that data goes now.
+    /// </remarks>
+    private void PromoteThroughTiers(long now)
+    {
+        // Never let a tier run ahead of the one feeding it. If it did, it would
+        // promote a bucket the tier above has not finished filling, and the rows
+        // still to come would land in a bucket the target already holds and be
+        // discarded. A configuration whose retentions are out of order would cause
+        // exactly that; Config.Validate rejects those, and this running clamp keeps
+        // the invariant even if one slips through.
+        long previousCutoff = long.MaxValue;
+
+        IReadOnlyList<StorageTier> tiers = StorageTiers.Ordered;
+
+        for (int i = 0; i < tiers.Count - 1; i++)
+        {
+            StorageTier source = tiers[i];
+            StorageTier target = tiers[i + 1];
+
+            // Null means the tier keeps what it holds, which is true only of the
+            // coarsest one. That has no tier below it to be promoted into, so it is
+            // never a source here, but the check keeps this honest if a rung is
+            // ever appended below it.
+            long? retentionMs = _config.RetentionMsFor(source);
+            if (retentionMs is null) continue;
+
+            long cutoff = Math.Min(now - retentionMs.Value, previousCutoff);
+
+            _db.RollupSamples(cutoff, source, target, isMachine: false);
+            _db.RollupSamples(cutoff, source, target, isMachine: true);
+
+            _logger.LogDebug("Promoted {Source} into {Target} (cutoff: {Cutoff}).",
+                source.SampleTable, target.SampleTable, cutoff);
+
+            previousCutoff = cutoff;
+        }
     }
 }

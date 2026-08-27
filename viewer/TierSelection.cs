@@ -189,18 +189,47 @@ public static class TierSelection
     /// </summary>
     public const long MaxRawOnlyPoints = 20_000;
 
-    static readonly string[] MachineTiers = { "machine", "machine_1m", "machine_10m" };
-    static readonly string[] SampleTiers = { "sample", "sample_1m", "sample_10m" };
+    // Finest first, which is the order Plan claims coverage in. The collector keeps
+    // its own copy of this ladder in StorageTiers, deliberately: collector and
+    // viewer must not reference each other, and schema.sql stays the only contract
+    // between them. A tier added there has to be added here too, and a database
+    // written by a build that has one this one has not heard of is read without
+    // error, because a tier absent from this list is simply never selected from.
+    static readonly string[] MachineTiers =
+        { "machine", "machine_1m", "machine_10m", "machine_1h", "machine_1d", "machine_1w" };
+
+    static readonly string[] SampleTiers =
+        { "sample", "sample_1m", "sample_10m", "sample_1h", "sample_1d", "sample_1w" };
 
     /// <summary>Tiers finest-resolution first.</summary>
     public static IReadOnlyList<string> TiersFor(bool isMachine) => isMachine ? MachineTiers : SampleTiers;
 
     public static bool IsRawTable(string table) => table is "machine" or "sample";
 
-    public static long NativeIntervalMs(string table) =>
-        table.EndsWith("_10m", StringComparison.Ordinal) ? 600_000L
-        : table.EndsWith("_1m", StringComparison.Ordinal) ? 60_000L
-        : 5_000L;
+    /// <summary>
+    /// How wide one stored row of <paramref name="table"/> is.
+    /// </summary>
+    /// <remarks>
+    /// Matched on the whole suffix rather than as a chain of EndsWith tests, so
+    /// that adding a tier cannot silently fall through to the raw interval the way
+    /// a missing case in an ordered chain would. Anything unrecognised is the raw
+    /// table, which has no suffix.
+    /// </remarks>
+    public static long NativeIntervalMs(string table)
+    {
+        int underscore = table.LastIndexOf('_');
+        string suffix = underscore < 0 ? string.Empty : table[(underscore + 1)..];
+
+        return suffix switch
+        {
+            "1m" => 60_000L,
+            "10m" => 600_000L,
+            "1h" => 3_600_000L,
+            "1d" => 86_400_000L,
+            "1w" => 604_800_000L,
+            _ => 5_000L,
+        };
+    }
 
     /// <summary>
     /// Chooses the tiers for a window. <paramref name="requestedBucketMs"/> is the

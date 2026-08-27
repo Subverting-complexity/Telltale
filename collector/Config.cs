@@ -18,7 +18,19 @@ public sealed partial class TelltaleConfig
     public int MaxDatabaseSizeMb { get; set; } = 500;
     public int RawRetentionHours { get; set; } = 24;
     public int Rollup1mRetentionDays { get; set; } = 7;
-    public int Rollup10mRetentionDays { get; set; } = 365;
+
+    /// <summary>
+    /// Was 365 while ten minutes was the coarsest width recorded and anything older
+    /// was deleted. With hourly, daily and weekly tiers below it there is nowhere
+    /// for a year of ten minute rows to be useful: it was simply the largest table
+    /// in the file, answering nothing an hourly row would not answer more cheaply.
+    /// The validated range is unchanged, so a configuration that names the old
+    /// value still loads.
+    /// </summary>
+    public int Rollup10mRetentionDays { get; set; } = 30;
+
+    public int Rollup1hRetentionDays { get; set; } = 180;
+    public int Rollup1dRetentionDays { get; set; } = 730;
     public int HealthRetentionDays { get; set; } = 7;
     public int RollupIntervalMinutes { get; set; } = 5;
 
@@ -160,6 +172,12 @@ public sealed partial class TelltaleConfig
         if (Rollup10mRetentionDays < 7 || Rollup10mRetentionDays > 730)
             errors.Add("rollup10mRetentionDays must be between 7 and 730.");
 
+        if (Rollup1hRetentionDays < 7 || Rollup1hRetentionDays > 3650)
+            errors.Add("rollup1hRetentionDays must be between 7 and 3650.");
+
+        if (Rollup1dRetentionDays < 30 || Rollup1dRetentionDays > 7300)
+            errors.Add("rollup1dRetentionDays must be between 30 and 7300.");
+
         if (RollupIntervalMinutes < 1 || RollupIntervalMinutes > 60)
             errors.Add("rollupIntervalMinutes must be between 1 and 60.");
 
@@ -177,10 +195,51 @@ public sealed partial class TelltaleConfig
         if (Rollup10mRetentionDays < Rollup1mRetentionDays)
             errors.Add("rollup10mRetentionDays must be at least rollup1mRetentionDays.");
 
+        if (Rollup1hRetentionDays < Rollup10mRetentionDays)
+            errors.Add("rollup1hRetentionDays must be at least rollup10mRetentionDays.");
+
+        if (Rollup1dRetentionDays < Rollup1hRetentionDays)
+            errors.Add("rollup1dRetentionDays must be at least rollup1hRetentionDays.");
+
         if (HealthRetentionDays < 1 || HealthRetentionDays > 90)
             errors.Add("healthRetentionDays must be between 1 and 90.");
 
         return errors;
+    }
+
+    /// <summary>
+    /// How long <paramref name="tier"/> keeps what it holds before it is folded
+    /// into the tier below, or null when it keeps it indefinitely.
+    /// </summary>
+    /// <remarks>
+    /// Null is the coarsest tier's answer and only the coarsest tier's. It is the
+    /// floor of the ladder, so there is nothing below it to be folded into, and a
+    /// weekly row is cheap enough that keeping every one of them is what makes
+    /// "the recording is never deleted" affordable.
+    ///
+    /// The mapping lives here rather than on <see cref="StorageTier"/> because a
+    /// tier is a fact about the shape of the database and a retention is a setting
+    /// the user chooses. Putting the setting on the structure would mean the two
+    /// could not be read or changed apart.
+    /// </remarks>
+    public long? RetentionMsFor(StorageTier tier)
+    {
+        if (tier == StorageTiers.Raw)
+            return (long)TimeSpan.FromHours(RawRetentionHours).TotalMilliseconds;
+
+        if (tier == StorageTiers.OneMinute)
+            return (long)TimeSpan.FromDays(Rollup1mRetentionDays).TotalMilliseconds;
+
+        if (tier == StorageTiers.TenMinute)
+            return (long)TimeSpan.FromDays(Rollup10mRetentionDays).TotalMilliseconds;
+
+        if (tier == StorageTiers.OneHour)
+            return (long)TimeSpan.FromDays(Rollup1hRetentionDays).TotalMilliseconds;
+
+        if (tier == StorageTiers.OneDay)
+            return (long)TimeSpan.FromDays(Rollup1dRetentionDays).TotalMilliseconds;
+
+        return null;
     }
 
     public static bool IsInSyncFolder(string path)

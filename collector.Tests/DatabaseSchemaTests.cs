@@ -21,16 +21,29 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
 
     private static readonly string[] ExpectedTables =
     [
-        "collector_health", "collector_tick_phase", "machine", "machine_10m", "machine_1m",
-        "machine_info", "process_instance", "sample", "sample_10m", "sample_1m",
+        "collector_health", "collector_tick_phase", "machine", "machine_10m", "machine_1d",
+        "machine_1h", "machine_1m", "machine_1w", "machine_info", "process_instance",
+        "sample", "sample_10m", "sample_1d", "sample_1h", "sample_1m", "sample_1w",
         "schema_version",
     ];
 
     private static readonly string[] ExpectedIndexes =
     [
-        "ix_s10m_inst", "ix_s1m_inst", "ix_sample_inst", "ix_sample_ts",
-        "ux_s10m_ts_inst", "ux_s1m_ts_inst",
+        "ix_s10m_inst", "ix_s1d_inst", "ix_s1h_inst", "ix_s1m_inst", "ix_s1w_inst",
+        "ix_sample_inst", "ix_sample_ts",
+        "ux_s10m_ts_inst", "ux_s1d_ts_inst", "ux_s1h_ts_inst", "ux_s1m_ts_inst",
+        "ux_s1w_ts_inst",
     ];
+
+    [Fact]
+    public void EveryTierNamedByTheCollector_ExistsInAFreshDatabase()
+    {
+        // StorageTiers is what the rollup, the orphan cleanup and a wipe all read.
+        // A tier named there but missing from the schema fails at the first cycle
+        // rather than at build time, so it is worth pinning the two together.
+        foreach (string table in StorageTiers.AllTables)
+            Assert.Contains(table, ExpectedTables);
+    }
 
     [Fact]
     public void FreshDatabase_TurnsOnIncrementalAutoVacuum()

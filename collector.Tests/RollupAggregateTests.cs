@@ -39,7 +39,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachine(second, memoryTotalMb: 32_000);
         WriteMachine(second + 30_000, memoryTotalMb: 32_002);
 
-        Db.RollupSamples(second + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(second + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         // Each bucket takes its own last reading. A lookup that resolved once for
         // the whole statement rather than once per bucket would give both buckets
@@ -56,7 +56,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachine(bucket, memoryTotalMb: 16_000);
         WriteMachine(bucket + 30_000, memoryTotalMb: null);
 
-        Db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         // The rule is "the last reading in the bucket", not "the last reading that
         // happened to carry a value", so a NULL final reading stays NULL.
@@ -75,7 +75,7 @@ public class RollupAggregateTests : SqliteTestBase
             WriteMachineRollup(second + (i * MinuteMs), memoryTotalMb: 32_000 + i);
         }
 
-        Db.RollupSamples(second + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(second + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         Assert.Equal(16_009d, Scalar($"SELECT memory_total_mb FROM machine_10m WHERE ts = {first}"));
         Assert.Equal(32_009d, Scalar($"SELECT memory_total_mb FROM machine_10m WHERE ts = {second}"));
@@ -95,7 +95,7 @@ public class RollupAggregateTests : SqliteTestBase
         // sample deliberately, so this row carries a real sample_count and no average.
         WriteMachineRollup(bucket + (2 * MinuteMs), cpuPctAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         // The average of what was actually measured. Counting the unmeasured
         // minute's twelve samples in the divisor alone would give 33.3.
@@ -114,7 +114,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachineRollup(bucket, cpuPctAvg: null, sampleCount: 12);
         WriteMachineRollup(bucket + MinuteMs, cpuPctAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         // Dividing by a zero weight would report a busy machine as idle. NULL says
         // "not measured", which is what happened.
@@ -131,7 +131,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachineRollup(bucket + MinuteMs, cpuPctAvg: 20, netKbpsAvg: 300, sampleCount: 12);
         WriteMachineRollup(bucket + (2 * MinuteMs), cpuPctAvg: null, netKbpsAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         Assert.Equal(600d, (double)Scalar($"SELECT net_kbps_avg FROM machine_10m WHERE ts = {bucket}")!, 6);
     }
@@ -146,7 +146,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteSampleRollup(bucket + MinuteMs, instanceId, cpuPctAvg: 10, sampleCount: 12);
         WriteSampleRollup(bucket + (2 * MinuteMs), instanceId, cpuPctAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "sample_1m", "sample_10m", 10, isMachine: false);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: false);
 
         // A short-lived process routinely produces a minute with nothing measurable,
         // so on the process side this is the common case rather than the rare one.

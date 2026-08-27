@@ -60,7 +60,7 @@ public class DatabaseRetentionTests() : SqliteTestBase("retention")
     {
         long id = Db.GetOrCreateProcessInstance(1, 100, "rolled.exe", null, null, Ts);
         Db.WriteSampleBatch(Ts, [new SampleRow(id, 1.0, 10, 20, 1, 1, 1)]);
-        Db.RollupSamples(Ts + 60_000, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(Ts + 60_000, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
 
         Db.DeleteOrphanedProcessInstances();
 

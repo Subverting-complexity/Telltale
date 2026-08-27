@@ -23,7 +23,7 @@ Data is stored in `%LocalAppData%\Telltale\telltale.db`, and a small log of what
 - **Multiple time scales**: drill down from year to month to week to day
 - **Interactive charts**: fast uPlot-based visualisations with tooltips and zoom
 - **Configurable alerts**: set CPU and memory thresholds in `telltale.json`
-- **Automatic rollup with retention**: raw samples roll up to 1-minute and 10-minute aggregates, with configurable retention periods per tier
+- **Ageing gives up detail, never the recording**: raw samples fold into 1-minute, 10-minute, hourly, daily and finally weekly summaries, each with its own retention period. Weekly is the floor, so a recording is kept indefinitely at a width that costs a few hundred rows a year rather than being deleted when it gets old
 - **500 MB size cap**: the database is automatically kept within a configurable size limit
 - **Delete what you have recorded**: the window can throw away a single day or the whole recording, and recording carries on afterwards
 - **Its own window**: the UI opens in a browser app window with no address bar and no tabs, using your default browser when it is Chromium based
@@ -99,7 +99,9 @@ The collector reads `telltale.json` from its working directory. The default conf
   "maxDatabaseSizeMb": 500,
   "rawRetentionHours": 24,
   "rollup1mRetentionDays": 7,
-  "rollup10mRetentionDays": 365,
+  "rollup10mRetentionDays": 30,
+  "rollup1hRetentionDays": 180,
+  "rollup1dRetentionDays": 730,
   "healthRetentionDays": 7,
   "rollupIntervalMinutes": 5,
   "vacuumOnStartup": false,

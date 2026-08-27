@@ -246,7 +246,7 @@ public sealed class Database : IDisposable
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY
         );
-        INSERT INTO schema_version VALUES (4);
+        INSERT INTO schema_version VALUES (5);
 
         CREATE TABLE process_instance (
             id           INTEGER PRIMARY KEY,
@@ -304,6 +304,52 @@ public sealed class Database : IDisposable
         CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
         CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
 
+        -- The hourly, daily and weekly tiers below carry the same columns as the ten
+        -- minute one, because a promotion between any two of them reads and writes the
+        -- same figures. What changes down the ladder is only how wide a row is.
+        --
+        -- The weekly tier is the floor. Nothing is promoted out of it and nothing is
+        -- deleted from it on a schedule, which is what lets a recording be kept
+        -- indefinitely: a year of weekly rows is a few hundred of them per process.
+        CREATE TABLE sample_1h (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER
+        );
+        CREATE UNIQUE INDEX ux_s1h_ts_inst ON sample_1h(ts, instance_id);
+        CREATE INDEX ix_s1h_inst ON sample_1h(instance_id, ts);
+
+        CREATE TABLE sample_1d (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER
+        );
+        CREATE UNIQUE INDEX ux_s1d_ts_inst ON sample_1d(ts, instance_id);
+        CREATE INDEX ix_s1d_inst ON sample_1d(instance_id, ts);
+
+        CREATE TABLE sample_1w (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER
+        );
+        CREATE UNIQUE INDEX ux_s1w_ts_inst ON sample_1w(ts, instance_id);
+        CREATE INDEX ix_s1w_inst ON sample_1w(instance_id, ts);
+
         -- The machine the recording was made on. One row, rewritten whenever the
         -- collector starts, because a recording describes one machine.
         --
@@ -350,6 +396,59 @@ public sealed class Database : IDisposable
         );
 
         CREATE TABLE machine_10m (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER
+        );
+
+        -- The machine wide side of the hourly, daily and weekly tiers. Same columns as
+        -- machine_10m, for the same reason the per process tiers share theirs.
+        CREATE TABLE machine_1h (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER
+        );
+
+        CREATE TABLE machine_1d (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER
+        );
+
+        CREATE TABLE machine_1w (
             ts                  INTEGER PRIMARY KEY,
             cpu_pct_avg         REAL,
             cpu_pct_max         REAL,
@@ -721,10 +820,29 @@ public sealed class Database : IDisposable
     /// already holds is skipped, so running this repeatedly is safe: a bucket is
     /// never produced twice and never counted twice.
     /// </summary>
-    public void RollupSamples(long cutoffMs, string sourceTable, string targetTable,
-        int bucketMinutes, bool isMachine)
+    /// <param name="source">The tier being promoted out of.</param>
+    /// <param name="target">
+    /// The tier being promoted into, which supplies the bucket width. It must be
+    /// coarser than <paramref name="source"/>: promoting into an equal or finer
+    /// bucket would either rewrite a tier into itself or invent detail that was
+    /// never recorded.
+    /// </param>
+    /// <remarks>
+    /// The two tiers carry which columns their tables hold, rather than that being
+    /// inferred from the table names. It used to be inferred, by testing the source
+    /// name for <c>_1m</c> or <c>_10m</c>, and that only worked for as long as
+    /// there were exactly three tiers. A promotion out of <c>sample_1h</c> matches
+    /// neither string, so it would have been read as a promotion out of raw: no
+    /// exception, just an unweighted average of averages over columns the SQL
+    /// believed meant something else.
+    /// </remarks>
+    public void RollupSamples(long cutoffMs, StorageTier source, StorageTier target, bool isMachine)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(bucketMinutes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(target.BucketMinutes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(target.BucketMinutes, source.BucketMinutes);
+
+        string sourceTable = isMachine ? source.MachineTable : source.SampleTable;
+        string targetTable = isMachine ? target.MachineTable : target.SampleTable;
 
         lock (_gate)
         {
@@ -734,7 +852,7 @@ public sealed class Database : IDisposable
             using var cmd = _conn.CreateCommand();
             cmd.Transaction = tx;
 
-            long bucketMs = bucketMinutes * 60_000L;
+            long bucketMs = target.BucketMinutes * 60_000L;
 
             // Only ever promote whole buckets. The caller's cutoff is a wall clock
             // instant and rarely lands on a bucket boundary, so without this the bucket
@@ -743,7 +861,7 @@ public sealed class Database : IDisposable
             // the next cycle under the same bucket timestamp.
             long alignedCutoff = FloorToBucket(cutoffMs, bucketMs);
 
-            bool isReRollup = sourceTable.Contains("_1m") || sourceTable.Contains("_10m");
+            bool isReRollup = source.Shape == TierShape.Summarised;
 
             // The machine tables carry memory_total_mb, a value that describes the
             // machine rather than the interval, so it is taken from the last row in
@@ -960,12 +1078,16 @@ public sealed class Database : IDisposable
     {
         using var cmd = _conn.CreateCommand();
         cmd.Transaction = transaction;
-        cmd.CommandText = """
-            DELETE FROM process_instance
-            WHERE id NOT IN (SELECT DISTINCT instance_id FROM sample)
-              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_1m)
-              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_10m)
-            """;
+
+        // Built from the tier list rather than written out, so a tier added to
+        // StorageTiers is covered here without anyone remembering to come and add
+        // it. Missing one would delete process_instance rows that tier still
+        // refers to, and nothing would report it.
+        string notReferenced = string.Join(
+            "\n  AND ",
+            StorageTiers.SampleTables.Select(t => $"id NOT IN (SELECT DISTINCT instance_id FROM {t})"));
+
+        cmd.CommandText = $"DELETE FROM process_instance\nWHERE {notReferenced}";
         return cmd.ExecuteNonQuery();
     }
 
@@ -983,14 +1105,13 @@ public sealed class Database : IDisposable
     /// Emptying them would leave the viewer unable to convert a CPU reading and the
     /// next open unable to tell what shape the database is in.
     /// </remarks>
+    // The recorded tiers come from StorageTiers rather than being listed here, for
+    // the same reason the orphan cleanup builds its statement from that list: a
+    // tier missing from this one would survive a wipe, which is the one thing a
+    // wipe promises not to let happen.
     private static readonly string[] CaptureTables =
     [
-        "sample",
-        "sample_1m",
-        "sample_10m",
-        "machine",
-        "machine_1m",
-        "machine_10m",
+        .. StorageTiers.AllTables,
         "collector_health",
         "collector_tick_phase",
     ];

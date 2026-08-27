@@ -41,8 +41,8 @@ public class DatabaseConcurrencyTests() : SqliteTestBase("concurrency")
         {
             for (int i = 0; i < 20; i++)
             {
-                Db.RollupSamples(Ts + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
-                Db.RollupSamples(Ts + (2 * MinuteMs), "machine", "machine_1m", 1, isMachine: true);
+                Db.RollupSamples(Ts + (2 * MinuteMs), StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
+                Db.RollupSamples(Ts + (2 * MinuteMs), StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
                 Db.DeleteOrphanedProcessInstances();
                 Db.GetDatabaseSizeBytes();
             }
