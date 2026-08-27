@@ -56,6 +56,23 @@ finer selection, to run without the token, to write more than that one line or t
 put the range in it, or to reach the file from a second writable connection,
 needs a reason written down here.
 
+Deleting one day deletes every row holding any part of it, including a rollup
+bucket that only overlaps it, and the bucket goes whole. That over-deletes, and
+it is the deliberate half of the trade. A bucket is stamped with the moment it
+starts, and once a day has aged past `rollup10mRetentionDays` the tiers holding
+it are one hour, one day and one week wide and aligned to the epoch, so to UTC
+rather than to anyone's local day. Deleting only the buckets that begin inside
+the range would leave the wiped day alive inside the weekly average that started
+the day before, and that is the same promise the log line above is careful not
+to break. The promise wins: wiping a day old enough to have reached the weekly
+tier can take the week around it, and losing recorded history the person did not
+ask to lose is the better failure of the two. It also means a wipe of a day with
+nothing recorded in it can still delete a coarse bucket that spans it. Changing
+which way that falls, or trying to split a bucket rather than take it whole,
+needs a reason written down here. A bucket cannot honestly be split: the
+readings behind it are already gone, so there is nothing left to work a smaller
+figure out from.
+
 Ageing never deletes a recorded reading. A reading leaves a tier only by being
 folded into the tier below it, down a ladder that ends at weekly buckets, and
 nothing is promoted out of the weekly tier or trimmed from it on a schedule. When

@@ -20,6 +20,12 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
     private const long Day2 = Day0 + (2 * DayMs);
 
     /// <summary>
+    /// Far enough past <see cref="Day0"/> that no tier's bucket starting there can
+    /// still be holding any of it, the widest being a week.
+    /// </summary>
+    private const long FarLaterDay = Day0 + (10 * DayMs);
+
+    /// <summary>
     /// The tables a wipe is expected to empty, read out of the database rather
     /// than copied from <see cref="Database"/>.
     /// </summary>
@@ -139,9 +145,58 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         foreach (var table in CaptureTables())
         {
             Assert.Equal(0, Count(table, $"ts >= {Day1} AND ts < {Day1 + DayMs}"));
-            Assert.Equal(1, Count(table, $"ts < {Day1}"));
             Assert.Equal(1, Count(table, $"ts >= {Day1 + DayMs}"));
+
+            // The day before is only safe while its row is too narrow to reach into
+            // the day being deleted. The weekly tier's is not: a week starting on
+            // the previous day covers this one, so it holds part of what was asked
+            // to be rid of and goes with it. That is the cost of the promise, and
+            // asserting it here rather than exempting the tier is what keeps the
+            // cost visible.
+            long width = BucketMsFor(table);
+            bool reachesIn = Day0 + width > Day1;
+            Assert.Equal(reachesIn ? 0 : 1, Count(table, $"ts < {Day1}"));
         }
+    }
+
+    [Fact]
+    public void WipeRange_RemovesACoarseBucketThatStartedEarlierButRunsIntoTheRange()
+    {
+        // Each pair is a bucket that reaches into the wiped day and one of the same
+        // width that stops exactly where the day starts, so the boundary is pinned
+        // in both directions rather than only the easy one.
+        (string Table, long Ts, bool Goes)[] buckets =
+        [
+            ("machine_1h", Day1 - (HourMs / 2), true),
+            ("machine_1h", Day1 - HourMs, false),
+            ("machine_1d", Day1 - (DayMs / 2), true),
+            ("machine_1d", Day1 - DayMs, false),
+            ("machine_1w", Day1 - DayMs, true),
+            ("machine_1w", Day1 - (7 * DayMs), false),
+        ];
+
+        foreach (var (table, ts, _) in buckets)
+            InsertMachineRollup(table, ts);
+
+        Db.WipeRange(Day1, Day1 + DayMs - 1);
+
+        foreach (var (table, ts, goes) in buckets)
+        {
+            Assert.Equal(goes ? 0 : 1, Count(table, $"ts = {ts}"));
+        }
+    }
+
+    [Fact]
+    public void WipeRange_RemovesACoarseBucketThatStartsInsideTheRangeAndRunsPastIt()
+    {
+        // The other half of taking whole buckets. This one was already true before
+        // the overlap rule and stays true under it, so it is pinned rather than
+        // assumed: a week beginning on the wiped day takes the six days after it.
+        InsertMachineRollup("machine_1w", Day1 + HourMs);
+
+        Db.WipeRange(Day1, Day1 + DayMs - 1);
+
+        Assert.Equal(0, Count("machine_1w"));
     }
 
     [Fact]
@@ -192,7 +247,10 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
     {
         SeedDay(Day0);
 
-        var result = Db.WipeRange(Day2, Day2 + DayMs - 1);
+        // More than a week after what was seeded, so not even the weekly bucket
+        // reaches it. Any nearer and this would be deleting the coarse rows that
+        // overlap the range, which is a different case and has its own test.
+        var result = Db.WipeRange(FarLaterDay, FarLaterDay + DayMs - 1);
 
         Assert.Equal(0, result.RowsDeleted);
         Assert.Equal(0, result.BytesFreed);
@@ -320,6 +378,25 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         {
             Execute("DROP TRIGGER refuse_machine_10m_delete");
         }
+    }
+
+    /// <summary>
+    /// How wide one row of <paramref name="table"/> is, which is what decides how
+    /// far before a range a row can start and still hold part of it.
+    /// </summary>
+    /// <remarks>
+    /// Read off the tier ladder rather than written out, so a rung added there is
+    /// covered here without anyone remembering to. A table the ladder does not name
+    /// holds moments rather than buckets, so it is a millisecond wide.
+    /// </remarks>
+    private static long BucketMsFor(string table)
+    {
+        foreach (var (name, bucketMs) in StorageTiers.AllTablesWithWidth)
+        {
+            if (name == table) return bucketMs;
+        }
+
+        return 1;
     }
 
     /// <summary>The write ahead log SQLite keeps alongside the database.</summary>

@@ -1163,11 +1163,16 @@ public sealed class Database : IDisposable
     // the same reason the orphan cleanup builds its statement from that list: a
     // tier missing from this one would survive a wipe, which is the one thing a
     // wipe promises not to let happen.
-    private static readonly string[] CaptureTables =
+    //
+    // Each table brings the width of one of its rows with it, which is what a wipe
+    // of a range needs to tell whether a row that starts before the range is still
+    // holding part of it. The two health tables are a millisecond wide because
+    // their rows are moments rather than buckets: they record what one tick cost.
+    private static readonly (string Table, long BucketMs)[] CaptureTables =
     [
-        .. StorageTiers.AllTables,
-        "collector_health",
-        "collector_tick_phase",
+        .. StorageTiers.AllTablesWithWidth,
+        ("collector_health", 1L),
+        ("collector_tick_phase", 1L),
     ];
 
     /// <summary>
@@ -1187,21 +1192,22 @@ public sealed class Database : IDisposable
     /// <paramref name="toMs"/>, both ends included, and leaves the rest alone.
     /// </summary>
     /// <remarks>
-    /// A rollup row is deleted when its own timestamp falls inside the range. A
-    /// bucket is stamped with the moment it starts, so it goes or stays whole
-    /// rather than being half emptied: one that begins before the range and runs
-    /// into it is kept, and one that begins inside the range and runs past its end
-    /// is deleted, taking whatever of the next day it covers with it.
+    /// Every row holding any part of the range is deleted, including a rollup bucket
+    /// that merely overlaps it. A bucket goes or stays whole rather than being half
+    /// emptied, because the readings behind it are long gone and there is nothing
+    /// left to recompute a smaller figure from.
     ///
-    /// How much that comes to depends on which tier still holds the day. Ten
-    /// minutes at most while the ten minute tier does, and that lands on a calendar
-    /// day boundary except in the handful of timezones whose offset is not a whole
-    /// ten minutes. Past rollup10mRetentionDays the hourly, daily and weekly tiers
-    /// hold it instead, and their buckets are aligned to the epoch, so to UTC rather
-    /// than to the local day. Both halves of the rule then bite: a weekly bucket
-    /// beginning inside the range takes six other days with it, and a weekly bucket
-    /// beginning before the range keeps the wiped day's readings inside a row that
-    /// survives. Which way that should be resolved is #170.
+    /// That over-deletes on purpose, and it is the deliberate half of the trade. A
+    /// bucket is stamped with the moment it starts, and past rollup10mRetentionDays
+    /// the tiers holding a day are one hour, one day and one week wide and aligned
+    /// to the epoch, so to UTC rather than to anyone's local day. Deleting only the
+    /// buckets that begin inside the range would leave a wiped day alive inside the
+    /// weekly average that started the day before. One of the two reasons to delete
+    /// a day is that the day was private, which is why the log line about a wipe
+    /// deliberately does not record the range, and a day surviving inside a coarser
+    /// row is a weaker promise than the one already written down. So the promise
+    /// wins, and the cost is that wiping a day old enough to have reached the weekly
+    /// tier can take the week around it.
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// The range ends before it starts, which is a caller error rather than an
@@ -1246,16 +1252,23 @@ public sealed class Database : IDisposable
 
             using (var tx = _conn.BeginTransaction())
             {
-                string where = from is null ? "" : " WHERE ts >= @from AND ts <= @to";
+                // A row stamped ts covers ts up to but not including ts + its width,
+                // so it holds part of the range whenever it starts at or before the
+                // end and finishes after the start. Rearranged into something an
+                // index can use, that is ts > from - width AND ts <= to. A row a
+                // millisecond wide reduces to the plain "is this moment inside the
+                // range" the raw and health tables have always used, so one
+                // expression covers every table and each supplies its own width.
+                string where = from is null ? "" : " WHERE ts > @from AND ts <= @to";
 
-                foreach (var table in CaptureTables)
+                foreach (var (table, bucketMs) in CaptureTables)
                 {
                     using var cmd = _conn.CreateCommand();
                     cmd.Transaction = tx;
                     cmd.CommandText = $"DELETE FROM {table}{where}";
                     if (from is not null)
                     {
-                        cmd.Parameters.AddWithValue("@from", from.Value);
+                        cmd.Parameters.AddWithValue("@from", from.Value - bucketMs);
                         cmd.Parameters.AddWithValue("@to", to!.Value);
                     }
 
