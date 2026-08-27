@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getAlerts, getBaselines } from './api';
 import type { AlertProcess, BaselineData } from './types';
 import { formatSize, formatIo, formatDateTime, formatCpuOfAllCores, CPU_OF_ALL_CORES } from './utils';
@@ -22,6 +22,29 @@ const PERIODS = [
 type AlertTab = 'threshold' | 'anomalies';
 type AlertSortCol = 'name' | 'avgCpu' | 'peakCpu' | 'peakMem' | 'totalIo' | 'count';
 type SortDir = 'asc' | 'desc';
+
+/**
+ * How long a cached period stays good for.
+ *
+ * The recorder is still sampling, so "the last 1 day" genuinely changes as time
+ * passes and a cached answer cannot be right forever. Ninety seconds is the
+ * interval the rest of the dashboard refreshes on, so the Alerts tab is never
+ * staler than the page around it, and the rapid back and forth between periods
+ * that this cache exists for happens far inside it.
+ *
+ * Ages are measured with performance.now() rather than Date.now(). This window
+ * can be left open for days, and a clock correction that steps backwards makes
+ * a wall clock age negative, which reads as "younger than the limit" and would
+ * pin an entry in the cache until the clock caught back up. performance.now()
+ * only ever moves forward.
+ */
+const CACHE_TTL_MS = 90_000;
+
+interface CachedAlerts {
+  rows: AlertProcess[];
+  /** performance.now() at the moment the answer landed. */
+  fetchedAt: number;
+}
 
 interface AnomalyInfo {
   name: string;
@@ -77,20 +100,130 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
   const [activeTab, setActiveTab] = useState<AlertTab>('threshold');
   const [sortCol, setSortCol] = useState<AlertSortCol>('avgCpu');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  // Tracked separately from `loading`, which now clears as soon as the alerts
+  // land. Without it, the moment between the alerts arriving and the baselines
+  // arriving looks exactly like a finished answer of "no anomalies", and the
+  // Anomalies tab says there is not enough baseline data when the request for
+  // it is still in flight.
+  const [baselinesPending, setBaselinesPending] = useState(false);
+
+  // Everything below lives for as long as this tab is mounted and no longer.
+  // Nothing here is written to storage: the point is to stop asking for the
+  // same answer twice in one sitting, not to remember it between sittings.
+  //
+  // The two baseline structures are separate on purpose. The map holds the
+  // baselines that came back; the set holds every name that has been *asked*
+  // about. A process with under 24 hours of rollup data returns no row at all,
+  // so without recording that it was asked, it would be requested again on
+  // every single period change for as long as the window stayed open.
+  const alertsByPeriod = useRef(new Map<number, CachedAlerts>());
+  const baselinesByName = useRef(new Map<string, BaselineData>());
+  const baselinesAsked = useRef(new Set<string>());
+
+  /** Sequence number of the most recent alerts request, so stale ones can be dropped. */
+  const latestRequest = useRef(0);
+  const mounted = useRef(true);
+
+  // How many baseline requests are outstanding, rather than whether any are.
+  // Two can overlap: a period change while one is in flight asks about the
+  // names only the new period reports. With a plain flag, whichever settled
+  // first cleared it, and the Anomalies tab went back to saying there was not
+  // enough baseline data while the other request was still deciding that.
+  const baselinesInFlight = useRef(0);
+
+  // Reassigned on mount rather than only cleared on unmount, so a remount
+  // reuses the same ref rather than inheriting a false left by the last one.
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   useEffect(() => {
+    const request = ++latestRequest.current;
+
+    /**
+     * Fetches baselines for the names nobody has asked about yet.
+     *
+     * A baseline describes a fixed seven day window that has nothing to do with
+     * the period on screen, so a name resolved once stays resolved and later
+     * period changes ask for nothing at all.
+     */
+    function ensureBaselines(rows: AlertProcess[]) {
+      const missing = rows
+        .map(a => a.name)
+        .filter(name => !baselinesAsked.current.has(name));
+      if (missing.length === 0) return;
+
+      // Marked before the request goes out rather than after it lands, so a
+      // second period change arriving mid-flight does not ask for the same
+      // names over again.
+      //
+      // Nothing here chunks the list, because nothing can overflow the fifty
+      // name cap on /api/baselines: these names come from /api/alerts, which
+      // is itself LIMIT 50. If that limit is ever raised, the names past the
+      // fiftieth would be marked asked here, dropped by the server, and never
+      // requested again for the life of the mount.
+      for (const name of missing) baselinesAsked.current.add(name);
+      baselinesInFlight.current += 1;
+      setBaselinesPending(true);
+
+      getBaselines(missing)
+        .then(res => {
+          if (res.baselines.length === 0) return;
+          for (const b of res.baselines) baselinesByName.current.set(b.name, b);
+          // Deliberately not gated on the sequence number, unlike the alerts
+          // below. A baseline covers the same seven days whichever period asked
+          // for it, so a late answer is still the right answer, and dropping it
+          // would throw away data that is not going to be requested again.
+          //
+          // Skipped entirely when the answer added nothing, because a fresh
+          // array here is a new reference and would rebuild the anomaly list
+          // for no change.
+          if (mounted.current) setBaselines([...baselinesByName.current.values()]);
+        })
+        .catch(() => {
+          // A failed request is not a settled answer of "this process has no
+          // baseline", so let a later switch try these names again.
+          for (const name of missing) baselinesAsked.current.delete(name);
+        })
+        .finally(() => {
+          baselinesInFlight.current -= 1;
+          // Only the last one out turns the light off.
+          if (mounted.current && baselinesInFlight.current === 0) setBaselinesPending(false);
+        });
+    }
+
+    const cached = alertsByPeriod.current.get(selectedDays);
+    if (cached && performance.now() - cached.fetchedAt < CACHE_TTL_MS) {
+      setAlerts(cached.rows);
+      setLoading(false);
+      ensureBaselines(cached.rows);
+      return;
+    }
+
     setLoading(true);
     getAlerts(selectedDays)
       .then(res => {
         const filtered = res.alerts.filter(a => a.name.toLowerCase() !== 'idle');
+        // Cached whether or not this request is still the current one. The rows
+        // are a true answer for the period that asked for them either way, and
+        // only the state update below has to care which period is on screen.
+        alertsByPeriod.current.set(selectedDays, { rows: filtered, fetchedAt: performance.now() });
+
+        // Two requests can be in flight after a quick second click, and the
+        // first is not guaranteed to answer first. Only the newest is allowed
+        // to land, otherwise the table shows one period's rows underneath
+        // another period's highlighted button.
+        if (request !== latestRequest.current) return;
         setAlerts(filtered);
-        if (filtered.length > 0) {
-          const names = filtered.map(a => a.name);
-          return getBaselines(names).then(b => setBaselines(b.baselines)).catch(() => {});
-        }
+        setLoading(false);
+        ensureBaselines(filtered);
       })
-      .catch(() => setAlerts([]))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (request !== latestRequest.current) return;
+        setAlerts([]);
+        setLoading(false);
+      });
   }, [selectedDays]);
 
   function toggleSort(col: AlertSortCol) {
@@ -107,20 +240,34 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
     return sortDir === 'desc' ? ' ▼' : ' ▲';
   }
 
-  const sortedAlerts = [...alerts].sort((a, b) => {
+  // The three derivations below are memoised on what they actually read.
+  // Switching between the Thresholds and Anomalies tabs changes neither the
+  // alerts nor the baselines, and both tabs are drawn from data already in
+  // hand, so that switch should cost a render and nothing else. Sorting is the
+  // same story for the anomaly list, which does not depend on the sort at all.
+  const sortedAlerts = useMemo(() => {
     const dir = sortDir === 'desc' ? -1 : 1;
-    switch (sortCol) {
-      case 'name': return a.name.localeCompare(b.name) * dir;
-      case 'avgCpu': return (a.avgCpuPct - b.avgCpuPct) * dir;
-      case 'peakCpu': return (a.peakCpuPct - b.peakCpuPct) * dir;
-      case 'peakMem': return (a.peakMemoryMb - b.peakMemoryMb) * dir;
-      case 'totalIo': return (a.totalIoKb - b.totalIoKb) * dir;
-      case 'count': return (a.instanceCount - b.instanceCount) * dir;
-      default: return 0;
-    }
-  });
+    return [...alerts].sort((a, b) => {
+      switch (sortCol) {
+        case 'name': return a.name.localeCompare(b.name) * dir;
+        case 'avgCpu': return (a.avgCpuPct - b.avgCpuPct) * dir;
+        case 'peakCpu': return (a.peakCpuPct - b.peakCpuPct) * dir;
+        case 'peakMem': return (a.peakMemoryMb - b.peakMemoryMb) * dir;
+        case 'totalIo': return (a.totalIoKb - b.totalIoKb) * dir;
+        case 'count': return (a.instanceCount - b.instanceCount) * dir;
+        default: return 0;
+      }
+    });
+  }, [alerts, sortCol, sortDir]);
 
-  const anomalies = detectAnomalies(alerts, baselines);
+  const anomalies = useMemo(() => detectAnomalies(alerts, baselines), [alerts, baselines]);
+
+  // The threshold table asks this once per row. Scanning the anomaly list for
+  // each one made the lookup grow with the product of the two lists.
+  const anomalousNames = useMemo(
+    () => new Set(anomalies.map(a => a.name)),
+    [anomalies],
+  );
 
   return (
     <section className="alerts-section" aria-label="Problematic processes">
@@ -210,7 +357,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
               </thead>
               <tbody>
                 {sortedAlerts.map(alert => {
-                  const hasAnomaly = anomalies.some(a => a.name === alert.name);
+                  const hasAnomaly = anomalousNames.has(alert.name);
                   // Kept as a number for the threshold classes below, which
                   // compare against a share of the whole machine. The figures
                   // shown go through formatCpuOfAllCores so there is one
@@ -268,9 +415,17 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
         )
       ) : (
         anomalies.length === 0 ? (
-          <p className="no-data-msg">
-            No anomalies detected. Anomaly detection requires at least 24 hours of baseline data.
-          </p>
+          // The alerts and the baselines land separately, so an empty anomaly
+          // list means "none found" only once the baselines are actually in.
+          // Saying there is not enough baseline data while still waiting for it
+          // states as settled something that is not yet known.
+          baselinesPending ? (
+            <p className="loading">Loading baselines...</p>
+          ) : (
+            <p className="no-data-msg">
+              No anomalies detected. Anomaly detection requires at least 24 hours of baseline data.
+            </p>
+          )
         ) : (
           <div className="alerts-table-wrapper" role="region" aria-label="Anomalies table" tabIndex={0}>
             <table className="alerts-table">
