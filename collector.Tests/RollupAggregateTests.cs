@@ -236,6 +236,42 @@ public class RollupAggregateTests : SqliteTestBase
         Assert.Null(Scalar("SELECT cpu_pct_sustained_max FROM machine_1d") as double?);
     }
 
+    [Fact]
+    public void PromotingProcessRowsIntoTheHourlyTier_TakesTheSustainedMaxFromTheTenMinuteAverages()
+    {
+        // The per process promotion builds its own statement rather than sharing the
+        // machine one, so the sustained column has to be pinned on both sides. A
+        // projection missing here would leave every process row null for good: the
+        // figure cannot be worked back from the average and the maximum later.
+        long hour = Database.FloorToBucket(BucketStart, HourMs);
+        long instanceId = Db.GetOrCreateProcessInstance(9876, 100, "test.exe", null, null, hour);
+
+        WriteTenMinuteSampleRollup(hour, instanceId, cpuAvg: 20, cpuMax: 99);
+        WriteTenMinuteSampleRollup(hour + TenMinutesMs, instanceId, cpuAvg: 80, cpuMax: 85);
+
+        Db.RollupSamples(hour + HourMs, StorageTiers.TenMinute, StorageTiers.OneHour, isMachine: false);
+
+        Assert.Equal(99, Real("SELECT cpu_pct_max FROM sample_1h"));
+        Assert.Equal(80, Real("SELECT cpu_pct_sustained_max FROM sample_1h"));
+    }
+
+    [Fact]
+    public void PromotingProcessRowsBetweenCoarseTiers_CarriesTheSustainedMaxThroughAsAMaximum()
+    {
+        long day = Database.FloorToBucket(BucketStart, DayMs);
+        long instanceId = Db.GetOrCreateProcessInstance(9877, 100, "test.exe", null, null, day);
+
+        WriteHourlySampleRollup(day, instanceId, sustainedMax: 30);
+        WriteHourlySampleRollup(day + HourMs, instanceId, sustainedMax: 75);
+        WriteHourlySampleRollup(day + (2 * HourMs), instanceId, sustainedMax: null);
+
+        Db.RollupSamples(day + DayMs, StorageTiers.OneHour, StorageTiers.OneDay, isMachine: false);
+
+        // MAX ignores the null rather than being poisoned by it, so an hour recorded
+        // before the column existed does not erase the hours that carry it.
+        Assert.Equal(75, Real("SELECT cpu_pct_sustained_max FROM sample_1d"));
+    }
+
     private const long HourMs = 3_600_000L;
     private const long DayMs = 24 * HourMs;
 
@@ -247,6 +283,22 @@ public class RollupAggregateTests : SqliteTestBase
         VALUES ({ts}, {Sql(cpuAvg)}, {Sql(cpuMax)}, 8000, 16000, 12000, 0, 1.0, 2.0,
                 30.0, 40.0, 1000, NULL, 120)
         """);
+
+    private void WriteTenMinuteSampleRollup(long ts, long instanceId, double cpuAvg, double cpuMax) =>
+        Execute($"""
+            INSERT INTO sample_10m
+                (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                 working_set_mb_max, io_kb_total, sample_count)
+            VALUES ({ts}, {instanceId}, {Sql(cpuAvg)}, {Sql(cpuMax)}, 100, 200, 50, 120)
+            """);
+
+    private void WriteHourlySampleRollup(long ts, long instanceId, double? sustainedMax) =>
+        Execute($"""
+            INSERT INTO sample_1h
+                (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                 working_set_mb_max, io_kb_total, sample_count, cpu_pct_sustained_max)
+            VALUES ({ts}, {instanceId}, 50.0, 60.0, 100, 200, 50, 720, {Sql(sustainedMax)})
+            """);
 
     private void WriteHourlyRollup(long ts, double? sustainedMax) => Execute($"""
         INSERT INTO machine_1h

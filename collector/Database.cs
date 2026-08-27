@@ -1191,9 +1191,17 @@ public sealed class Database : IDisposable
     /// bucket is stamped with the moment it starts, so it goes or stays whole
     /// rather than being half emptied: one that begins before the range and runs
     /// into it is kept, and one that begins inside the range and runs past its end
-    /// is deleted, taking up to ten minutes of the next day with it. Neither
-    /// happens on a calendar day boundary unless the local offset is not a whole
-    /// ten minutes, which is a handful of timezones.
+    /// is deleted, taking whatever of the next day it covers with it.
+    ///
+    /// How much that comes to depends on which tier still holds the day. Ten
+    /// minutes at most while the ten minute tier does, and that lands on a calendar
+    /// day boundary except in the handful of timezones whose offset is not a whole
+    /// ten minutes. Past rollup10mRetentionDays the hourly, daily and weekly tiers
+    /// hold it instead, and their buckets are aligned to the epoch, so to UTC rather
+    /// than to the local day. Both halves of the rule then bite: a weekly bucket
+    /// beginning inside the range takes six other days with it, and a weekly bucket
+    /// beginning before the range keeps the wiped day's readings inside a row that
+    /// survives. Which way that should be resolved is #170.
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// The range ends before it starts, which is a caller error rather than an

@@ -24,8 +24,13 @@ public sealed partial class TelltaleConfig
     /// was deleted. With hourly, daily and weekly tiers below it there is nowhere
     /// for a year of ten minute rows to be useful: it was simply the largest table
     /// in the file, answering nothing an hourly row would not answer more cheaply.
-    /// The validated range is unchanged, so a configuration that names the old
-    /// value still loads.
+    /// The validated range is unchanged, so 365 is still an accepted value for this
+    /// setting on its own. It is not still an accepted configuration: a tier may not
+    /// hold its rows for less time than the tier feeding it, rollup1hRetentionDays
+    /// defaults to 180, and a telltale.json that names the old value and says nothing
+    /// about the hourly tier therefore fails validation and stops the application
+    /// starting. Raising rollup1hRetentionDays to at least the value named there is
+    /// the way out. Whether refusing to start is the right answer at all is #171.
     /// </summary>
     public int Rollup10mRetentionDays { get; set; } = 30;
 
