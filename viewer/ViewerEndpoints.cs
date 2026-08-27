@@ -182,6 +182,11 @@ public static class ViewerEndpoints
                     gpuBusyPct = p.GpuBusyPct,
                 });
 
+                // Read here rather than folded into the tier plan: it describes the
+                // capture as a whole rather than this window, and the window needs
+                // it whichever tiers happened to serve the request.
+                bool summarisedFurther = TierPressureReader.Read(conn);
+
                 return Results.Json(new
                 {
                     resolution = result.Resolution,
@@ -189,6 +194,7 @@ public static class ViewerEndpoints
                     bucketRequestMs = result.BucketRequestMs,
                     minBucketMs = result.MinBucketMs,
                     tierFloorMs = result.TierFloorMs,
+                    summarisedFurther,
                     points,
                 }, jsonOptions);
             }
@@ -897,6 +903,7 @@ public static class ViewerEndpoints
         bucketRequestMs = requestedBucket,
         minBucketMs = 0L,
         tierFloorMs = 0L,
+        summarisedFurther = false,
         points = Array.Empty<object>(),
     };
 

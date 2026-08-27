@@ -374,7 +374,8 @@ export default function App() {
 
     Promise.all([
       getTimeline(from, to, bucketMs).catch(() => ({
-        resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0, points: [],
+        resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0,
+        summarisedFurther: false, points: [],
       })),
       getProcesses(from, to, {
         limit: 50,
@@ -390,6 +391,7 @@ export default function App() {
         bucketRequestMs: tl.bucketRequestMs,
         minBucketMs: tl.minBucketMs,
         tierFloorMs: tl.tierFloorMs,
+        summarisedFurther: tl.summarisedFurther,
       });
       setProcesses(procs.processes as ProcessGroupRow[]);
       setLoading(false);
