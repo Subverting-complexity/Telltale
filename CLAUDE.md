@@ -56,6 +56,22 @@ finer selection, to run without the token, to write more than that one line or t
 put the range in it, or to reach the file from a second writable connection,
 needs a reason written down here.
 
+Ageing never deletes a recorded reading. A reading leaves a tier only by being
+folded into the tier below it, down a ladder that ends at weekly buckets, and
+nothing is promoted out of the weekly tier or trimmed from it on a schedule. When
+the capture outgrows `maxDatabaseSizeMb` the response is the same: a tier's hold
+on its data is pulled inward and the rest is summarised into the tier below,
+never dropped. If every tier is already as coarse as it can get, the collector
+says so in the log and lets the file exceed the limit rather than start deleting.
+Retention now only deletes from `collector_health` and `collector_tick_phase`,
+which record what the recorder cost rather than what it observed. Adding a delete
+to any ageing or size path, including a last resort one, needs a reason written
+down here.
+
+That size pressure is recorded in `tier_pressure` and only ever tightens, because
+coarsening cannot be undone: the finer rows have already been folded away. A wipe
+of everything clears it, since nothing coarsened is left for it to protect.
+
 Command lines are not stored either unless the user turns on
 `recordCommandLines`, which is off by default. When it is on, the collector
 masks anything matching a fixed set of credential patterns before writing the
