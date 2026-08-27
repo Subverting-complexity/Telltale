@@ -89,6 +89,16 @@ public class TimelineMissingTableTests : IDisposable
 
         Assert.Empty(result.Points);
         Assert.Equal("machine", result.Resolution);
+
+        // This is the assertion that separates the two paths. An empty series and
+        // a resolution of "machine" come back either way, so on their own they
+        // would pass just as well if a present-but-empty table were short-circuited
+        // as a missing one. The tier floor does not: the short circuit reports 0,
+        // which the picker reads as "no floor known" and offers every option on,
+        // while a real plan over the raw tier reports the 5 second interval it
+        // stores. Asking whether coverage exists instead of whether the table
+        // exists would show up here and nowhere else.
+        Assert.Equal(5_000, result.TierFloorMs);
     }
 
     [Fact]
