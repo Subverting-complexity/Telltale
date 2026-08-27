@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { wipeCapture, WipeError } from './api';
+import { wipeCapture, WipeError, getTimeline, isAbort } from './api';
 
 const originalSearch = window.location.search;
 
@@ -61,5 +61,64 @@ describe('wipeCapture', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<html>', { status: 500 }));
 
     await expect(wipeCapture({ scope: 'all' })).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe('getTimeline', () => {
+  it('carries the abort signal through to the request', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ points: [] }), { status: 200 }));
+    const controller = new AbortController();
+
+    await getTimeline(10, 20, 60_000, controller.signal);
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(String(url)).toBe('/api/timeline?from=10&to=20&bucket=60000');
+    expect(init?.signal).toBe(controller.signal);
+  });
+
+  it('asks for no particular width when none is given', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ points: [] }), { status: 200 }));
+
+    await getTimeline(10, 20);
+
+    expect(String(fetchSpy.mock.calls[0][0])).toBe('/api/timeline?from=10&to=20');
+    // No signal means no `init` at all, so a caller that never aborts is
+    // unchanged by abort support existing.
+    expect(fetchSpy.mock.calls[0][1]).toBeUndefined();
+  });
+});
+
+describe('isAbort', () => {
+  it('recognises the rejection a called-off fetch produces', async () => {
+    // A real abort rather than a hand-built object, so this cannot pass against a
+    // shape that fetch does not actually produce.
+    //
+    // The URL is absolute because this environment's fetch parses the URL before
+    // it looks at the signal, and a relative one rejects as a parse failure
+    // instead. Nothing is sent either way: the signal is already spent.
+    const controller = new AbortController();
+    controller.abort();
+
+    const error = await fetch('http://127.0.0.1:1/api/timeline', { signal: controller.signal })
+      .catch(e => e);
+
+    expect(isAbort(error)).toBe(true);
+  });
+
+  it('does not mistake a real failure for a call-off', () => {
+    // This is the distinction the chart depends on. A failure clears the series
+    // and shows the empty state; a call-off leaves the screen alone because a
+    // newer request is already running.
+    expect(isAbort(new Error('API error: 500 Internal Server Error'))).toBe(false);
+    expect(isAbort(new TypeError('Failed to fetch'))).toBe(false);
+  });
+
+  it('answers false for anything that is not an error object', () => {
+    expect(isAbort(null)).toBe(false);
+    expect(isAbort(undefined)).toBe(false);
+    expect(isAbort('AbortError')).toBe(false);
+    expect(isAbort(42)).toBe(false);
   });
 });

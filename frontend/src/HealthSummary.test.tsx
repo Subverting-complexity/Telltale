@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { HealthSummary } from './HealthSummary';
 import type { TimelinePoint } from './types';
 import { metricCssVar } from './palette';
@@ -27,11 +28,16 @@ function point(ts: number, cpuPct: number): TimelinePoint {
   };
 }
 
+/** A reading where nothing was busy, for the disk tile's sub-one-percent path. */
+function quiet(ts: number): TimelinePoint {
+  return { ...point(ts, 1), diskBusyPct: 0.4 };
+}
+
 const TIMELINE = [point(1, 10), point(2, 40), point(3, 25)];
 
-function renderSummary() {
+function renderSummary(timeline: TimelinePoint[] = TIMELINE) {
   return render(
-    <HealthSummary timeline={TIMELINE} logicalProcessors={16} onScrollTo={() => {}} />,
+    <HealthSummary timeline={timeline} logicalProcessors={16} onScrollTo={() => {}} />,
   );
 }
 
@@ -68,5 +74,77 @@ describe('HealthSummary tile colours', () => {
     expect(stops[0].style.stopColor).toBe(metricCssVar('cpu'));
     expect(stops[0].getAttribute('stop-color')).toBeNull();
     expect(stops[0].style.stopOpacity).toBe('0.32');
+  });
+});
+
+describe('HealthSummary reading view', () => {
+  it('opens on the latest reading', () => {
+    renderSummary();
+
+    expect(screen.getByRole('radio', { name: 'Now' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Over time' })).not.toBeChecked();
+    // The last point, 25%, not the mean of 10, 40 and 25.
+    expect(screen.getByText('25%')).toBeInTheDocument();
+  });
+
+  it('averages the range once Over time is selected', async () => {
+    const user = userEvent.setup();
+    renderSummary();
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    // (10 + 40 + 25) / 3 = 25, which the latest reading also happens to be, so
+    // the peak is what separates the two views here.
+    expect(screen.getByText(/Peak 40%/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^CPU: average/ })).toBeInTheDocument();
+  });
+
+  it('distinguishes an average from the last reading when they differ', async () => {
+    const user = userEvent.setup();
+    renderSummary([point(1, 90), point(2, 90), point(3, 0)]);
+
+    expect(screen.getByText('0%')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    // (90 + 90 + 0) / 3 = 60.
+    expect(screen.getByText('60%')).toBeInTheDocument();
+    expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('gives the disk peak as a figure, never as the word Idle', async () => {
+    const user = userEvent.setup();
+    // A range that never got busy. "Peak Idle" is not a sentence.
+    renderSummary([quiet(1), quiet(2), quiet(3)]);
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    expect(screen.getByText('Peak 0.4%')).toBeInTheDocument();
+    expect(screen.queryByText(/Peak Idle/)).not.toBeInTheDocument();
+  });
+
+  it('shows no memory percentage when the newest reading has no total to measure against', async () => {
+    const user = userEvent.setup();
+    // The total is read from the newest reading, but the average is taken over
+    // every reading. Without a guard the tile puts a percentage from the range
+    // beside a size computed against a total of zero.
+    renderSummary([point(1, 10), { ...point(2, 10), memoryTotalMb: null, memoryAvailMb: null }]);
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    const memory = screen.getByRole('button', { name: /^Memory:/ });
+    expect(memory).toHaveAccessibleName('Memory: no data');
+    expect(within(memory).getByText('-')).toBeInTheDocument();
+  });
+
+  it('says which reading each tile is answering on', async () => {
+    const user = userEvent.setup();
+    renderSummary();
+
+    expect(screen.getAllByRole('button', { name: /at the latest reading$/ })).toHaveLength(4);
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    expect(screen.getAllByRole('button', { name: /across the range shown$/ })).toHaveLength(4);
   });
 });

@@ -8,10 +8,28 @@ import { tokenFromUrl } from './session';
 
 const API_BASE = '/api';
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url);
+async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, signal ? { signal } : undefined);
   if (!res.ok) throw new Error(`API error: ${res.status} ${res.statusText}`);
   return res.json();
+}
+
+/**
+ * Whether a rejection is a request that was called off rather than one that
+ * failed.
+ *
+ * An abort has to be told apart from a real failure, because a caller answers
+ * the two differently: a failure falls back to an empty answer and says so, and
+ * a call-off means a newer request is already on its way and the screen should
+ * be left exactly as it is.
+ *
+ * `fetch` rejects an aborted request with a `DOMException` named `AbortError`.
+ * The name is checked rather than the type, because the test environment's fetch
+ * is not always the browser's and does not always reject with a real
+ * `DOMException`.
+ */
+export function isAbort(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { name?: string }).name === 'AbortError';
 }
 
 export function getRange(): Promise<RangeResponse> {
@@ -22,22 +40,36 @@ export function getRange(): Promise<RangeResponse> {
  * `bucketMs` asks for a particular granularity. The server widens it where the
  * recording cannot serve it, and says so in the response, so passing one is a
  * request rather than an instruction.
+ *
+ * `signal` calls the request off. Telltale serves this window from the same
+ * process that is recording the machine, so a timeline nobody is going to read
+ * is not merely a wasted round trip: the query time comes out of the sampler.
+ * Clicking through the detail options should leave one request running, not one
+ * per click.
  */
-export function getTimeline(from: number, to: number, bucketMs?: number | null): Promise<TimelineResponse> {
+export function getTimeline(
+  from: number, to: number, bucketMs?: number | null, signal?: AbortSignal,
+): Promise<TimelineResponse> {
   const params = new URLSearchParams({ from: String(from), to: String(to) });
   if (bucketMs) params.set('bucket', String(bucketMs));
-  return fetchJson(`${API_BASE}/timeline?${params}`);
+  return fetchJson(`${API_BASE}/timeline?${params}`, signal);
 }
 
+/**
+ * `latest` asks for the rows at the newest reading inside the range instead of
+ * the aggregate over it, and the response then says which reading that was.
+ * Everything else about the request is the same either way.
+ */
 export function getProcesses(
   from: number, to: number,
-  opts?: { limit?: number; sort?: string; q?: string; group?: boolean }
+  opts?: { limit?: number; sort?: string; q?: string; group?: boolean; latest?: boolean }
 ): Promise<ProcessesResponse> {
   const params = new URLSearchParams({ from: String(from), to: String(to) });
   if (opts?.limit) params.set('limit', String(opts.limit));
   if (opts?.sort) params.set('sort', opts.sort);
   if (opts?.q) params.set('q', opts.q);
   if (opts?.group !== undefined) params.set('group', String(opts.group));
+  if (opts?.latest) params.set('latest', 'true');
   return fetchJson(`${API_BASE}/processes?${params}`);
 }
 

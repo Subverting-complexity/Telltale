@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from './App';
 
@@ -10,10 +10,24 @@ import App from './App';
  */
 let range: { min: number | null; max: number | null } = { min: 0, max: 0 };
 
+/**
+ * Set to hold the range answer until a test releases it, so the process list can
+ * be put ahead of it. That order is the whole question for the empty screen: the
+ * process list landing says nothing about whether the recording has a start and
+ * an end.
+ */
+let holdRange = false;
+
+/** Releases a held range answer. Set by the mock once one is being held. */
+let releaseRange: (() => void) | null = null;
+
 const wipeCapture = vi.fn();
 
 vi.mock('./api', () => ({
-  getRange: () => Promise.resolve(range),
+  getRange: () => {
+    if (!holdRange) return Promise.resolve(range);
+    return new Promise<typeof range>(resolve => { releaseRange = () => resolve(range); });
+  },
   getTimeline: () => Promise.resolve({
     resolution: '1m', bucketMs: 0, bucketRequestMs: null,
     minBucketMs: 0, tierFloorMs: 5_000, points: [],
@@ -24,6 +38,9 @@ vi.mock('./api', () => ({
   }),
   getThresholds: () => Promise.resolve(null),
   getAlerts: () => Promise.resolve({ alerts: [] }),
+  // The real one. It is a pure test on the rejection, and App has to be able to
+  // tell a called-off request from a failed one whichever way the api is stood in for.
+  isAbort: (error: unknown) => (error as { name?: string })?.name === 'AbortError',
   wipeCapture: (...args: unknown[]) => wipeCapture(...args),
   WipeError: class WipeError extends Error {
     constructor(message: string, readonly status: number) { super(message); }
@@ -42,6 +59,32 @@ beforeEach(() => {
             max: Date.now() };
   wipeCapture.mockReset();
   wipeCapture.mockResolvedValue({ rowsDeleted: 1234, bytesFreed: 5 * 1024 * 1024 });
+  holdRange = false;
+  releaseRange = null;
+});
+
+describe('App and the empty screen', () => {
+  it('waits for the range request, not for the process list', async () => {
+    // The recording is empty, so the empty screen is the right answer once the
+    // range endpoint has said so, and the wrong one before it has.
+    range = { min: null, max: null };
+    holdRange = true;
+
+    render(<App />);
+
+    // The process list has landed, which is what clears the dashboard's loading
+    // flag. That flag used to gate this screen, and once the timeline and the
+    // process list stopped being fetched together it stopped standing in for the
+    // range request: the process list answering says nothing about whether there
+    // is a recording at all. Gated on it, the app would announce that nothing has
+    // ever been recorded while it is still waiting to be told.
+    await waitFor(() => expect(screen.queryByText('Loading...')).not.toBeInTheDocument());
+    expect(screen.queryByText('No data yet')).not.toBeInTheDocument();
+
+    await act(async () => { releaseRange!(); });
+
+    expect(await screen.findByText('No data yet')).toBeInTheDocument();
+  });
 });
 
 async function wipeEverything() {

@@ -160,11 +160,12 @@ public static class ViewerEndpoints
             try
             {
                 using var conn = OpenDb();
-                using var checkCmd = conn.CreateCommand();
-                checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine'";
-                if (checkCmd.ExecuteScalar() == null)
-                    return Results.Json(EmptyTimeline(requestedBucket), jsonOptions);
 
+                // No table check here. TimelineQuery has to ask sqlite_master which
+                // tier tables exist before it can read their coverage, and a check
+                // beside it asked the same question a second time on every request.
+                // It answers a database with no machine table with the same empty
+                // result this endpoint used to build for itself.
                 var result = TimelineQuery.Execute(conn, from, to, requestedBucket);
 
                 var points = result.Points.Select(p => new
@@ -205,20 +206,42 @@ public static class ViewerEndpoints
             }
         });
 
-        app.MapGet("/api/processes", (long from, long to, int? limit, string? sort, string? q, bool? group) =>
+        // `latest` narrows the window to its newest reading instead of aggregating
+        // over it, which is what the dashboard's default view asks for: an average
+        // over a day cannot say what is using the machine at this moment.
+        //
+        // Only the time predicate changes. The aggregate expressions are the same
+        // ones the range form uses, and applied to a single timestamp they reduce
+        // to that instant's totals, so the two forms cannot drift apart in how
+        // they add a group up across its instances.
+        app.MapGet("/api/processes", (long from, long to, int? limit, string? sort, string? q, bool? group, bool? latest) =>
         {
             bool grouped = group ?? true;
+            bool atLatest = latest ?? false;
             try
             {
                 using var conn = OpenDb();
                 if (!HasTable(conn, "sample"))
-                    return Results.Json(new { grouped, processes = Array.Empty<object>() }, jsonOptions);
+                    return Results.Json(new { grouped, latestTs = (long?)null, processes = Array.Empty<object>() }, jsonOptions);
                 int take = Math.Clamp(limit ?? 50, 1, 500);
-        
+
                 var plan = PlanTiers(conn, from, to, isMachine: false);
                 TierSource source = TierSql.Source(plan, isMachine: false);
+
+                // Read once and hand back, rather than left for the caller to infer
+                // from the rows. On a range that ends in the past this is not "now",
+                // and on a wide range it is a rollup bucket rather than an instant,
+                // so the window has to be able to say which reading it is showing.
+                long? latestTs = atLatest ? NewestSampleTs(conn, source, from, to) : null;
+                if (atLatest && latestTs is null)
+                    return Results.Json(new { grouped, latestTs, processes = Array.Empty<object>() }, jsonOptions);
+
+                // Tier slices are sorted and disjoint, so matching on the newest
+                // timestamp cannot pick the same instant out of two tiers at once.
+                string when = atLatest ? "s.ts = @at" : "s.ts >= @from AND s.ts <= @to";
+
                 using var cmd = conn.CreateCommand();
-        
+
                 if (grouped)
                 {
                     // The group is totalled across its instances at each instant, then those
@@ -250,7 +273,7 @@ public static class ViewerEndpoints
                                    {TierSql.InstantWeight("s.weight")} as ts_weight
                             FROM {source.Sql} s
                             JOIN process_instance pi ON pi.id = s.instance_id
-                            WHERE s.ts >= @from AND s.ts <= @to
+                            WHERE {when}
                             {(q != null ? "AND pi.name LIKE @q ESCAPE '\\'" : "")}
                             GROUP BY pi.name, s.ts
                         ) sub
@@ -276,7 +299,7 @@ public static class ViewerEndpoints
                                SUM(s.io_kb) as total_io_kb
                         FROM {source.Sql} s
                         JOIN process_instance pi ON pi.id = s.instance_id
-                        WHERE s.ts >= @from AND s.ts <= @to
+                        WHERE {when}
                         {(q != null ? "AND pi.name LIKE @q ESCAPE '\\'" : "")}
                         GROUP BY pi.id
                         ORDER BY {sortExpr} {sortDirUngrouped}
@@ -288,8 +311,9 @@ public static class ViewerEndpoints
                 cmd.Parameters.AddWithValue("@from", from);
                 cmd.Parameters.AddWithValue("@to", to);
                 cmd.Parameters.AddWithValue("@limit", take);
+                if (atLatest) cmd.Parameters.AddWithValue("@at", latestTs!.Value);
                 if (q != null) cmd.Parameters.AddWithValue("@q", $"%{EscapeLike(q)}%");
-        
+
                 var results = new List<object>();
                 using var reader = cmd.ExecuteReader();
         
@@ -325,12 +349,12 @@ public static class ViewerEndpoints
                     }
                 }
         
-                return Results.Json(new { grouped, processes = results }, jsonOptions);
+                return Results.Json(new { grouped, latestTs, processes = results }, jsonOptions);
             }
             catch (SqliteException ex)
             {
                 ReportQueryFailure(ex, "/api/processes");
-                return Results.Json(new { grouped, processes = Array.Empty<object>() }, jsonOptions);
+                return Results.Json(new { grouped, latestTs = (long?)null, processes = Array.Empty<object>() }, jsonOptions);
             }
         });
 
@@ -915,6 +939,33 @@ public static class ViewerEndpoints
     {
         foreach (TierBound bound in source.Parameters)
             cmd.Parameters.AddWithValue($"@{bound.Name}", bound.Value);
+    }
+
+    /// <summary>
+    /// The newest process sample timestamp the planned tiers hold inside the
+    /// requested window, or null when they hold none.
+    ///
+    /// It reads the same tier source the query that follows reads, so the
+    /// timestamp it returns is one that query can actually match. Asking the raw
+    /// table directly would name an instant a rollup-served window has no row at.
+    ///
+    /// It deliberately ignores the name filter. The reading is a property of the
+    /// window, not of the search: moving it to the newest instant at which a
+    /// matching process happened to be recorded would label a stale timestamp as
+    /// the latest reading, and would rank two searches against two different
+    /// instants. A filter that matches nothing at the reading therefore returns
+    /// the reading and no rows, which is the truthful answer.
+    /// </summary>
+    static long? NewestSampleTs(SqliteConnection conn, TierSource source, long from, long to)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT MAX(s.ts) FROM {source.Sql} s WHERE s.ts >= @from AND s.ts <= @to";
+        AddTierBounds(cmd, source);
+        cmd.Parameters.AddWithValue("@from", from);
+        cmd.Parameters.AddWithValue("@to", to);
+
+        object? value = cmd.ExecuteScalar();
+        return value is null or DBNull ? null : Convert.ToInt64(value);
     }
 
     static string EscapeLike(string value) =>
