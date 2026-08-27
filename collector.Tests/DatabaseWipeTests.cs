@@ -429,9 +429,10 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         }
         finally
         {
-            // Swallowed the way SqliteTestBase does. A cleanup that throws here would
-            // replace the assertion above with a file handle complaint, which is the
-            // less useful of the two things to be told.
+            // A cleanup that throws here would replace the assertion above with a file
+            // handle complaint, which is the less useful of the two things to be told.
+            // Narrower than SqliteTestBase's bare catch, because a locked or missing
+            // temporary file is the only failure worth ignoring.
             try
             {
                 foreach (var leftover in new[] { path, path + "-wal", path + "-shm" })

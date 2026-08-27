@@ -1432,12 +1432,23 @@ public sealed class Database : IDisposable
     /// PASSIVE straight after it reported the same four frames and none copied. It
     /// would be dead code with a comforting name.
     ///
-    /// What is left over when this is held off is a database whose freed pages are on
-    /// its own free list and a log still at its old length, so nothing in the folder
-    /// has changed yet. Both come back at the next wipe that is not held off, or when
-    /// the recorder closes the database cleanly. They do not come back on a rollup
-    /// cycle: that runs <see cref="WalCheckpoint"/>, which is PASSIVE, and PASSIVE
-    /// never shortens the file.
+    /// What is left over when this is held off is a database whose pages have been
+    /// released but whose file has not shortened, and a log still at its old length,
+    /// so nothing in the folder has changed yet. The two come back by different
+    /// routes, and saying otherwise is the same failure this fix was reported for.
+    ///
+    /// The database file shortens on the next rollup cycle, whose PASSIVE checkpoint
+    /// folds in the page count the vacuum above already lowered. The log does not:
+    /// PASSIVE never shortens it, and nothing outside a wipe runs a truncating
+    /// checkpoint, so the log waits for the next wipe that is not held off.
+    ///
+    /// Closing the database is deliberately not offered as a third route. SQLite
+    /// removes the log at close only when the closing connection is the last one on
+    /// the file, and the viewer opens its read connections through the provider's
+    /// pool, which keeps a handle open long after a request finishes. This line is
+    /// only ever reached because a window held a read transaction, so in the single
+    /// application build that handle exists by definition and the recorder is never
+    /// the last connection.
     /// </remarks>
     private void TruncatingCheckpointLocked()
     {
@@ -1446,8 +1457,9 @@ public sealed class Database : IDisposable
         _logger.LogInformation(
             "A reader held the write ahead log open, so it kept its size and that space "
             + "has not come back yet. The database released its own pages internally but "
-            + "the file has not shortened either. Both come back at the next wipe that is "
-            + "not held off, or when Telltale next closes the database.");
+            + "the file has not shortened either. The next rollup cycle shortens the "
+            + "database file. The log waits for the next wipe that is not held off, "
+            + "because nothing else shortens it.");
     }
 
     /// <summary>
