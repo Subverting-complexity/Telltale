@@ -1260,6 +1260,13 @@ public sealed class Database : IDisposable
             long sizeBefore = GetDatabaseSizeBytesLocked();
             long deleted = 0;
 
+            // Set when the housekeeping released the space without the folder
+            // shrinking, which a reader holding the log open is what causes. The
+            // caller reports the figure either way and says which of the two it is,
+            // because a person who has just deleted a year of history and is told
+            // nothing came back has been misled in the more damaging direction.
+            bool spacePending = false;
+
             using (var tx = _conn.BeginTransaction())
             {
                 // A row stamped ts covers ts up to but not including ts + its width,
@@ -1355,7 +1362,7 @@ public sealed class Database : IDisposable
                 // checkpoint that folds it in without shortening it hands back half
                 // of what was asked for.
                 IncrementalVacuumLocked();
-                TruncatingCheckpointLocked();
+                spacePending = !TruncatingCheckpointLocked();
             }
             catch (SqliteException ex)
             {
@@ -1378,11 +1385,11 @@ public sealed class Database : IDisposable
                     "The wipe deleted {Rows} rows but could not return the freed pages "
                     + "to the filesystem. They will be reclaimed by the next rollup cycle.",
                     deleted);
-                return new CaptureWipeResult(deleted, 0);
+                return new CaptureWipeResult(deleted, 0, SpacePending: true);
             }
 
             long sizeAfter = GetDatabaseSizeBytesLocked();
-            return new CaptureWipeResult(deleted, Math.Max(0, sizeBefore - sizeAfter));
+            return new CaptureWipeResult(deleted, Math.Max(0, sizeBefore - sizeAfter), spacePending);
         }
     }
 

@@ -198,4 +198,10 @@ export type WipeScope =
 export interface WipeResponse {
   rowsDeleted: number;
   bytesFreed: number;
+  /**
+   * Whether the space has been released without the folder shrinking yet, which
+   * happens when something was reading the recording as the delete finished. The
+   * figure in `bytesFreed` is real either way; this says it is early.
+   */
+  spacePending: boolean;
 }

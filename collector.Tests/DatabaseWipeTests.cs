@@ -329,6 +329,56 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
             "The database file should be smaller on disk after everything in it was deleted.");
         Assert.True(Db.GetDatabaseSizeBytes() < pagesBefore);
         Assert.True(result.BytesFreed > 0, "The wipe should report the space it gave back.");
+
+        // Nothing was reading, so the folder shrank at the same moment the figure was
+        // worked out and there is nothing outstanding to warn about.
+        Assert.False(result.SpacePending,
+            "A wipe nothing held up should not tell the window its space is still coming.");
+    }
+
+    [Fact]
+    public void WipeAll_HeldOffByAReader_SaysTheSpaceHasNotReachedTheFolderYet()
+    {
+        for (int i = 0; i < 4000; i++)
+            Db.WriteMachineSample(Day0 + i, Machine());
+
+        // The same held open read transaction as the test below, which is what the
+        // viewer produces for the span of each request a window makes. It stops the
+        // files being shortened without stopping the delete.
+        using var reader = Connect();
+        using var read = reader.CreateCommand();
+        read.CommandText = "BEGIN";
+        read.ExecuteNonQuery();
+        read.CommandText = "SELECT COUNT(*) FROM machine";
+        read.ExecuteScalar();
+
+        long fileBefore = new FileInfo(DbPath).Length;
+
+        var result = Db.WipeAll();
+
+        Assert.True(result.RowsDeleted > 0);
+
+        // The two halves of what #176 is about. The figure is real, because the
+        // vacuum released the pages, and the folder has not caught up, so the window
+        // has to be told which of the two it is looking at.
+        Assert.True(result.BytesFreed > 0,
+            "The pages were released, so the figure is a real one.");
+        Assert.True(result.SpacePending,
+            "A reader held the shortening off, so the window must be told the space is still coming.");
+        Assert.Equal(fileBefore, new FileInfo(DbPath).Length);
+    }
+
+    [Fact]
+    public void WipeRange_MatchingNothing_HasNoSpaceOutstandingEither()
+    {
+        SeedDay(Day0);
+
+        var result = Db.WipeRange(FarLaterDay, FarLaterDay + DayMs - 1);
+
+        // Nothing was deleted, so there is no space on its way and no note for the
+        // window to show. Without this, a wipe that matched nothing could start
+        // explaining where the space had gone.
+        Assert.False(result.SpacePending);
     }
 
     [Fact]

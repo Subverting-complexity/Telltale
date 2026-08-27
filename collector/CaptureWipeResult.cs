@@ -21,4 +21,19 @@ namespace Telltale.Collector;
 /// SQLite frees whole pages, so a delete small enough to leave every page still
 /// partly occupied returns none of them.
 /// </param>
-public sealed record CaptureWipeResult(long RowsDeleted, long BytesFreed);
+/// <param name="SpacePending">
+/// Whether the space has been released without the folder shrinking yet.
+///
+/// A wipe finishes by folding the write ahead log back into the database and
+/// shortening both files, and a reader can hold that off. The rows are already
+/// committed by then, so the wipe carries on rather than failing, and
+/// <see cref="BytesFreed"/> is a real count of pages the database gave up. What
+/// has not happened is the files getting shorter, so someone who goes and looks
+/// at the folder sees no change, and on a large delete sees it briefly grow.
+///
+/// True says the figure is early rather than wrong, which is the distinction the
+/// window had no way to draw before #176. It is also true on the narrower path
+/// where the housekeeping failed outright, where nothing is claimed at all and
+/// the next rollup cycle reclaims the pages instead.
+/// </param>
+public sealed record CaptureWipeResult(long RowsDeleted, long BytesFreed, bool SpacePending = false);

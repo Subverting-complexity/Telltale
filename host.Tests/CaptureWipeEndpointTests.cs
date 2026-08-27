@@ -123,6 +123,25 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         var body = await response.Content.ReadFromJsonAsync<WipeReply>();
         Assert.Equal(1234, body!.RowsDeleted);
         Assert.Equal(56789, body.BytesFreed);
+        Assert.False(body.SpacePending);
+    }
+
+    [Fact]
+    public async Task A_wipe_whose_space_has_not_reached_the_folder_yet_says_so()
+    {
+        // The recorder sets this when something was reading the capture as the delete
+        // finished, so the pages were released but neither file got shorter. The
+        // window shows a different sentence for it, and can only do that if the
+        // endpoint passes it on (#176).
+        _wipe.Result = new CaptureWipeResult(1234, 56789, SpacePending: true);
+        var listener = await Started(_wipe);
+        using var client = new HttpClient();
+
+        var response = await Post(client, TestHelpers.TokenOf(listener.WindowUrl!), """{"scope":"all"}""");
+
+        var body = await response.Content.ReadFromJsonAsync<WipeReply>();
+        Assert.Equal(56789, body!.BytesFreed);
+        Assert.True(body.SpacePending);
     }
 
     [Fact]
@@ -261,7 +280,7 @@ public class CaptureWipeEndpointTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
-    sealed record WipeReply(long RowsDeleted, long BytesFreed);
+    sealed record WipeReply(long RowsDeleted, long BytesFreed, bool SpacePending);
 
     /// <summary>
     /// Stands in for the recorder's database, so these tests are about the endpoint
