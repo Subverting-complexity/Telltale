@@ -64,10 +64,11 @@ public class BaselineEndpointTests : IClassFixture<BaselineTestFactory>
         // ordinary case rather than the exception.
         var byName = await GetBaselines(BaselineTestFactory.RestartedProcessName);
 
-        var restarted = byName[BaselineTestFactory.RestartedProcessName];
-
-        // One row, not one per run.
+        // Asserted before the lookup below, so grouping by instance reports
+        // "expected one row" rather than a key-not-found from the indexer.
         Assert.Single(byName);
+
+        var restarted = byName[BaselineTestFactory.RestartedProcessName];
 
         // The mean of both runs together. Either run on its own would report
         // its own figure instead, and neither run on its own has enough points

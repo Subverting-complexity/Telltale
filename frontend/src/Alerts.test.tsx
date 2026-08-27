@@ -229,6 +229,38 @@ describe('Alerts switching between periods', () => {
     expect(screen.queryByText('Loading baselines...')).not.toBeInTheDocument();
   });
 
+  it('keeps waiting when one of two overlapping baseline requests is still out', async () => {
+    // A period change while a baseline request is in flight asks about the names
+    // only the new period reports, so two are outstanding at once. A plain
+    // boolean let whichever finished first declare the matter settled, and the
+    // false "not enough baseline data" message came back in that gap.
+    const first = deferred<{ baselines: BaselineData[] }>();
+    const second = deferred<{ baselines: BaselineData[] }>();
+    vi.mocked(getBaselines).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+
+    renderAlerts();
+    await screen.findByText('app.exe');
+    await waitFor(() => expect(getBaselines).toHaveBeenCalledTimes(1));
+
+    await userEvent.click(screen.getByRole('tab', { name: '3 days' }));
+    await screen.findByText('other.exe');
+    await waitFor(() => expect(getBaselines).toHaveBeenCalledTimes(2));
+
+    // The first one lands. The second has not.
+    first.resolve({ baselines: [] });
+    await first.promise;
+
+    await userEvent.click(screen.getByRole('tab', { name: /Anomalies/ }));
+    expect(screen.getByText('Loading baselines...')).toBeInTheDocument();
+    expect(screen.queryByText(/requires at least 24 hours of baseline data/)).not.toBeInTheDocument();
+
+    second.resolve({ baselines: [] });
+    await second.promise;
+
+    await waitFor(() =>
+      expect(screen.getByText(/requires at least 24 hours of baseline data/)).toBeInTheDocument());
+  });
+
   it('refetches a period whose cached answer has gone stale', async () => {
     // The recorder keeps sampling, so "the last 1 day" is a moving answer and a
     // cached one cannot be right forever. Ninety seconds matches the interval

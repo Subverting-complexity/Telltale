@@ -31,11 +31,18 @@ type SortDir = 'asc' | 'desc';
  * interval the rest of the dashboard refreshes on, so the Alerts tab is never
  * staler than the page around it, and the rapid back and forth between periods
  * that this cache exists for happens far inside it.
+ *
+ * Ages are measured with performance.now() rather than Date.now(). This window
+ * can be left open for days, and a clock correction that steps backwards makes
+ * a wall clock age negative, which reads as "younger than the limit" and would
+ * pin an entry in the cache until the clock caught back up. performance.now()
+ * only ever moves forward.
  */
 const CACHE_TTL_MS = 90_000;
 
 interface CachedAlerts {
   rows: AlertProcess[];
+  /** performance.now() at the moment the answer landed. */
   fetchedAt: number;
 }
 
@@ -117,6 +124,13 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
   const latestRequest = useRef(0);
   const mounted = useRef(true);
 
+  // How many baseline requests are outstanding, rather than whether any are.
+  // Two can overlap: a period change while one is in flight asks about the
+  // names only the new period reports. With a plain flag, whichever settled
+  // first cleared it, and the Anomalies tab went back to saying there was not
+  // enough baseline data while the other request was still deciding that.
+  const baselinesInFlight = useRef(0);
+
   // Reassigned on mount rather than only cleared on unmount, so a remount
   // reuses the same ref rather than inheriting a false left by the last one.
   useEffect(() => {
@@ -150,6 +164,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
       // fiftieth would be marked asked here, dropped by the server, and never
       // requested again for the life of the mount.
       for (const name of missing) baselinesAsked.current.add(name);
+      baselinesInFlight.current += 1;
       setBaselinesPending(true);
 
       getBaselines(missing)
@@ -172,12 +187,14 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
           for (const name of missing) baselinesAsked.current.delete(name);
         })
         .finally(() => {
-          if (mounted.current) setBaselinesPending(false);
+          baselinesInFlight.current -= 1;
+          // Only the last one out turns the light off.
+          if (mounted.current && baselinesInFlight.current === 0) setBaselinesPending(false);
         });
     }
 
     const cached = alertsByPeriod.current.get(selectedDays);
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    if (cached && performance.now() - cached.fetchedAt < CACHE_TTL_MS) {
       setAlerts(cached.rows);
       setLoading(false);
       ensureBaselines(cached.rows);
@@ -191,7 +208,7 @@ export function Alerts({ logicalProcessors, onSelectProcess }: AlertsProps) {
         // Cached whether or not this request is still the current one. The rows
         // are a true answer for the period that asked for them either way, and
         // only the state update below has to care which period is on screen.
-        alertsByPeriod.current.set(selectedDays, { rows: filtered, fetchedAt: Date.now() });
+        alertsByPeriod.current.set(selectedDays, { rows: filtered, fetchedAt: performance.now() });
 
         // Two requests can be in flight after a quick second click, and the
         // first is not guaranteed to answer first. Only the newest is allowed

@@ -87,13 +87,14 @@ public class BaselineTestFactory : TelltaleTestFactory
             schemaCmd.ExecuteNonQuery();
         }
 
-        SeedInstance(conn, 1, SteadyProcessName);
-        SeedInstance(conn, 2, SwingingProcessName);
-        SeedInstance(conn, 3, ShortHistoryProcessName);
-        // Two instances, one name. Different pids, as two runs of the same
-        // executable would have.
-        SeedInstance(conn, 4, RestartedProcessName);
-        SeedInstance(conn, 5, RestartedProcessName);
+        SeedInstance(conn, 1, SteadyProcessName, LongHistoryPoints);
+        SeedInstance(conn, 2, SwingingProcessName, LongHistoryPoints);
+        SeedInstance(conn, 3, ShortHistoryProcessName, ShortHistoryPoints);
+        // Two instances, one name. Different pids and non-overlapping lifetimes,
+        // as two runs of the same executable would have.
+        SeedInstance(conn, 4, RestartedProcessName, RestartedRunPoints,
+            endsMinutesAgo: RestartedRunPoints);
+        SeedInstance(conn, 5, RestartedProcessName, RestartedRunPoints);
 
         SeedRollup(conn, instanceId: 1, points: LongHistoryPoints,
             cpuAt: _ => SteadyCpuPct,
@@ -121,17 +122,27 @@ public class BaselineTestFactory : TelltaleTestFactory
         return path;
     }
 
-    static void SeedInstance(SqliteConnection conn, int id, string name)
+    /// <summary>
+    /// Writes one process_instance row whose lifetime matches the rollup rows
+    /// seeded for it. They have to agree: a row claiming to be alive now, with
+    /// samples that stop eleven hours ago, does not describe a process that
+    /// restarted, and would mislead the next test written against this fixture.
+    /// </summary>
+    static void SeedInstance(
+        SqliteConnection conn, int id, string name, int points, int endsMinutesAgo = 0)
     {
+        long start = _now - (points + endsMinutesAgo) * 60_000L;
+        long end = _now - endsMinutesAgo * 60_000L;
+
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO process_instance (id, pid, create_time, name, path, first_seen, last_seen)
-            VALUES (@id, @id, @start, @name, NULL, @start, @now)
+            VALUES (@id, @id, @start, @name, NULL, @start, @end)
             """;
         cmd.Parameters.AddWithValue("@id", id);
         cmd.Parameters.AddWithValue("@name", name);
-        cmd.Parameters.AddWithValue("@start", _now - LongHistoryPoints * 60_000L);
-        cmd.Parameters.AddWithValue("@now", _now);
+        cmd.Parameters.AddWithValue("@start", start);
+        cmd.Parameters.AddWithValue("@end", end);
         cmd.ExecuteNonQuery();
     }
 
