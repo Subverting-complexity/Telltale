@@ -113,22 +113,27 @@ the capture outgrows `maxDatabaseSizeMb` the response is the same: a tier's hold
 on its data is pulled inward and the rest is summarised into the tier below,
 never dropped. If every tier is already as coarse as it can get, the collector
 says so in the log and lets the file exceed the limit rather than start deleting.
-
-`maxDatabaseSizeMb` is measured against the whole footprint, the database and the
-write ahead log together, because that is what the folder costs and the setting
-reads as a promise about disk. Summarising further is the only lever size
-pressure has and that lever does not reach the log, so the two figures are kept
-apart on purpose: the limit is checked against the footprint, and what the
-summarising loop steers by is the database alone. A capture that is over its
-limit only because a reader is holding a large log open therefore summarises
-nothing, and says nothing, because a window left open would repeat that line
-every cycle. Letting the log drive the loop instead would spend recorded detail,
-permanently, on bytes the next checkpoint gives back for free. Changing which
-figure either half uses needs a reason written down here.
 Retention now only deletes from `collector_health` and `collector_tick_phase`,
 which record what the recorder cost rather than what it observed. Adding a delete
 to any ageing or size path, including a last resort one, needs a reason written
 down here.
+
+`maxDatabaseSizeMb` is a promise about the whole footprint, the database and the
+write ahead log together, because that is what the folder costs. The rollup cycle
+answers that promise in two halves, in two places, because the two halves have
+different levers. The log's half is answered by the truncating checkpoint the
+cycle runs unconditionally, which is the only thing that shortens a log. The
+database's half is answered by summarising further, and that is steered by the
+database alone: a log cannot be summarised away, so letting one drive the loop
+would spend recorded detail, permanently, on bytes the next checkpoint gives back
+for free. So a capture over its limit only because a reader is holding a large
+log open summarises nothing, and says nothing, because a window left open would
+repeat that line every cycle. There is deliberately no third branch checking the
+footprint: by the time the summarising runs, the log has already had the only
+answer there is applied to it. The footprint reaches a person through the cycle's
+completion line and the status bar instead. Changing which figure either half
+uses, or adding a branch that acts on the footprint, needs a reason written down
+here.
 
 That size pressure is recorded in `tier_pressure` and only ever tightens, because
 coarsening cannot be undone: the finer rows have already been folded away. A wipe

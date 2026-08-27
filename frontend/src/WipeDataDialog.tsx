@@ -36,13 +36,17 @@ type Choice = 'day' | 'all';
  * has just deleted a year of history that they got nothing back, which is the
  * more damaging of the two ways to be wrong.
  *
- * No time is promised. What clears it is a tidy-up that nothing interrupts, and
- * how long that takes depends on whether the window is being used.
+ * No cause is named, deliberately. Something reading the recording is the usual
+ * one, but the same flag is set on the narrower path where the tidy-up failed
+ * outright, and nobody need have been reading anything there. Naming a reason
+ * that did not happen would be the same failure this sentence exists to correct.
+ *
+ * No time is promised either. What clears it is a tidy-up that nothing
+ * interrupts, and how long that takes depends on whether Telltale is being used.
  */
 const PENDING_NOTE =
-  ' The folder has not shrunk yet, because Telltale was reading the recording '
-  + 'while the delete ran. The space comes back on its own at the next tidy-up '
-  + 'that nothing interrupts.';
+  ' The folder has not shrunk yet. The space comes back on its own at the next '
+  + 'tidy-up that nothing interrupts.';
 
 /**
  * What went, as a sentence.

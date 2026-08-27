@@ -110,12 +110,17 @@ describe('WipeDataDialog', () => {
     expect(await screen.findByText(/freeing 2\.0 MB/)).toBeInTheDocument();
     expect(screen.getByText(/has not shrunk yet/)).toBeInTheDocument();
     expect(screen.getByText(/comes back on its own/)).toBeInTheDocument();
+    // No cause is named: the same flag is set where the tidy-up failed outright and
+    // nobody was necessarily reading anything.
+    expect(screen.queryByText(/while the delete ran/)).toBeNull();
   });
 
   it('explains the delay even when there was no figure to report', async () => {
     // The narrower path, where the housekeeping failed outright and nothing was
     // claimed. The rows have still gone and the space is still on its way, so the
-    // sentence about it has to survive the figure being absent.
+    // sentence about it has to survive the figure being absent. This is also the
+    // path that decided the sentence names no cause: nothing was necessarily
+    // reading the recording here.
     wipeCapture.mockResolvedValue({ rowsDeleted: 42, bytesFreed: 0, spacePending: true });
     const user = userEvent.setup();
     open();

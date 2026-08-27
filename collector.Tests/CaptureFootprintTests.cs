@@ -118,7 +118,39 @@ public class CaptureFootprintTests : SqliteTestBase
 
         RunOneCycle(limitMb);
 
+        // Nothing was summarised. The check that decides this is against the database
+        // rather than the footprint, deliberately: by the time size pressure runs, the
+        // cycle's truncating checkpoint has already applied the only answer there is
+        // to a log, so a footprint check there would have nothing left to do and could
+        // only coarsen a tier to answer bytes it cannot reach.
         Assert.Empty(Db.ReadTierPressure());
+    }
+
+    [Fact]
+    public void PagesFreedEarlierInTheCycle_AreReclaimedBeforeTheSizeIsJudged()
+    {
+        // The cycle tidies up before it measures rather than after, and this is what
+        // that ordering is worth. Promotion and retention free pages without lowering
+        // the page count, so a cycle that measured first would read a size that was
+        // about to drop on its own, and answer it by summarising recorded detail away
+        // permanently. Standing in for that here with a plain delete, which leaves its
+        // pages on the free list the same way.
+        SeedDailyRows(25_000);
+        Execute("DELETE FROM machine_1d");
+
+        long beforeReclaim = Db.GetDatabaseSizeBytes();
+        Assert.True(beforeReclaim > 1024 * 1024,
+            $"The unreclaimed pages ({beforeReclaim} bytes) need to carry the database over "
+            + "the limit below, or this test is not testing the ordering at all.");
+
+        RunOneCycle(maxDatabaseSizeMb: 1);
+
+        // Nothing was given up. Reverse the vacuum and checkpoint back to after the
+        // size pressure and this fails: the cycle would coarsen a tier to answer
+        // pages it was about to hand back anyway.
+        Assert.Empty(Db.ReadTierPressure());
+        Assert.True(Db.GetDatabaseSizeBytes() <= 1024 * 1024,
+            "The reclaim should have brought the database back under the limit.");
     }
 
     [Fact]
@@ -158,17 +190,24 @@ public class CaptureFootprintTests : SqliteTestBase
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         using var conn = TestConnection.Open(DbPath);
+
+        // One prepared statement reused, but still one commit per row. The commits are
+        // what fill the write ahead log, and the log is the whole subject here, so
+        // batching them into a transaction would quietly stop the log tests testing
+        // anything. Only the statement compilation is saved.
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO machine_1d
+                (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+                 commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+                 disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+            VALUES (@ts, 50.0, 60.0, 8000, 16000, 12000, 0, 1.0, 2.0, 30.0, 40.0, 1000, NULL, 10)
+            """;
+        var ts = cmd.Parameters.Add("@ts", Microsoft.Data.Sqlite.SqliteType.Integer);
+
         for (int i = 0; i < count; i++)
         {
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = $"""
-                INSERT INTO machine_1d
-                    (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
-                     commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
-                     disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
-                VALUES ({now - ((720L - i) * DayMs)}, 50.0, 60.0, 8000, 16000, 12000, 0,
-                        1.0, 2.0, 30.0, 40.0, 1000, NULL, 10)
-                """;
+            ts.Value = now - ((720L - i) * DayMs);
             cmd.ExecuteNonQuery();
         }
     }

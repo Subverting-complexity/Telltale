@@ -58,11 +58,20 @@ public static class ViewerEndpoints
         // closing last could not have cleaned up even if it had closed.
         //
         // What it costs is a fresh SQLite handle per request instead of a reused one,
-        // against a local file, on a loopback listener serving one window. That is
-        // small next to the query it wraps, and the alternative was to keep the pool
-        // and accept that a recording carries its log's high water mark across every
-        // restart. If a future change makes the per request cost matter, the thing to
-        // measure is opening the handle, not the pool.
+        // and both issues asked for that to be measured rather than argued. Measured
+        // on a Windows development machine against a real capture file, five hundred
+        // read-only opens each: a pooled open took 0.0002 ms and an unpooled one
+        // 0.05 to 0.10 ms, against 0.67 ms for an unpooled open plus the cheapest
+        // query worth making, a count and an average over two thousand rows. So the
+        // open is roughly a tenth of the least a request can cost, and a real timeline
+        // query over a real recording is far heavier than that one. A window asking
+        // for several charts at once pays it several times and it is still well under
+        // a millisecond in total.
+        //
+        // The alternative was to keep the pool and accept that a recording carries its
+        // log's high water mark across every restart, which was the cheaper change and
+        // the worse promise. If this ever needs revisiting, the thing to measure is
+        // the open, not the pool.
         //
         // Built rather than interpolated, for the reason the recorder records at
         // Database's constructor: a semicolon is legal in a Windows filename and is
@@ -695,12 +704,20 @@ public static class ViewerEndpoints
             bool collectorRunning = lastSampleTs > 0 && (now - lastSampleTs) < 15000;
 
             // The database and the write ahead log beside it, because that is what the
-            // capture costs in the folder and what maxDatabaseSizeMb is enforced
-            // against since #174. Reporting the database alone put a number in the
-            // status bar that could be a fraction of the disk actually in use, and
-            // left the person unable to see why their history was being summarised
+            // capture costs in the folder. Reporting the database alone put a number
+            // in the status bar that could be a fraction of the disk actually in use,
+            // and left the person unable to see why their history was being summarised
             // further: on the recording that prompted #145 it would have read 4.5 MB
-            // beside a 501 MB log.
+            // beside a 501 MB log. It is also the only signal that a log is growing
+            // without bound, because the collector deliberately says nothing about
+            // that on its own cycle (#174).
+            //
+            // The same two files the collector counts, but not the same figure. This
+            // reads their lengths, where the collector's own measurement takes the
+            // database as page count times page size. Those differ whenever pages
+            // have been released and not yet checkpointed, so the two can disagree
+            // briefly. Lengths are the right answer here: they are what the person
+            // sees when they open the folder, which is the whole point of the number.
             //
             // Four lines of FileInfo duplicated from Database.GetWalSizeBytes rather
             // than shared, because collector/ and viewer/ do not reference each other

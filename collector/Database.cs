@@ -1498,8 +1498,8 @@ public sealed class Database : IDisposable
         _logger.LogInformation(
             "A reader held the write ahead log open, so it kept its size and that space "
             + "has not come back yet. The database released its own pages internally but "
-            + "the file has not shortened either. The next rollup cycle shortens the "
-            + "database file, and so does the next one that shortens the log.");
+            + "the file has not shortened either. The next rollup cycle that nothing is "
+            + "reading during shortens both.");
         return false;
     }
 
@@ -1563,20 +1563,25 @@ public sealed class Database : IDisposable
     /// promise about disk, and counting only half of what is on disk kept it on
     /// paper only.
     ///
-    /// Counting the log changes what an over-limit reading means, and the size
-    /// response has to agree with it. Summarising further cannot shrink a log, so a
-    /// log is never a reason to coarsen a tier: that is irreversible, and it would
-    /// be spending recorded detail on bytes a checkpoint gives back for nothing.
-    /// <c>RollupWorker.ApplySizePressure</c> is where that separation is made.
+    /// Counting the log changes what an over-limit reading means, and the response
+    /// has to agree with it. The rollup cycle answers the limit in two halves,
+    /// because the two halves have different levers: the log's half by the truncating
+    /// checkpoint it runs unconditionally, and the database's half by summarising
+    /// further. Summarising cannot shrink a log, so a log is never a reason to
+    /// coarsen a tier: that is irreversible, and it would be spending recorded detail
+    /// on bytes a checkpoint gives back for nothing. That is why
+    /// <c>RollupWorker.ApplySizePressure</c> measures the database and this figure
+    /// does not appear there. What it is for is reporting: the cycle's own completion
+    /// line, and the status bar, which is where the footprint reaches a person.
     /// </remarks>
     public long GetFootprintBytes()
     {
-        lock (_gate)
-        {
-            ThrowIfDisposed();
+        // The database under the gate, the log outside it. The probe is a cheap
+        // metadata call, but the gate is the same one every sample write takes, and
+        // there is no reason for the sampler to wait behind a filesystem call.
+        long database = GetDatabaseSizeBytes();
 
-            return GetDatabaseSizeBytesLocked() + GetWalSizeBytes(_dbPath);
-        }
+        return database + GetWalSizeBytes(_dbPath);
     }
 
     /// <summary>
@@ -1593,7 +1598,8 @@ public sealed class Database : IDisposable
     /// whether the capture has outgrown its limit, and a limit that cannot be
     /// measured is not a reason to stop recording or to start summarising: the worst
     /// this understates is the log's own contribution, which is what the figure was
-    /// missing entirely before #174.
+    /// missing entirely before #174, and nothing acts on this figure: it is reported
+    /// rather than enforced against.
     ///
     /// The viewer measures the same thing for the size it puts in the status bar,
     /// and does it with its own copy of these four lines rather than calling this

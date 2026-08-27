@@ -115,12 +115,16 @@ public sealed class RollupWorker : BackgroundService
         _db.DeleteOrphanedProcessInstances();
 
         // Give the space back before measuring it, which is the order size pressure
-        // depends on. Everything above has just freed pages, and every one of those
-        // frees passed through the write ahead log on its way, so a measurement taken
-        // here without this reads a footprint that is about to shrink on its own. Size
+        // depends on. Promotion and retention have just freed pages, and a free page
+        // is still counted until the vacuum returns it, so a measurement taken here
+        // without this reads a database that is about to shrink on its own. Size
         // pressure answers an over-limit reading by summarising recorded detail away,
         // and that cannot be undone, so it must never be spent on bytes the tidy-up
         // was going to return anyway.
+        //
+        // The checkpoint belongs with it rather than only after, because it is the
+        // half of the tidy-up that reaches the log, and the log is what the limit
+        // counts that the summarising below cannot touch.
         _db.IncrementalVacuum();
         _db.WalCheckpoint();
 
@@ -214,29 +218,35 @@ public sealed class RollupWorker : BackgroundService
     /// every measurement after the first would report the size the file had before
     /// any of this ran, and the loop would spend its whole budget every time.
     ///
-    /// Two figures rather than one, and the difference between them is the whole of
-    /// #174. The limit is measured against the footprint, database and write ahead
-    /// log together, because that is what the folder costs and what the setting
-    /// reads as a promise about. The loop is steered by the database alone, because
-    /// summarising further is the only lever it has and that lever does not reach
-    /// the log. Steering the loop by the footprint would let a large log coarsen a
-    /// tier, and coarsening is permanent: the finer rows are folded away and no
-    /// later checkpoint brings them back, while the log the coarsening was answering
-    /// goes at the next checkpoint for nothing.
+    /// This measures the database rather than the footprint, and that is deliberate
+    /// rather than an oversight left over from before the limit counted the log
+    /// (#174). <c>maxDatabaseSizeMb</c> is a promise about the whole footprint, and
+    /// the cycle answers it in two halves, in two places, because the two halves have
+    /// different levers.
+    ///
+    /// The log's half is answered by the truncating checkpoint <see cref="RunRollup"/>
+    /// runs immediately before this. That is the only thing that shortens a log, and
+    /// it is unconditional, so by the time this runs the log has already had the only
+    /// answer there is applied to it. A check here would have nothing left to do:
+    /// what remains is either a log a reader is holding open, which nothing here can
+    /// shrink, or one that is genuinely in use.
+    ///
+    /// The database's half is answered here, by summarising further. Steering that by
+    /// the footprint would let a held-open log coarsen a tier, and coarsening is
+    /// permanent: the finer rows are folded away and no later checkpoint brings them
+    /// back, while the log the coarsening was answering goes at the next checkpoint
+    /// for nothing. So the summarising loop is steered by the database, and a capture
+    /// over its limit only because of its log summarises nothing.
+    ///
+    /// It also says nothing when that is the case, which is why there is no branch
+    /// here reporting it. A window left open holds the checkpoint off on every cycle,
+    /// so a line would repeat every few minutes for as long as somebody has Telltale
+    /// on screen, which is the complaint in #172. The footprint reaches a person
+    /// through the cycle's own completion line and the status bar instead.
     /// </remarks>
     private void ApplySizePressure(long now, IReadOnlyDictionary<string, long> pressure)
     {
         long maxBytes = _config.MaxDatabaseSizeMb * 1024L * 1024L;
-        if (_db.GetFootprintBytes() <= maxBytes) return;
-
-        // Over the limit, but the database is not what put it there, so the log is.
-        // The caller has already run a truncating checkpoint, so the log being this
-        // large means a reader held it off. Nothing here can shrink it, and the only
-        // thing here that acts would spend recorded detail to no purpose.
-        //
-        // Deliberately silent. A window left open holds the checkpoint off on every
-        // cycle, so a line here would repeat every few minutes for as long as
-        // somebody has Telltale on screen, which is the complaint in #172.
         if (_db.GetDatabaseSizeBytes() <= maxBytes) return;
 
         var applied = new Dictionary<string, long>(pressure, StringComparer.Ordinal);
