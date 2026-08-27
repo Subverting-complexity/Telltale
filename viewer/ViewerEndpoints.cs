@@ -307,7 +307,6 @@ public static class ViewerEndpoints
                 if (atLatest) cmd.Parameters.AddWithValue("@at", latestTs!.Value);
                 if (q != null) cmd.Parameters.AddWithValue("@q", $"%{EscapeLike(q)}%");
 
-
                 var results = new List<object>();
                 using var reader = cmd.ExecuteReader();
         
@@ -941,6 +940,13 @@ public static class ViewerEndpoints
     /// It reads the same tier source the query that follows reads, so the
     /// timestamp it returns is one that query can actually match. Asking the raw
     /// table directly would name an instant a rollup-served window has no row at.
+    ///
+    /// It deliberately ignores the name filter. The reading is a property of the
+    /// window, not of the search: moving it to the newest instant at which a
+    /// matching process happened to be recorded would label a stale timestamp as
+    /// the latest reading, and would rank two searches against two different
+    /// instants. A filter that matches nothing at the reading therefore returns
+    /// the reading and no rows, which is the truthful answer.
     /// </summary>
     static long? NewestSampleTs(SqliteConnection conn, TierSource source, long from, long to)
     {

@@ -6,8 +6,10 @@ namespace Viewer.Tests;
 /// <summary>
 /// Covers the <c>latest</c> form of /api/processes, which answers what was
 /// running at the newest reading in the window rather than what the window
-/// averages out to. The seeded data ranks the two processes differently under
-/// the two questions, so a query that silently aggregated would fail here.
+/// averages out to. The seeded data ranks the processes differently under the
+/// two questions, so a query that silently aggregated would fail here. Each
+/// assertion about the latest form is paired with what the range form answers,
+/// so none of them can pass on a query that ignored the parameter.
 /// </summary>
 public class LatestReadingEndpointTests : IClassFixture<LatestReadingTestFactory>
 {
@@ -47,12 +49,58 @@ public class LatestReadingEndpointTests : IClassFixture<LatestReadingTestFactory
     [Fact]
     public async Task Latest_ReportsMemoryAndIoAtThatInstantRatherThanPeakAndTotal()
     {
-        var root = await Get($"/api/processes?{Window}&latest=true");
-        var steady = Find(root, LatestReadingTestFactory.SteadyName);
+        var latest = Find(await Get($"/api/processes?{Window}&latest=true"),
+            LatestReadingTestFactory.SteadyName);
+        var range = Find(await Get($"/api/processes?{Window}"),
+            LatestReadingTestFactory.SteadyName);
 
-        // Over the range these would be the peak and the sum of sixty readings.
-        Assert.Equal(LatestReadingTestFactory.SteadyPrivateMb, steady.GetProperty("privateMb").GetDouble(), 3);
-        Assert.Equal(LatestReadingTestFactory.SteadyIoKb, steady.GetProperty("ioKb").GetDouble(), 3);
+        Assert.Equal(LatestReadingTestFactory.SteadyPrivateMb, latest.GetProperty("privateMb").GetDouble(), 3);
+        Assert.Equal(LatestReadingTestFactory.SteadyIoKb, latest.GetProperty("ioKb").GetDouble(), 3);
+
+        // And the range genuinely answers differently, so neither assertion above
+        // can pass on a query that ignored the `latest` parameter entirely: the
+        // memory high-water mark sits part way through the window, and the I/O is
+        // the sum of sixty readings.
+        Assert.Equal(LatestReadingTestFactory.SteadyPeakPrivateMb, range.GetProperty("privateMb").GetDouble(), 3);
+        Assert.Equal(
+            LatestReadingTestFactory.SteadyIoKb * LatestReadingTestFactory.SampleCount,
+            range.GetProperty("ioKb").GetDouble(), 3);
+    }
+
+    [Fact]
+    public async Task Latest_TotalsAGroupAcrossItsInstancesAtThatReading()
+    {
+        // The two-stage average in its non-degenerate form. pair.exe's second
+        // instance exists only at the final reading, so the instant's total is the
+        // sum of both and the range's average is close to the first alone.
+        var latest = Find(await Get($"/api/processes?{Window}&latest=true"),
+            LatestReadingTestFactory.PairName);
+
+        Assert.Equal(
+            LatestReadingTestFactory.PairSteadyCpuPct + LatestReadingTestFactory.PairLateCpuPct,
+            latest.GetProperty("cpuPct").GetDouble(), 3);
+        Assert.Equal(2, latest.GetProperty("instanceCount").GetInt32());
+
+        var range = Find(await Get($"/api/processes?{Window}"), LatestReadingTestFactory.PairName);
+        Assert.True(range.GetProperty("cpuPct").GetDouble() < LatestReadingTestFactory.PairSteadyCpuPct * 1.5,
+            $"Expected the range average near {LatestReadingTestFactory.PairSteadyCpuPct}, got {range.GetProperty("cpuPct").GetDouble()}");
+    }
+
+    [Fact]
+    public async Task Latest_FilterDoesNotMoveTheReadingToWhenThatProcessWasLastSeen()
+    {
+        // gone.exe has readings in this window but none at the newest one. The
+        // reading is a property of the window, not of the search, so the answer is
+        // that reading and no rows rather than a stale timestamp labelled as the
+        // latest. Two searches must never be ranked against two different instants.
+        var root = await Get($"/api/processes?{Window}&latest=true&q=gone");
+
+        Assert.Equal(LatestReadingTestFactory.LatestTs, root.GetProperty("latestTs").GetInt64());
+        Assert.Empty(root.GetProperty("processes").EnumerateArray());
+
+        // It is genuinely in the window, so the range form does find it.
+        var range = await Get($"/api/processes?{Window}&q=gone");
+        Assert.Single(range.GetProperty("processes").EnumerateArray());
     }
 
     [Fact]

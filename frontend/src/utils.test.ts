@@ -425,6 +425,13 @@ describe('computePeak', () => {
     expect(computePeak([null, null])).toBeNull();
   });
 
+  it('is not poisoned by an undefined reading', () => {
+    // The declared type rules this out, but a response from a build that predates
+    // a field does not. A strict null check would take undefined as the running
+    // peak, and every later comparison against it is false.
+    expect(computePeak([undefined as unknown as null, 5, 3])).toBe(5);
+  });
+
   it('does not mistake zero for nothing', () => {
     // An idle machine records zero, which is a reading. Returning null for it
     // would draw a gap in the sparkline where the line should sit on the floor.

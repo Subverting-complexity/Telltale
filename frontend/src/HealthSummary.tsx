@@ -121,6 +121,16 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
   const diskSeries = useMemo(() => timeline.map(p => p.diskBusyPct), [timeline]);
   const netSeries = useMemo(() => timeline.map(p => p.netKbps), [timeline]);
 
+  // Memoised rather than computed in the render, because in Over time each of
+  // these walks the whole range, and the range can be a day of five second
+  // readings. Declared above the early return below, where a hook has to be.
+  const sparks = useMemo(() => ({
+    cpu: sparkSeries(cpuSeries, view),
+    memory: sparkSeries(memSeries, view),
+    disk: sparkSeries(diskSeries, view),
+    network: sparkSeries(netSeries, view),
+  }), [cpuSeries, memSeries, diskSeries, netSeries, view]);
+
   if (!latest) return null;
 
   const overTime = view === 'over-time';
@@ -135,9 +145,13 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
   const memPctNow = memHasData ? clamp(((memTotalMb - memAvailMb!) / memTotalMb) * 100, 0, 100) : null;
   const memPctAvg = computeMean(memSeries);
   const memPctPeak = computePeak(memSeries);
-  const memPct = overTime ? memPctAvg : memPctNow;
+  // The total comes from the newest reading, but the average is taken over every
+  // reading in the range, so the two can disagree about whether there is any
+  // memory data at all. Without this the tile would put a percentage from the
+  // range beside a size computed against a total of zero.
+  const memPct = overTime ? (memTotalMb > 0 ? memPctAvg : null) : memPctNow;
   const memUsedMb = memPct !== null ? (memPct / 100) * memTotalMb : null;
-  const memPeakUsedMb = memPctPeak !== null ? (memPctPeak / 100) * memTotalMb : null;
+  const memPeakUsedMb = memPct !== null && memPctPeak !== null ? (memPctPeak / 100) * memTotalMb : null;
 
   const cpuPct = (overTime ? computeMean(cpuSeries) : latest.cpuPct) ?? 0;
   const cpuPeak = computePeak(cpuSeries) ?? 0;
@@ -147,6 +161,9 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
   const netPeak = computePeak(netSeries);
 
   const diskText = (pct: number) => (pct < 1 ? 'Idle' : `${pct.toFixed(1)}%`);
+  // A peak is a number, never a state. "Peak Idle" is not a sentence, and a range
+  // whose busiest moment was under one percent is better described by the figure.
+  const diskPeakText = `${diskPeak.toFixed(1)}%`;
 
   return (
     <section className="health-summary" aria-label="System health summary">
@@ -167,7 +184,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
           ariaLabel={overTime
             ? `CPU: average ${cpuPct.toFixed(0)}%, peak ${cpuPeak.toFixed(0)}%, of ${logicalProcessors} cores ${whenRange}`
             : `CPU: ${cpuPct.toFixed(0)}% of ${logicalProcessors} cores ${whenNow}`}
-          spark={sparkSeries(cpuSeries, view)}
+          spark={sparks.cpu}
           onClick={() => onScrollTo('cpu')}
         />
 
@@ -186,7 +203,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
             : overTime && memPeakUsedMb !== null
               ? `Memory: average ${formatSizeGb(memUsedMb)} of ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%), peak ${formatSizeGb(memPeakUsedMb)}, ${whenRange}`
               : `Memory: ${formatSizeGb(memUsedMb)} / ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%) ${whenNow}`}
-          spark={memPct !== null ? sparkSeries(memSeries, view) : null}
+          spark={memPct !== null ? sparks.memory : null}
           onClick={() => onScrollTo('memory')}
         />
 
@@ -195,11 +212,11 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
           header="Disk"
           value={diskText(diskPct)}
           barPct={diskPct}
-          label={overTime ? `Peak ${diskText(diskPeak)}` : diskPct >= 1 ? 'busy' : null}
+          label={overTime ? `Peak ${diskPeakText}` : diskPct >= 1 ? 'busy' : null}
           ariaLabel={overTime
-            ? `Disk: average ${diskText(diskPct)} busy, peak ${diskText(diskPeak)}, ${whenRange}`
+            ? `Disk: average ${diskText(diskPct)} busy, peak ${diskPeakText}, ${whenRange}`
             : `Disk: ${diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}% busy`} ${whenNow}`}
-          spark={sparkSeries(diskSeries, view)}
+          spark={sparks.disk}
           onClick={() => onScrollTo('disk')}
         />
 
@@ -212,7 +229,7 @@ export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: Healt
           ariaLabel={overTime
             ? `Network: average ${formatRate(netKbps)}, peak ${formatRate(netPeak)}, ${whenRange}`
             : `Network: ${formatRate(netKbps)} ${whenNow}`}
-          spark={sparkSeries(netSeries, view)}
+          spark={sparks.network}
           onClick={() => onScrollTo('network')}
         />
       </div>

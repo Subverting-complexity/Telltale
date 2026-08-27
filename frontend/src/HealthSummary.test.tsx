@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HealthSummary } from './HealthSummary';
 import type { TimelinePoint } from './types';
@@ -26,6 +26,11 @@ function point(ts: number, cpuPct: number): TimelinePoint {
     netKbps: 256,
     gpuBusyPct: null,
   };
+}
+
+/** A reading where nothing was busy, for the disk tile's sub-one-percent path. */
+function quiet(ts: number): TimelinePoint {
+  return { ...point(ts, 1), diskBusyPct: 0.4 };
 }
 
 const TIMELINE = [point(1, 10), point(2, 40), point(3, 25)];
@@ -105,6 +110,31 @@ describe('HealthSummary reading view', () => {
     // (90 + 90 + 0) / 3 = 60.
     expect(screen.getByText('60%')).toBeInTheDocument();
     expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  });
+
+  it('gives the disk peak as a figure, never as the word Idle', async () => {
+    const user = userEvent.setup();
+    // A range that never got busy. "Peak Idle" is not a sentence.
+    renderSummary([quiet(1), quiet(2), quiet(3)]);
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    expect(screen.getByText('Peak 0.4%')).toBeInTheDocument();
+    expect(screen.queryByText(/Peak Idle/)).not.toBeInTheDocument();
+  });
+
+  it('shows no memory percentage when the newest reading has no total to measure against', async () => {
+    const user = userEvent.setup();
+    // The total is read from the newest reading, but the average is taken over
+    // every reading. Without a guard the tile puts a percentage from the range
+    // beside a size computed against a total of zero.
+    renderSummary([point(1, 10), { ...point(2, 10), memoryTotalMb: null, memoryAvailMb: null }]);
+
+    await user.click(screen.getByRole('radio', { name: 'Over time' }));
+
+    const memory = screen.getByRole('button', { name: /^Memory:/ });
+    expect(memory).toHaveAccessibleName('Memory: no data');
+    expect(within(memory).getByText('-')).toBeInTheDocument();
   });
 
   it('says which reading each tile is answering on', async () => {

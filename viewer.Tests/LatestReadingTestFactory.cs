@@ -3,13 +3,19 @@ using Microsoft.Data.Sqlite;
 namespace Viewer.Tests;
 
 /// <summary>
-/// Seeds two processes whose ranking depends on which question is asked.
+/// Seeds four processes whose ranking depends on which question is asked.
 ///
 /// <c>steady.exe</c> burns a constant share of a core for the whole window and
 /// wins on the average. <c>spiky.exe</c> does nothing at all until the final
 /// reading, where it takes far more than steady ever did, and wins on the
 /// instant. A latest-reading query that quietly aggregates over the range would
 /// return them the other way round, which is the mistake worth catching.
+///
+/// <c>pair.exe</c> runs as two instances, the second only at the final reading,
+/// which is what exercises totalling a group across its instances at one instant
+/// rather than in its degenerate one-instance form. <c>gone.exe</c> stops being
+/// recorded half way through, so a filter naming it has readings in the window
+/// but none at the newest one.
 /// </summary>
 public class LatestReadingTestFactory : TelltaleTestFactory
 {
@@ -22,6 +28,31 @@ public class LatestReadingTestFactory : TelltaleTestFactory
     public const double SteadyCpuPct = 10.0;
     public const double SteadyPrivateMb = 100.0;
     public const double SteadyIoKb = 4.0;
+
+    /// <summary>
+    /// A memory high-water mark part way through, and deliberately not at the end.
+    /// Without it steady.exe holds the same memory at every reading, and an
+    /// assertion that the latest form reports the instant rather than the range's
+    /// peak would pass either way.
+    /// </summary>
+    public const double SteadyPeakPrivateMb = 900.0;
+    public const int SteadyPeakIndex = 10;
+
+    /// <summary>
+    /// A group with two instances, for the two-stage average that totals a group
+    /// across its instances at one instant. The second appears only at the final
+    /// reading, so the instant's total and the range's average differ sharply.
+    /// </summary>
+    public const string PairName = "pair.exe";
+    public const double PairSteadyCpuPct = 5.0;
+    public const double PairLateCpuPct = 25.0;
+
+    /// <summary>
+    /// Recorded only through the first half of the window. The name filter must
+    /// not move the reading to the newest instant this one was seen at.
+    /// </summary>
+    public const string GoneName = "gone.exe";
+    public const double GoneCpuPct = 2.0;
 
     /// <summary>What spiky.exe uses at every reading except the last one.</summary>
     public const double SpikyIdleCpuPct = 0.0;
@@ -73,12 +104,17 @@ public class LatestReadingTestFactory : TelltaleTestFactory
         cmd.CommandText = """
             INSERT INTO process_instance (id, pid, create_time, name, path, first_seen, last_seen)
             VALUES (1, 1001, @start, @steady, NULL, @start, @end),
-                   (2, 1002, @start, @spiky,  NULL, @start, @end)
+                   (2, 1002, @start, @spiky,  NULL, @start, @end),
+                   (3, 1003, @start, @pair,   NULL, @start, @end),
+                   (4, 1004, @start, @pair,   NULL, @start, @end),
+                   (5, 1005, @start, @gone,   NULL, @start, @end)
             """;
         cmd.Parameters.AddWithValue("@start", FirstTs);
         cmd.Parameters.AddWithValue("@end", LatestTs);
         cmd.Parameters.AddWithValue("@steady", SteadyName);
         cmd.Parameters.AddWithValue("@spiky", SpikyName);
+        cmd.Parameters.AddWithValue("@pair", PairName);
+        cmd.Parameters.AddWithValue("@gone", GoneName);
         cmd.ExecuteNonQuery();
     }
 
@@ -107,7 +143,7 @@ public class LatestReadingTestFactory : TelltaleTestFactory
             ts.Value = at;
             instance.Value = 1;
             cpu.Value = SteadyCpuPct;
-            mem.Value = SteadyPrivateMb;
+            mem.Value = i == SteadyPeakIndex ? SteadyPeakPrivateMb : SteadyPrivateMb;
             io.Value = SteadyIoKb;
             cmd.ExecuteNonQuery();
 
@@ -117,6 +153,35 @@ public class LatestReadingTestFactory : TelltaleTestFactory
             mem.Value = isLast ? SpikyPeakPrivateMb : 0.0;
             io.Value = isLast ? SpikyPeakIoKb : 0.0;
             cmd.ExecuteNonQuery();
+
+            ts.Value = at;
+            instance.Value = 3;
+            cpu.Value = PairSteadyCpuPct;
+            mem.Value = SteadyPrivateMb;
+            io.Value = SteadyIoKb;
+            cmd.ExecuteNonQuery();
+
+            // The pair's second instance exists only at the final reading.
+            if (isLast)
+            {
+                ts.Value = at;
+                instance.Value = 4;
+                cpu.Value = PairLateCpuPct;
+                mem.Value = SteadyPrivateMb;
+                io.Value = SteadyIoKb;
+                cmd.ExecuteNonQuery();
+            }
+
+            // gone.exe stops being recorded half way through the window.
+            if (i < SampleCount / 2)
+            {
+                ts.Value = at;
+                instance.Value = 5;
+                cpu.Value = GoneCpuPct;
+                mem.Value = SteadyPrivateMb;
+                io.Value = SteadyIoKb;
+                cmd.ExecuteNonQuery();
+            }
         }
 
         tx.Commit();

@@ -229,11 +229,18 @@ export function computeLinearFit(values: (number | null)[]): { slope: number; in
   return { slope, intercept };
 }
 
-/** The largest recorded value, or null when nothing was recorded. */
+/**
+ * The largest recorded value, or null when nothing was recorded.
+ *
+ * The guard is `!= null` rather than `!== null` so an undefined entry is skipped
+ * as a missing reading. A strict check would take undefined as the running peak,
+ * and every later comparison against it is false, so one undefined at the front
+ * would report no peak for a series full of readings.
+ */
 export function computePeak(values: (number | null)[]): number | null {
   let peak: number | null = null;
   for (const v of values) {
-    if (v !== null && (peak === null || v > peak)) peak = v;
+    if (v != null && (peak === null || v > peak)) peak = v;
   }
   return peak;
 }
