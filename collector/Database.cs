@@ -874,7 +874,7 @@ public sealed class Database : IDisposable
             using var cmd = _conn.CreateCommand();
             cmd.Transaction = tx;
 
-            long bucketMs = target.BucketMinutes * 60_000L;
+            long bucketMs = target.BucketMs;
 
             // Only ever promote whole buckets. The caller's cutoff is a wall clock
             // instant and rarely lands on a bucket boundary, so without this the bucket
@@ -1189,7 +1189,8 @@ public sealed class Database : IDisposable
 
     /// <summary>
     /// Deletes everything recorded between <paramref name="fromMs"/> and
-    /// <paramref name="toMs"/>, both ends included, and leaves the rest alone.
+    /// <paramref name="toMs"/>, both ends included, along with any coarser bucket
+    /// holding part of that span, and leaves the rest alone.
     /// </summary>
     /// <remarks>
     /// Every row holding any part of the range is deleted, including a rollup bucket
@@ -1268,7 +1269,17 @@ public sealed class Database : IDisposable
                     cmd.CommandText = $"DELETE FROM {table}{where}";
                     if (from is not null)
                     {
-                        cmd.Parameters.AddWithValue("@from", from.Value - bucketMs);
+                        // Widening the start by a bucket has to stop at the bottom
+                        // rather than wrap round it. A range beginning at long.MinValue
+                        // is not a real recording, but subtracting from it silently
+                        // turns the lower bound into a large positive number, and the
+                        // wipe then matches nothing at all and honestly reports that
+                        // it deleted nothing.
+                        long widenedFrom = from.Value < long.MinValue + bucketMs
+                            ? long.MinValue
+                            : from.Value - bucketMs;
+
+                        cmd.Parameters.AddWithValue("@from", widenedFrom);
                         cmd.Parameters.AddWithValue("@to", to!.Value);
                     }
 
@@ -1404,12 +1415,14 @@ public sealed class Database : IDisposable
     /// someone deleted everything to get their disk back, and the figure the window
     /// reports and the folder they go and look at then disagree by all of it.
     ///
-    /// TRUNCATE has to wait for every reader to let go before it can reset the log,
-    /// and the viewer holds a read connection open for as long as a window is on
-    /// screen, so it can be held off where PASSIVE would not be. Being held off is
-    /// not a failed wipe: the rows were committed before this runs. It falls back to
-    /// PASSIVE, so the database file gives back its own pages exactly as it did
-    /// before, and says in the log that the log kept its size.
+    /// TRUNCATE cannot reset the log while a reader is still using it, so it can be
+    /// held off where PASSIVE would not be. That is uncommon rather than the usual
+    /// case: what holds the log is an open read transaction, which here is the span
+    /// of one request the window made, and not the connection itself sitting idle
+    /// between them. Being held off is not a failed wipe either way: the rows were
+    /// committed before this runs. It falls back to PASSIVE, so the database file
+    /// gives back its own pages exactly as it did before, and says in the log that
+    /// the log kept its size.
     /// </remarks>
     private void TruncatingCheckpointLocked()
     {

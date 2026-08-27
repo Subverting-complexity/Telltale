@@ -165,18 +165,34 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         // Each pair is a bucket that reaches into the wiped day and one of the same
         // width that stops exactly where the day starts, so the boundary is pinned
         // in both directions rather than only the easy one.
+        // Every width written out by hand rather than read off the ladder, so a tier
+        // whose width is wrong fails here instead of agreeing with itself. The finer
+        // two rungs are included for the same reason: they are the ones a person
+        // would assume are safe.
+        const long MinuteMs = 60_000L;
         (string Table, long Ts, bool Goes)[] buckets =
         [
+            ("machine_1m", Day1 - (MinuteMs / 2), true),
+            ("machine_1m", Day1 - MinuteMs, false),
+            ("sample_10m", Day1 - (10 * MinuteMs / 2), true),
+            ("sample_10m", Day1 - (10 * MinuteMs), false),
             ("machine_1h", Day1 - (HourMs / 2), true),
             ("machine_1h", Day1 - HourMs, false),
-            ("machine_1d", Day1 - (DayMs / 2), true),
-            ("machine_1d", Day1 - DayMs, false),
+            ("sample_1d", Day1 - (DayMs / 2), true),
+            ("sample_1d", Day1 - DayMs, false),
             ("machine_1w", Day1 - DayMs, true),
             ("machine_1w", Day1 - (7 * DayMs), false),
         ];
 
+        long instance = Db.GetOrCreateProcessInstance(1, 100, "rolled.exe", null, null, Day0);
+
         foreach (var (table, ts, _) in buckets)
-            InsertMachineRollup(table, ts);
+        {
+            if (table.StartsWith("sample_"))
+                InsertProcessRollup(table, ts, instance);
+            else
+                InsertMachineRollup(table, ts);
+        }
 
         Db.WipeRange(Day1, Day1 + DayMs - 1);
 
@@ -255,6 +271,23 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         Assert.Equal(0, result.RowsDeleted);
         Assert.Equal(0, result.BytesFreed);
         Assert.Equal(1, Count("sample"));
+    }
+
+    [Fact]
+    public void WipeRange_FromTheLowestPossibleMoment_StillDeletesRatherThanWrappingRound()
+    {
+        SeedDay(Day0);
+
+        // Widening the start of the range by a bucket's width is a subtraction, and
+        // from the bottom of the range of a long it wraps to a large positive number.
+        // The wipe would then match nothing at all and report, quite honestly, that it
+        // had deleted nothing. Not a range any recording produces, but silently
+        // deleting nothing is the wrong way for a delete to fail.
+        var result = Db.WipeRange(long.MinValue, Day0 + DayMs);
+
+        Assert.True(result.RowsDeleted > 0, "Everything up to the given moment should have gone.");
+        Assert.Equal(0, Count("sample"));
+        Assert.Equal(0, Count("machine_1w"));
     }
 
     [Fact]
@@ -350,6 +383,47 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
             "A reader was holding the log open, so it should not have been reset. "
             + $"It was {logBefore} bytes before the wipe and is empty after it, which "
             + "means this test is no longer exercising a held off checkpoint at all.");
+    }
+
+    [Fact]
+    public void WipeAll_HeldOffByAReader_NoticesAndSaysSoRatherThanAssumingItWorked()
+    {
+        // Its own database rather than the shared one, because the thing under test is
+        // what the wipe wrote to the log, and the base class deliberately throws that
+        // away. Nothing else here cares what was logged.
+        string path = Path.Combine(Path.GetTempPath(), $"telltale_wipebusy_{Guid.NewGuid()}.db");
+        var logger = new RecordingLogger();
+
+        try
+        {
+            using (var db = new Database(path, logger))
+            {
+                for (int i = 0; i < 500; i++)
+                    db.WriteMachineSample(Day0 + i, Machine());
+
+                using var reader = TestConnection.Open(path);
+                using var read = reader.CreateCommand();
+                read.CommandText = "BEGIN";
+                read.ExecuteNonQuery();
+                read.CommandText = "SELECT COUNT(*) FROM machine";
+                read.ExecuteScalar();
+
+                db.WipeAll();
+            }
+
+            // Nothing else observes the difference between noticing the refusal and
+            // assuming the checkpoint worked, because SQLite declines it either way and
+            // the log file looks the same afterwards. Without this, dropping the read
+            // back of the pragma's answer and the passive fallback it guards would
+            // leave every other wipe test green.
+            Assert.Contains(logger.Entries,
+                e => e.Message.Contains("held the write ahead log open"));
+        }
+        finally
+        {
+            foreach (var leftover in new[] { path, path + "-wal", path + "-shm" })
+                File.Delete(leftover);
+        }
     }
 
     [Fact]

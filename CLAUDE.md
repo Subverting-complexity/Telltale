@@ -56,6 +56,17 @@ finer selection, to run without the token, to write more than that one line or t
 put the range in it, or to reach the file from a second writable connection,
 needs a reason written down here.
 
+The housekeeping after the delete may add a line of its own, and two do: one when
+the freed pages could not be handed back to the filesystem, and one when a reader
+was still using the write ahead log so it kept its size. That is the reason this
+paragraph asks for. Both say only that a step did not happen and that the next
+rollup cycle will do it instead. Neither carries the range, a timestamp, or
+anything else about what was deleted, so neither weakens the promise the audit
+line above is careful to keep, and each is worth having because the alternative
+is a wipe that quietly returns less disk than it reported. A line added here that
+says anything about what went, rather than about what the housekeeping did, is
+the widening the paragraph above refuses.
+
 Deleting one day deletes every row holding any part of it, including a rollup
 bucket that only overlaps it, and the bucket goes whole. That over-deletes, and
 it is the deliberate half of the trade. A bucket is stamped with the moment it
