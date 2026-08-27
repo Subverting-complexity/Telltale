@@ -114,13 +114,26 @@ public sealed class RollupWorker : BackgroundService
 
         _db.DeleteOrphanedProcessInstances();
 
-        ApplySizePressure(now, pressure);
-
+        // Give the space back before measuring it, which is the order size pressure
+        // depends on. Everything above has just freed pages, and every one of those
+        // frees passed through the write ahead log on its way, so a measurement taken
+        // here without this reads a footprint that is about to shrink on its own. Size
+        // pressure answers an over-limit reading by summarising recorded detail away,
+        // and that cannot be undone, so it must never be spent on bytes the tidy-up
+        // was going to return anyway.
         _db.IncrementalVacuum();
         _db.WalCheckpoint();
 
-        _logger.LogInformation("Rollup cycle complete. DB size: {Size:F1} MB.",
-            _db.GetDatabaseSizeBytes() / (1024.0 * 1024.0));
+        ApplySizePressure(now, pressure);
+
+        // Again afterwards, because each pressure step frees its own pages and writes
+        // its own frames. Without this they would wait a whole cycle, and the size
+        // reported below would be the one the cycle started with.
+        _db.IncrementalVacuum();
+        _db.WalCheckpoint();
+
+        _logger.LogInformation("Rollup cycle complete. Capture footprint: {Size:F1} MB.",
+            _db.GetFootprintBytes() / (1024.0 * 1024.0));
     }
 
     /// <summary>
@@ -200,10 +213,30 @@ public sealed class RollupWorker : BackgroundService
     /// the file's own free list without reducing <c>page_count</c>, so without it
     /// every measurement after the first would report the size the file had before
     /// any of this ran, and the loop would spend its whole budget every time.
+    ///
+    /// Two figures rather than one, and the difference between them is the whole of
+    /// #174. The limit is measured against the footprint, database and write ahead
+    /// log together, because that is what the folder costs and what the setting
+    /// reads as a promise about. The loop is steered by the database alone, because
+    /// summarising further is the only lever it has and that lever does not reach
+    /// the log. Steering the loop by the footprint would let a large log coarsen a
+    /// tier, and coarsening is permanent: the finer rows are folded away and no
+    /// later checkpoint brings them back, while the log the coarsening was answering
+    /// goes at the next checkpoint for nothing.
     /// </remarks>
     private void ApplySizePressure(long now, IReadOnlyDictionary<string, long> pressure)
     {
         long maxBytes = _config.MaxDatabaseSizeMb * 1024L * 1024L;
+        if (_db.GetFootprintBytes() <= maxBytes) return;
+
+        // Over the limit, but the database is not what put it there, so the log is.
+        // The caller has already run a truncating checkpoint, so the log being this
+        // large means a reader held it off. Nothing here can shrink it, and the only
+        // thing here that acts would spend recorded detail to no purpose.
+        //
+        // Deliberately silent. A window left open holds the checkpoint off on every
+        // cycle, so a line here would repeat every few minutes for as long as
+        // somebody has Telltale on screen, which is the complaint in #172.
         if (_db.GetDatabaseSizeBytes() <= maxBytes) return;
 
         var applied = new Dictionary<string, long>(pressure, StringComparer.Ordinal);
@@ -215,8 +248,8 @@ public sealed class RollupWorker : BackgroundService
             if (next is null)
             {
                 _logger.LogCritical(
-                    "The capture is {Size:F1} MB against a limit of {Limit} MB, and every tier is already "
-                    + "as coarse as it is allowed to get, so there is nothing left to summarise. Recording "
+                    "The capture database is {Size:F1} MB against a limit of {Limit} MB, and every tier is "
+                    + "already as coarse as it is allowed to get, so there is nothing left to summarise. Recording "
                     + "continues and the file will keep growing. Raise maxDatabaseSizeMb, or delete some "
                     + "history from the Telltale window.",
                     _db.GetDatabaseSizeBytes() / (1024.0 * 1024.0), _config.MaxDatabaseSizeMb);
@@ -242,7 +275,7 @@ public sealed class RollupWorker : BackgroundService
         }
 
         _logger.LogWarning(
-            "The capture is still {Size:F1} MB against a limit of {Limit} MB after {Steps} summarising "
+            "The capture database is still {Size:F1} MB against a limit of {Limit} MB after {Steps} summarising "
             + "steps. Stopping for this cycle so sampling is not held up, and carrying on at the next one.",
             _db.GetDatabaseSizeBytes() / (1024.0 * 1024.0), _config.MaxDatabaseSizeMb,
             MaxPressureStepsPerCycle);

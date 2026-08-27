@@ -337,11 +337,20 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         for (int i = 0; i < 4000; i++)
             Db.WriteMachineSample(Day0 + i, Machine());
 
-        // A passive checkpoint first, which is what the rollup cycle runs. It folds
-        // the log's contents back into the database and leaves the log file itself
-        // exactly as large as it had grown, so this is the starting point a wipe
-        // used to be measured against: a full sized log holding nothing.
-        Db.WalCheckpoint();
+        // A passive checkpoint first, issued from a separate connection because the
+        // recorder's own checkpoint truncates since #174. It folds the log's contents
+        // back into the database and leaves the log file itself exactly as large as
+        // it had grown, which is the starting point that makes this test say
+        // something: a full sized log holding nothing. Anything that merely folded
+        // the contents in again would leave the file this length, so only shortening
+        // it can move the assertion below.
+        using (var passive = Connect())
+        using (var checkpoint = passive.CreateCommand())
+        {
+            checkpoint.CommandText = "PRAGMA wal_checkpoint(PASSIVE);";
+            checkpoint.ExecuteNonQuery();
+        }
+
         long logBefore = new FileInfo(WalPath).Length;
         Assert.True(logBefore > 0,
             "The log needs to have grown, or shortening it afterwards proves nothing.");

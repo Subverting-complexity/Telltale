@@ -32,6 +32,14 @@ public sealed class Database : IDisposable
     private readonly SqliteConnection _conn;
     private readonly ILogger _logger;
 
+    /// <summary>
+    /// Where the capture file lives, kept so the write ahead log beside it can be
+    /// measured. SQLite has no pragma that reports the log's size on disk without
+    /// checkpointing it, and the size limit is a promise about disk, so the only
+    /// honest way to read it is to look at the file.
+    /// </summary>
+    private readonly string _dbPath;
+
     /// <summary>Read and written under <c>_gate</c>.</summary>
     private bool _disposed;
 
@@ -48,6 +56,7 @@ public sealed class Database : IDisposable
     public Database(string dbPath, ILogger logger, bool vacuumOnStartup = false)
     {
         _logger = logger;
+        _dbPath = dbPath;
         var dir = Path.GetDirectoryName(dbPath);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
@@ -1394,17 +1403,41 @@ public sealed class Database : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    public void WalCheckpoint()
+    /// <summary>
+    /// Folds the write ahead log back into the database and shortens the log file,
+    /// so the space the log was holding comes back rather than staying claimed for
+    /// the life of the recording.
+    /// </summary>
+    /// <returns>
+    /// Whether the log was actually reset. False means a reader held it open, which
+    /// is not a failure: the fold happened as far as it could and the file simply
+    /// keeps its length until a cycle where nothing is reading.
+    /// </returns>
+    /// <remarks>
+    /// This was a PASSIVE checkpoint until #174. PASSIVE folds the log's contents
+    /// back into the database but never shortens the <c>-wal</c> file, so the log
+    /// kept its high water mark for the life of the recording and only a wipe
+    /// brought it down. On the recording that prompted #145 that was a 4.5 MB
+    /// database beside a 501 MB log.
+    ///
+    /// TRUNCATE is safe to run on the sampler's own cycle for the reason set out on
+    /// <see cref="TryCheckpointLocked"/>: this connection leaves <c>busy_timeout</c>
+    /// at zero, so a checkpoint a reader is holding off answers in a result row
+    /// straight away rather than waiting. Measured at 2ms against a held open read
+    /// transaction. It copies exactly what PASSIVE would in that case and shortens
+    /// the file in every other, so there is no case where PASSIVE was the better
+    /// answer. Arming <c>busy_timeout</c> on this connection would change that, and
+    /// would put the rollup cycle at risk of waiting on an open window.
+    /// </remarks>
+    public bool WalCheckpoint()
     {
         lock (_gate)
         {
             ThrowIfDisposed();
 
-            CheckpointLocked();
+            return TryCheckpointLocked();
         }
     }
-
-    private void CheckpointLocked() => TryCheckpointLocked(CheckpointMode.Passive);
 
     /// <summary>
     /// Folds the log into the database and shortens the log file itself, which no
@@ -1434,13 +1467,13 @@ public sealed class Database : IDisposable
     ///
     /// What is left over when this is held off is a database whose pages have been
     /// released but whose file has not shortened, and a log still at its old length,
-    /// so nothing in the folder has changed yet. The two come back by different
-    /// routes, and saying otherwise is the same failure this fix was reported for.
-    ///
-    /// The database file shortens on the next rollup cycle, whose PASSIVE checkpoint
-    /// folds in the page count the vacuum above already lowered. The log does not:
-    /// PASSIVE never shortens it, and nothing outside a wipe runs a truncating
-    /// checkpoint, so the log waits for the next wipe that is not held off.
+    /// so nothing in the folder has changed yet. Both now come back by the same
+    /// route: the next rollup cycle checkpoints with TRUNCATE (#174), which folds in
+    /// the page count the vacuum above already lowered and shortens the log with it.
+    /// That cycle can be held off in turn, by the same open read transaction, so
+    /// what this is really waiting for is a cycle where nothing is reading. On a
+    /// machine where the window is left open all day that can be a long wait, which
+    /// is what the caller tells the person rather than promising a time.
     ///
     /// Closing the database is deliberately not offered as a third route. SQLite
     /// removes the log at close only when the closing connection is the last one on
@@ -1450,16 +1483,16 @@ public sealed class Database : IDisposable
     /// application build that handle exists by definition and the recorder is never
     /// the last connection.
     /// </remarks>
-    private void TruncatingCheckpointLocked()
+    private bool TruncatingCheckpointLocked()
     {
-        if (TryCheckpointLocked(CheckpointMode.Truncate)) return;
+        if (TryCheckpointLocked()) return true;
 
         _logger.LogInformation(
             "A reader held the write ahead log open, so it kept its size and that space "
             + "has not come back yet. The database released its own pages internally but "
             + "the file has not shortened either. The next rollup cycle shortens the "
-            + "database file. The log waits for the next wipe that is not held off, "
-            + "because nothing else shortens it.");
+            + "database file, and so does the next one that shortens the log.");
+        return false;
     }
 
     /// <summary>
@@ -1480,29 +1513,26 @@ public sealed class Database : IDisposable
     /// made to sit on the recorder's lock waiting for a viewer window to close.
     /// Arming <c>busy_timeout</c> on this connection would change that.
     /// </remarks>
-    private bool TryCheckpointLocked(CheckpointMode mode)
+    private bool TryCheckpointLocked()
     {
         using var cmd = _conn.CreateCommand();
-        cmd.CommandText = mode == CheckpointMode.Truncate
-            ? "PRAGMA wal_checkpoint(TRUNCATE);"
-            : "PRAGMA wal_checkpoint(PASSIVE);";
+        cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
 
         return cmd.ExecuteScalar() is long busy && busy == 0;
     }
 
     /// <summary>
-    /// How hard a checkpoint tries. An enum rather than the pragma's own text,
-    /// so the mode can never arrive from anywhere but this file.
+    /// How large the database itself is: page count times page size, which is what
+    /// the file settles at once the log has been folded in.
     /// </summary>
-    private enum CheckpointMode
-    {
-        /// <summary>Folds in what it can reach without waiting for anyone.</summary>
-        Passive,
-
-        /// <summary>Folds in everything and shortens the log, waiting for readers.</summary>
-        Truncate,
-    }
-
+    /// <remarks>
+    /// Deliberately not the file's length on disk. A promotion or a delete frees its
+    /// pages immediately but writes the lower page count to the log rather than to
+    /// the file, so the file keeps its old length until a checkpoint. This figure is
+    /// the one that moves when data is summarised further, which is what makes it
+    /// the right thing for size pressure to steer by. It is not, on its own, what
+    /// the folder costs: see <see cref="GetFootprintBytes"/>.
+    /// </remarks>
     public long GetDatabaseSizeBytes()
     {
         lock (_gate)
@@ -1510,6 +1540,69 @@ public sealed class Database : IDisposable
             ThrowIfDisposed();
 
             return GetDatabaseSizeBytesLocked();
+        }
+    }
+
+    /// <summary>
+    /// What the capture costs on disk: the database and the write ahead log beside
+    /// it, together. This is what <c>maxDatabaseSizeMb</c> is measured against.
+    /// </summary>
+    /// <remarks>
+    /// The limit used to count the database alone (#174). Every row written passes
+    /// through the log on its way in, so a recording could sit well inside its limit
+    /// on paper and cost close to double it in the folder: on the recording that
+    /// prompted #145, a 4.5 MB database beside a 501 MB log. The setting reads as a
+    /// promise about disk, and counting only half of what is on disk kept it on
+    /// paper only.
+    ///
+    /// Counting the log changes what an over-limit reading means, and the size
+    /// response has to agree with it. Summarising further cannot shrink a log, so a
+    /// log is never a reason to coarsen a tier: that is irreversible, and it would
+    /// be spending recorded detail on bytes a checkpoint gives back for nothing.
+    /// <c>RollupWorker.ApplySizePressure</c> is where that separation is made.
+    /// </remarks>
+    public long GetFootprintBytes()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            return GetDatabaseSizeBytesLocked() + GetWalSizeBytes(_dbPath);
+        }
+    }
+
+    /// <summary>
+    /// The length of the write ahead log beside <paramref name="dbPath"/>, or zero
+    /// when there is not one.
+    /// </summary>
+    /// <remarks>
+    /// Read from the filesystem rather than from SQLite. <c>PRAGMA wal_checkpoint</c>
+    /// reports how many frames the log holds, but only by running a checkpoint,
+    /// which is a write on the recorder's own lock and the opposite of what a
+    /// measurement should do. There is no read-only pragma for it.
+    ///
+    /// A failed probe answers zero rather than throwing. The caller is deciding
+    /// whether the capture has outgrown its limit, and a limit that cannot be
+    /// measured is not a reason to stop recording or to start summarising: the worst
+    /// this understates is the log's own contribution, which is what the figure was
+    /// missing entirely before #174.
+    ///
+    /// The viewer measures the same thing for the size it puts in the status bar,
+    /// and does it with its own copy of these four lines rather than calling this
+    /// one. <c>collector/</c> and <c>viewer/</c> do not reference each other, and
+    /// four lines of <c>FileInfo</c> is not worth a shared project to hold.
+    /// </remarks>
+    private static long GetWalSizeBytes(string dbPath)
+    {
+        try
+        {
+            var wal = new FileInfo(dbPath + "-wal");
+            return wal.Exists ? wal.Length : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return 0;
         }
     }
 

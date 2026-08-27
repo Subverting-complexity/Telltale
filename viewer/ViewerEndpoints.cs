@@ -662,11 +662,25 @@ public static class ViewerEndpoints
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             bool collectorRunning = lastSampleTs > 0 && (now - lastSampleTs) < 15000;
 
+            // The database and the write ahead log beside it, because that is what the
+            // capture costs in the folder and what maxDatabaseSizeMb is enforced
+            // against since #174. Reporting the database alone put a number in the
+            // status bar that could be a fraction of the disk actually in use, and
+            // left the person unable to see why their history was being summarised
+            // further: on the recording that prompted #145 it would have read 4.5 MB
+            // beside a 501 MB log.
+            //
+            // Four lines of FileInfo duplicated from Database.GetWalSizeBytes rather
+            // than shared, because collector/ and viewer/ do not reference each other
+            // and this is not worth a third project to hold.
             long dbSizeBytes = 0;
             try
             {
                 var fi = new FileInfo(dbPath);
                 if (fi.Exists) dbSizeBytes = fi.Length;
+
+                var wal = new FileInfo(dbPath + "-wal");
+                if (wal.Exists) dbSizeBytes += wal.Length;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                 or ArgumentException or NotSupportedException)

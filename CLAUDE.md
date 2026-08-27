@@ -67,13 +67,15 @@ the alternative is a wipe that quietly returns less disk than it reported. A lin
 added here that says anything about what went, rather than about what the
 housekeeping did, is the widening the paragraph above refuses.
 
-Those two lines have to be honest about when the space does come back, and the
-answer is not the same for each. A database file that has not shortened is
-picked up by the next rollup cycle: the wipe has already vacuumed, so the lower
-page count is waiting in the log, and that cycle's passive checkpoint folds it in
-and shortens the file. A log that kept its size is not picked up, because a
-passive checkpoint never shortens it and nothing outside a wipe runs a truncating
-one. So the log waits for the next wipe that is not held off.
+Those two lines have to be honest about when the space does come back, and both
+now answer the same way. The rollup cycle checkpoints with TRUNCATE, so it folds
+in the lower page count the wipe's vacuum already wrote and shortens the log with
+it, and a database file that has not shortened and a log that kept its size are
+both picked up by the next cycle. What that cycle cannot do is get past the thing
+that held the wipe off in the first place: the same open read transaction holds
+its checkpoint off too. So what both are really waiting for is a cycle where
+nothing is reading, and on a machine where the window is left open all day that
+can be a long wait. Neither line may promise a time.
 
 Closing the database is not a third route, however much it looks like one. SQLite
 removes the log at close only when the closing connection is the last one on the
@@ -108,6 +110,18 @@ the capture outgrows `maxDatabaseSizeMb` the response is the same: a tier's hold
 on its data is pulled inward and the rest is summarised into the tier below,
 never dropped. If every tier is already as coarse as it can get, the collector
 says so in the log and lets the file exceed the limit rather than start deleting.
+
+`maxDatabaseSizeMb` is measured against the whole footprint, the database and the
+write ahead log together, because that is what the folder costs and the setting
+reads as a promise about disk. Summarising further is the only lever size
+pressure has and that lever does not reach the log, so the two figures are kept
+apart on purpose: the limit is checked against the footprint, and what the
+summarising loop steers by is the database alone. A capture that is over its
+limit only because a reader is holding a large log open therefore summarises
+nothing, and says nothing, because a window left open would repeat that line
+every cycle. Letting the log drive the loop instead would spend recorded detail,
+permanently, on bytes the next checkpoint gives back for free. Changing which
+figure either half uses needs a reason written down here.
 Retention now only deletes from `collector_health` and `collector_tick_phase`,
 which record what the recorder cost rather than what it observed. Adding a delete
 to any ageing or size path, including a last resort one, needs a reason written
