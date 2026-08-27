@@ -246,7 +246,7 @@ public sealed class Database : IDisposable
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY
         );
-        INSERT INTO schema_version VALUES (5);
+        INSERT INTO schema_version VALUES (6);
 
         CREATE TABLE process_instance (
             id           INTEGER PRIMARY KEY,
@@ -463,6 +463,22 @@ public sealed class Database : IDisposable
             net_kbps_avg        REAL,
             gpu_busy_pct_avg    REAL,
             sample_count        INTEGER
+        );
+
+        -- How far size pressure has pulled each tier's retention in, keyed on the tier's
+        -- per process table name. Absent means the tier is still at what telltale.json
+        -- asks for; present means the file outgrew maxDatabaseSizeMb and this tier gave
+        -- up some of its hold so the data could be folded into the tier below.
+        --
+        -- This is not recorded history, so a wipe of one day leaves it alone. A wipe of
+        -- everything clears it: there is nothing left that was coarsened, so there is
+        -- nothing for the high-water mark to protect.
+        --
+        -- It only ever moves inward. Raising the limit later stops further tightening
+        -- but does not bring back detail that has already been folded away.
+        CREATE TABLE tier_pressure (
+            tier         TEXT PRIMARY KEY,
+            retention_ms INTEGER NOT NULL
         );
 
         -- What the recorder cost the machine, one row per tick. cpu_pct is the
@@ -1210,6 +1226,18 @@ public sealed class Database : IDisposable
                     instances.Transaction = tx;
                     instances.CommandText = "DELETE FROM process_instance";
                     deleted += instances.ExecuteNonQuery();
+
+                    // Size pressure is a high-water mark because coarsening cannot be
+                    // undone: the finer rows are gone. After a wipe of everything
+                    // there are no coarsened rows left for the mark to protect, so
+                    // holding a tightened retention would only keep punishing the
+                    // person for a file that no longer exists. The count is
+                    // deliberately not added to the total, which reports recorded
+                    // rows removed rather than every row the statement touched.
+                    using var pressure = _conn.CreateCommand();
+                    pressure.Transaction = tx;
+                    pressure.CommandText = "DELETE FROM tier_pressure";
+                    pressure.ExecuteNonQuery();
                 }
                 else
                 {
@@ -1318,26 +1346,56 @@ public sealed class Database : IDisposable
     /// The size checks and the deletes run under one acquisition, so a concurrent
     /// write cannot change the answer between a check and the delete it justified.
     /// </summary>
-    public void EnforceSizeLimit(long maxBytes)
+    /// <summary>
+    /// How far size pressure has pulled each tier's retention in, keyed on the
+    /// tier's per process table name. A tier with no entry is still at whatever
+    /// <c>telltale.json</c> asks for.
+    /// </summary>
+    public IReadOnlyDictionary<string, long> ReadTierPressure()
     {
         lock (_gate)
         {
             ThrowIfDisposed();
 
-            if (GetDatabaseSizeBytesLocked() <= maxBytes) return;
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT tier, retention_ms FROM tier_pressure";
 
-            DeleteOldestRollupDataLocked("sample_10m");
-            DeleteOldestRollupDataLocked("machine_10m");
+            var applied = new Dictionary<string, long>(StringComparer.Ordinal);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                applied[reader.GetString(0)] = reader.GetInt64(1);
 
-            // A DELETE moves pages to the free list but does not reduce
-            // page_count, so GetDatabaseSizeBytesLocked would still see
-            // the pre-delete size without a vacuum in between.
-            IncrementalVacuumLocked();
+            return applied;
+        }
+    }
 
-            if (GetDatabaseSizeBytesLocked() <= maxBytes) return;
+    /// <summary>
+    /// Records that <paramref name="tier"/> now keeps its rows for
+    /// <paramref name="retentionMs"/> rather than for what was configured.
+    /// </summary>
+    /// <remarks>
+    /// Written as a high-water mark: an existing entry is only ever lowered. A
+    /// caller that has recomputed a longer retention is describing a relaxation
+    /// that cannot actually happen, because the rows it would have kept have
+    /// already been folded into the tier below, so honouring it would leave the
+    /// database claiming a detail it does not hold.
+    /// </remarks>
+    public void WriteTierPressure(string tier, long retentionMs)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
 
-            DeleteOldestRollupDataLocked("sample_1m");
-            DeleteOldestRollupDataLocked("machine_1m");
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO tier_pressure (tier, retention_ms)
+                VALUES (@tier, @retention)
+                ON CONFLICT(tier) DO UPDATE SET
+                    retention_ms = MIN(retention_ms, excluded.retention_ms)
+                """;
+            cmd.Parameters.AddWithValue("@tier", tier);
+            cmd.Parameters.AddWithValue("@retention", retentionMs);
+            cmd.ExecuteNonQuery();
         }
     }
 
@@ -1346,16 +1404,6 @@ public sealed class Database : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size();";
         return (long)(cmd.ExecuteScalar() ?? 0L);
-    }
-
-    private void DeleteOldestRollupDataLocked(string table)
-    {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $"""
-            DELETE FROM {table}
-            WHERE ts <= (SELECT MIN(ts) + 86400000 FROM {table})
-            """;
-        cmd.ExecuteNonQuery();
     }
 
     private void ThrowIfDisposed() =>

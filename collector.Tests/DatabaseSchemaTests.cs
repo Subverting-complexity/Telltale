@@ -24,7 +24,7 @@ public class DatabaseSchemaTests() : SqliteTestBase("schema")
         "collector_health", "collector_tick_phase", "machine", "machine_10m", "machine_1d",
         "machine_1h", "machine_1m", "machine_1w", "machine_info", "process_instance",
         "sample", "sample_10m", "sample_1d", "sample_1h", "sample_1m", "sample_1w",
-        "schema_version",
+        "schema_version", "tier_pressure",
     ];
 
     private static readonly string[] ExpectedIndexes =

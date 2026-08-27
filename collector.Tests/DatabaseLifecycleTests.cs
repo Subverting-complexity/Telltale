@@ -87,6 +87,7 @@ public class DatabaseLifecycleTests() : SqliteTestBase("lifecycle")
         Assert.Throws<ObjectDisposedException>(() => Db.DeleteOldData("sample", 1_000));
         Assert.Throws<ObjectDisposedException>(() => Db.DeleteOrphanedProcessInstances());
         Assert.Throws<ObjectDisposedException>(() => Db.WalCheckpoint());
-        Assert.Throws<ObjectDisposedException>(() => Db.EnforceSizeLimit(long.MaxValue));
+        Assert.Throws<ObjectDisposedException>(() => Db.ReadTierPressure());
+        Assert.Throws<ObjectDisposedException>(() => Db.WriteTierPressure("sample_1m", 1_000));
     }
 }

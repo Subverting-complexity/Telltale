@@ -9,7 +9,7 @@ PRAGMA synchronous = NORMAL;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version VALUES (5);
+INSERT INTO schema_version VALUES (6);
 
 CREATE TABLE process_instance (
     id           INTEGER PRIMARY KEY,
@@ -226,6 +226,22 @@ CREATE TABLE machine_1w (
     net_kbps_avg        REAL,
     gpu_busy_pct_avg    REAL,
     sample_count        INTEGER
+);
+
+-- How far size pressure has pulled each tier's retention in, keyed on the tier's
+-- per process table name. Absent means the tier is still at what telltale.json
+-- asks for; present means the file outgrew maxDatabaseSizeMb and this tier gave
+-- up some of its hold so the data could be folded into the tier below.
+--
+-- This is not recorded history, so a wipe of one day leaves it alone. A wipe of
+-- everything clears it: there is nothing left that was coarsened, so there is
+-- nothing for the high-water mark to protect.
+--
+-- It only ever moves inward. Raising the limit later stops further tightening
+-- but does not bring back detail that has already been folded away.
+CREATE TABLE tier_pressure (
+    tier         TEXT PRIMARY KEY,
+    retention_ms INTEGER NOT NULL
 );
 
 -- What the recorder cost the machine, one row per tick. cpu_pct is the

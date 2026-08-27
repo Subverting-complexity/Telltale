@@ -1,10 +1,12 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using Telltale.Collector;
 
 namespace Collector.Tests;
 
 /// <summary>
-/// Covers how the database is kept from growing without bound: age based deletion,
-/// orphan cleanup, the size cap, and incremental vacuum actually returning pages.
+/// Covers how the database is kept from growing without bound: ageing, orphan
+/// cleanup, the pressure the size limit applies, and incremental vacuum actually
+/// returning pages.
 ///
 /// The vacuum case only means anything now that issue #37 is fixed. Before that,
 /// auto_vacuum was off and IncrementalVacuum could not reclaim a single page no
@@ -72,28 +74,52 @@ public class DatabaseRetentionTests() : SqliteTestBase("retention")
     }
 
     [Fact]
-    public void EnforceSizeLimit_UnderTheCap_DeletesNothing()
+    public void TierPressure_OnAFreshDatabase_IsEmptySoEveryTierIsAtWhatWasConfigured()
     {
         SeedTenMinuteRollups(days: 3);
-        int before = Count("machine_10m");
 
-        Db.EnforceSizeLimit(long.MaxValue);
-
-        Assert.Equal(before, Count("machine_10m"));
+        Assert.Empty(Db.ReadTierPressure());
     }
 
     [Fact]
-    public void EnforceSizeLimit_OverTheCap_DropsTheOldestDayOfTheCoarsestTierFirst()
+    public void TierPressure_IsReadBackAsItWasWritten()
     {
-        SeedTenMinuteRollups(days: 3);
-        long oldest = Timestamps("machine_10m")[0];
+        Db.WriteTierPressure(StorageTiers.TenMinute.SampleTable, 5 * 24 * HourMs);
 
-        // A cap of one byte forces both passes, so the tier order is what is on show.
-        Db.EnforceSizeLimit(1);
+        var applied = Db.ReadTierPressure();
 
-        Assert.DoesNotContain(oldest, Timestamps("machine_10m"));
-        Assert.True(Count("machine_10m") > 0,
-            "Only the oldest day should go, not the whole tier.");
+        Assert.Equal(5 * 24 * HourMs, applied[StorageTiers.TenMinute.SampleTable]);
+    }
+
+    [Fact]
+    public void TierPressure_OnlyEverTightens()
+    {
+        // Coarsening cannot be undone: the finer rows have already been folded into
+        // the tier below. A later, longer retention describes a relaxation that
+        // cannot happen, so recording it would leave the database claiming detail it
+        // does not hold.
+        Db.WriteTierPressure(StorageTiers.TenMinute.SampleTable, 5 * 24 * HourMs);
+        Db.WriteTierPressure(StorageTiers.TenMinute.SampleTable, 20 * 24 * HourMs);
+
+        Assert.Equal(5 * 24 * HourMs, Db.ReadTierPressure()[StorageTiers.TenMinute.SampleTable]);
+
+        Db.WriteTierPressure(StorageTiers.TenMinute.SampleTable, 2 * 24 * HourMs);
+
+        Assert.Equal(2 * 24 * HourMs, Db.ReadTierPressure()[StorageTiers.TenMinute.SampleTable]);
+    }
+
+    [Fact]
+    public void TierPressure_SurvivesReopeningTheDatabase()
+    {
+        // The point of persisting it. Without this every start would begin again from
+        // the configured retentions, find the file still too large, and repeat work
+        // it had already done.
+        Db.WriteTierPressure(StorageTiers.OneDay.SampleTable, 90 * 24 * HourMs);
+        Db.Dispose();
+
+        using var reopened = new Database(DbPath, NullLogger.Instance);
+
+        Assert.Equal(90 * 24 * HourMs, reopened.ReadTierPressure()[StorageTiers.OneDay.SampleTable]);
     }
 
     [Fact]
@@ -148,8 +174,8 @@ public class DatabaseRetentionTests() : SqliteTestBase("retention")
         new(50.0, 8000, 12000, 0, 1.0, 2.0, 16000, 30.0, 1000, null);
 
     /// <summary>
-    /// Seeds whole days of ten minute machine rollups. The size cap deletes a day at
-    /// a time, so the data has to span more than one for the tier order to be visible.
+    /// Seeds whole days of ten minute machine rollups, so there is enough in the tier
+    /// for a retention change to have something to act on.
     /// </summary>
     private void SeedTenMinuteRollups(int days)
     {

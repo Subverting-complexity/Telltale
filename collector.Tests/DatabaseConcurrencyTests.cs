@@ -109,7 +109,7 @@ public class DatabaseConcurrencyTests() : SqliteTestBase("concurrency")
             for (int i = 0; i < 30; i++)
             {
                 Db.DeleteOldData("sample", Ts);
-                Db.EnforceSizeLimit(long.MaxValue);
+                Db.ReadTierPressure();
                 Db.IncrementalVacuum();
                 Db.WalCheckpoint();
             }

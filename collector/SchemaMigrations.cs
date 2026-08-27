@@ -19,7 +19,7 @@ public static class SchemaMigrations
     /// migration is added below, and change <c>schema.sql</c> to match, so a
     /// database created from scratch and one migrated up end at the same shape.
     /// </summary>
-    public const int LatestVersion = 5;
+    public const int LatestVersion = 6;
 
     /// <summary>
     /// One step, taking a database from the version before it to
@@ -61,6 +61,9 @@ public static class SchemaMigrations
         new(5, "add the hourly, daily and weekly tiers below the ten minute one",
             AddCoarseTierTablesSql,
             conn => HasTable(conn, "sample_1h")),
+        new(6, "record how far size pressure has pulled each tier's retention in",
+            AddTierPressureTableSql,
+            conn => HasTable(conn, "tier_pressure")),
     ];
 
     /// <summary>
@@ -465,6 +468,28 @@ public static class SchemaMigrations
             net_kbps_avg        REAL,
             gpu_busy_pct_avg    REAL,
             sample_count        INTEGER
+        );
+        """;
+
+    /// <summary>
+    /// Version 6. Adds the table recording how far size pressure has pulled each
+    /// tier's retention in.
+    ///
+    /// It exists so the tightening survives a restart, and so the viewer can say
+    /// why a window is being served coarser than telltale.json asks for. Without
+    /// it, every start would begin again from the configured retentions, find the
+    /// file still too large, and repeat work it had already done.
+    ///
+    /// Left empty, which is the honest state: a database that has just been
+    /// migrated has had no pressure applied to it.
+    ///
+    /// Written out in full rather than with IF NOT EXISTS, for the reason given on
+    /// the version 3 step.
+    /// </summary>
+    private const string AddTierPressureTableSql = """
+        CREATE TABLE tier_pressure (
+            tier         TEXT PRIMARY KEY,
+            retention_ms INTEGER NOT NULL
         );
         """;
 }

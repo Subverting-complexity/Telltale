@@ -86,6 +86,20 @@ public static class StorageTiers
         [Raw, OneMinute, TenMinute, OneHour, OneDay, OneWeek];
 
     /// <summary>
+    /// Where <paramref name="tier"/> sits on the ladder, or -1 if it is not on it.
+    /// Finer tiers have lower indexes.
+    /// </summary>
+    public static int IndexOf(StorageTier tier)
+    {
+        for (int i = 0; i < Ordered.Count; i++)
+        {
+            if (Ordered[i] == tier) return i;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
     /// Every per process table, each of which refers to <c>process_instance</c>.
     /// The orphan cleanup has to check all of them: a row still referred to by any
     /// one tier is not an orphan.

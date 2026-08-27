@@ -15,6 +15,17 @@ public sealed class RollupWorker : BackgroundService
     /// </summary>
     public const int ConsecutiveFailuresBeforeCritical = 3;
 
+    /// <summary>
+    /// How many summarising steps one cycle may take to bring an oversized file
+    /// back under its limit before it stops and leaves the rest to the next cycle.
+    ///
+    /// Each step holds the write lock, and the recorder cannot write while it is
+    /// held, so this bounds how long sampling can be held up by housekeeping. A
+    /// database far over its limit converges across several cycles instead, which
+    /// is slower but never stalls the thing the application exists to do.
+    /// </summary>
+    public const int MaxPressureStepsPerCycle = 8;
+
     private int _consecutiveFailures;
 
     public RollupWorker(ILogger<RollupWorker> logger, TelltaleConfig config, Database db)
@@ -76,11 +87,22 @@ public sealed class RollupWorker : BackgroundService
             ? LogLevel.Critical
             : LogLevel.Error;
 
-    private void RunRollup()
+    /// <summary>
+    /// One whole cycle: age everything that is due, trim the health tables, and
+    /// bring the file back under its size limit if it has outgrown it.
+    /// </summary>
+    /// <remarks>
+    /// Public so a test can drive a single cycle against a real database. Going
+    /// through <see cref="ExecuteAsync"/> instead would mean waiting out a
+    /// <see cref="PeriodicTimer"/> measured in minutes, and the behaviour worth
+    /// pinning here is what one cycle does rather than that the timer fires.
+    /// </remarks>
+    public void RunRollup()
     {
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        IReadOnlyDictionary<string, long> pressure = _db.ReadTierPressure();
 
-        PromoteThroughTiers(now);
+        PromoteThroughTiers(now, pressure);
 
         long healthCutoff = now - (long)TimeSpan.FromDays(_config.HealthRetentionDays).TotalMilliseconds;
         _db.DeleteOldData("collector_health", healthCutoff);
@@ -92,7 +114,7 @@ public sealed class RollupWorker : BackgroundService
 
         _db.DeleteOrphanedProcessInstances();
 
-        _db.EnforceSizeLimit(_config.MaxDatabaseSizeMb * 1024L * 1024L);
+        ApplySizePressure(now, pressure);
 
         _db.IncrementalVacuum();
         _db.WalCheckpoint();
@@ -115,7 +137,7 @@ public sealed class RollupWorker : BackgroundService
     /// <c>rollup10mRetentionDays</c> deleted outright. That deletion is gone. The
     /// hourly, daily and weekly tiers below it are where that data goes now.
     /// </remarks>
-    private void PromoteThroughTiers(long now)
+    private void PromoteThroughTiers(long now, IReadOnlyDictionary<string, long> pressure)
     {
         // Never let a tier run ahead of the one feeding it. If it did, it would
         // promote a bucket the tier above has not finished filling, and the rows
@@ -132,11 +154,15 @@ public sealed class RollupWorker : BackgroundService
             StorageTier source = tiers[i];
             StorageTier target = tiers[i + 1];
 
+            // The effective retention, not the configured one: a tier the size
+            // limit has already pulled in keeps its tightened hold rather than
+            // springing back to what telltale.json says every cycle.
+            //
             // Null means the tier keeps what it holds, which is true only of the
             // coarsest one. That has no tier below it to be promoted into, so it is
             // never a source here, but the check keeps this honest if a rung is
             // ever appended below it.
-            long? retentionMs = _config.RetentionMsFor(source);
+            long? retentionMs = SizePressure.EffectiveRetentionMs(_config, source, pressure);
             if (retentionMs is null) continue;
 
             long cutoff = Math.Min(now - retentionMs.Value, previousCutoff);
@@ -149,5 +175,76 @@ public sealed class RollupWorker : BackgroundService
 
             previousCutoff = cutoff;
         }
+    }
+
+    /// <summary>
+    /// Brings the file back under <c>maxDatabaseSizeMb</c> by summarising further,
+    /// one step at a time, until it fits or there is nothing left to summarise.
+    /// </summary>
+    /// <remarks>
+    /// Nothing here deletes a recorded reading either. Each step pulls one tier's
+    /// retention inward and promotes what that releases into the tier below, so the
+    /// file shrinks by giving up detail. What it replaces dropped the oldest day of
+    /// the ten minute tables and then the oldest day of the one minute tables,
+    /// which lost those readings outright, and in the one minute case lost a day
+    /// that had not been promoted yet, leaving a hole in the middle of a tier's
+    /// span that <c>TierSelection.Plan</c> assumes cannot exist.
+    ///
+    /// Bounded per cycle rather than run to completion. Every step takes the write
+    /// lock, and while it is held the recorder cannot write, so a database far over
+    /// its limit converges across several cycles instead of stalling sampling for
+    /// one long one. The state is persisted, so the next cycle carries on from
+    /// where this one stopped rather than starting again.
+    ///
+    /// The vacuum inside the loop is not optional. A promotion frees its pages onto
+    /// the file's own free list without reducing <c>page_count</c>, so without it
+    /// every measurement after the first would report the size the file had before
+    /// any of this ran, and the loop would spend its whole budget every time.
+    /// </remarks>
+    private void ApplySizePressure(long now, IReadOnlyDictionary<string, long> pressure)
+    {
+        long maxBytes = _config.MaxDatabaseSizeMb * 1024L * 1024L;
+        if (_db.GetDatabaseSizeBytes() <= maxBytes) return;
+
+        var applied = new Dictionary<string, long>(pressure, StringComparer.Ordinal);
+
+        for (int step = 0; step < MaxPressureStepsPerCycle; step++)
+        {
+            PressureStep? next = SizePressure.NextStep(_config, applied);
+
+            if (next is null)
+            {
+                _logger.LogCritical(
+                    "The capture is {Size:F1} MB against a limit of {Limit} MB, and every tier is already "
+                    + "as coarse as it is allowed to get, so there is nothing left to summarise. Recording "
+                    + "continues and the file will keep growing. Raise maxDatabaseSizeMb, or delete some "
+                    + "history from the Telltale window.",
+                    _db.GetDatabaseSizeBytes() / (1024.0 * 1024.0), _config.MaxDatabaseSizeMb);
+                return;
+            }
+
+            applied[next.Source.SampleTable] = next.RetentionMs;
+            _db.WriteTierPressure(next.Source.SampleTable, next.RetentionMs);
+
+            long cutoff = now - next.RetentionMs;
+            _db.RollupSamples(cutoff, next.Source, next.Target, isMachine: false);
+            _db.RollupSamples(cutoff, next.Source, next.Target, isMachine: true);
+
+            _db.IncrementalVacuum();
+
+            _logger.LogInformation(
+                "Capture over its {Limit} MB limit: {Source} now keeps {Days:F1} days rather than what was "
+                + "configured, and the rest has been summarised into {Target}.",
+                _config.MaxDatabaseSizeMb, next.Source.SampleTable,
+                TimeSpan.FromMilliseconds(next.RetentionMs).TotalDays, next.Target.SampleTable);
+
+            if (_db.GetDatabaseSizeBytes() <= maxBytes) return;
+        }
+
+        _logger.LogWarning(
+            "The capture is still {Size:F1} MB against a limit of {Limit} MB after {Steps} summarising "
+            + "steps. Stopping for this cycle so sampling is not held up, and carrying on at the next one.",
+            _db.GetDatabaseSizeBytes() / (1024.0 * 1024.0), _config.MaxDatabaseSizeMb,
+            MaxPressureStepsPerCycle);
     }
 }
