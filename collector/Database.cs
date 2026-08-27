@@ -1482,13 +1482,14 @@ public sealed class Database : IDisposable
     /// machine where the window is left open all day that can be a long wait, which
     /// is what the caller tells the person rather than promising a time.
     ///
-    /// Closing the database is deliberately not offered as a third route. SQLite
-    /// removes the log at close only when the closing connection is the last one on
-    /// the file, and the viewer opens its read connections through the provider's
-    /// pool, which keeps a handle open long after a request finishes. This line is
-    /// only ever reached because a window held a read transaction, so in the single
-    /// application build that handle exists by definition and the recorder is never
-    /// the last connection.
+    /// Closing the database is a route again since #177, but not one to name here.
+    /// SQLite removes the log at close only when the closing connection is the last
+    /// one on the file, and the viewer used to hold a pooled read handle open long
+    /// after a request finished, so the recorder was never last. It no longer pools,
+    /// so a clean close does now fold the log in and remove it. It is still left out
+    /// of what this line tells the person, because it is a route to the space coming
+    /// back when they stop using Telltale, which is not an answer to someone asking
+    /// where the disk they just freed has gone.
     /// </remarks>
     private bool TruncatingCheckpointLocked()
     {

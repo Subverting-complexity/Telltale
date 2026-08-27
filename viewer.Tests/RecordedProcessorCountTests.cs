@@ -90,8 +90,7 @@ public class RecordedProcessorCountTests
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, "telltale.db");
 
-            using var conn = new SqliteConnection($"Data Source={path}");
-            conn.Open();
+            using var conn = TestConnection.Open(path);
 
             using (var schema = conn.CreateCommand())
             {

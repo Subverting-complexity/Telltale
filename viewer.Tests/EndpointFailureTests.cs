@@ -37,8 +37,7 @@ public class EndpointFailureTests : IClassFixture<BrokenDatabaseFactory>
         // failure handlers.
         var ex = Record.Exception(() =>
         {
-            using var conn = new SqliteConnection($"Data Source={_factory.DbPath};Mode=ReadOnly");
-            conn.Open();
+            using var conn = TestConnection.Open(_factory.DbPath, SqliteOpenMode.ReadOnly);
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='sample'";
             cmd.ExecuteScalar();

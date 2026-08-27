@@ -77,14 +77,17 @@ its checkpoint off too. So what both are really waiting for is a cycle where
 nothing is reading, and on a machine where the window is left open all day that
 can be a long wait. Neither line may promise a time.
 
-Closing the database is not a third route, however much it looks like one. SQLite
+Closing the database is a third route, and a deliberately unmentioned one. SQLite
 removes the log at close only when the closing connection is the last one on the
-file, and the viewer opens its read connections through the provider's pool,
-which holds a handle open well past the end of a request. The line is only ever
-written because a window held a read transaction, so that handle exists whenever
-it matters. Naming a route that does not exist is the same failure the wipe
-itself was reported for, which is telling someone their disk is coming back when
-it is not.
+file. The viewer used to open its read connections through the provider's pool,
+which held a handle open well past the end of a request, so in the single
+application build the recorder was never last and its close tidied nothing. The
+viewer no longer pools, so a clean close does fold the log in and remove it. What
+has not changed is that this route is not worth telling anyone about: it returns
+the space when they stop using Telltale, which is not an answer to someone asking
+where the disk they just freed has gone. The rule the original paragraph existed
+for still stands. Nothing the application says about where space went may name a
+route that does not exist, because that is the failure the wipe was reported for.
 
 Deleting one day deletes every row holding any part of it, including a rollup
 bucket that only overlaps it, and the bucket goes whole. That over-deletes, and

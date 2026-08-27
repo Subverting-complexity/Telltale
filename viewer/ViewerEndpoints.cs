@@ -40,10 +40,42 @@ public static class ViewerEndpoints
 
         var logger = app.Logger;
 
+        // Pooling is off, matching what the recorder does with its own connection and
+        // for a related reason (#177).
+        //
+        // Microsoft.Data.Sqlite keeps a pooled handle open after Dispose returns, so
+        // one finished request left a read-only handle on the capture file for the
+        // life of the process. SQLite folds the write ahead log back in and removes
+        // it when the last connection to a database closes, which is a free tidy-up
+        // at shutdown, and in the single application build both the recorder and this
+        // listener live in one process, so that pooled handle meant the recorder was
+        // never the last connection. Its close then checkpointed nothing and removed
+        // no log. Measured during the review of #175: one finished pooled request
+        // followed by the recorder disposing left a 2,311,352 byte log and a 4,096
+        // byte database file, and the same run with pooling off deleted the log and
+        // left the database at 2,289,664 bytes. The pooled handle was still held six
+        // minutes later, so this is not a brief window, and a read-only connection
+        // closing last could not have cleaned up even if it had closed.
+        //
+        // What it costs is a fresh SQLite handle per request instead of a reused one,
+        // against a local file, on a loopback listener serving one window. That is
+        // small next to the query it wraps, and the alternative was to keep the pool
+        // and accept that a recording carries its log's high water mark across every
+        // restart. If a future change makes the per request cost matter, the thing to
+        // measure is opening the handle, not the pool.
+        //
+        // Built rather than interpolated, for the reason the recorder records at
+        // Database's constructor: a semicolon is legal in a Windows filename and is
+        // also the separator in a connection string, so interpolating a path holding
+        // one produces a malformed string.
         SqliteConnection OpenDb()
         {
-            string mode = File.Exists(dbPath) ? "ReadOnly" : "ReadWrite";
-            var conn = new SqliteConnection($"Data Source={dbPath};Mode={mode}");
+            var conn = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = dbPath,
+                Mode = File.Exists(dbPath) ? SqliteOpenMode.ReadOnly : SqliteOpenMode.ReadWrite,
+                Pooling = false,
+            }.ToString());
             conn.Open();
             return conn;
         }
