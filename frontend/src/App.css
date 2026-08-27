@@ -455,6 +455,45 @@ body {
   margin: 0;
 }
 
+/* The chart and its own waiting state. The frame is positioned so the label can
+   sit over the chart rather than pushing it down the page: a detail change that
+   reflowed the section would move the very thing being looked at. */
+.timeline-frame {
+  position: relative;
+}
+
+/* Faded rather than hidden. The series underneath is the previous detail for the
+   same window, which is still true and still worth reading while the finer one
+   is fetched, so it is dimmed to say it is being replaced rather than removed. */
+.timeline-frame.pending .uplot {
+  opacity: 0.55;
+  transition: opacity 120ms ease-out;
+}
+
+.timeline-pending {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 1;
+  margin: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+/* The dimming is decoration. Someone who has asked for less motion still needs
+   to be told the chart is being refetched, and the label says so on its own. */
+@media (prefers-reduced-motion: reduce) {
+  .timeline-frame.pending .uplot {
+    opacity: 1;
+    transition: none;
+  }
+}
+
 .time-nav-controls {
   display: flex;
   align-items: center;

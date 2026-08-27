@@ -52,6 +52,9 @@ public sealed record TimelineResult(
 
 public static class TimelineQuery
 {
+    /// <summary>The raw machine tier, which is also the resolution an empty answer names.</summary>
+    const string RawTier = "machine";
+
     /// <summary>
     /// Reads the machine timeline for a window. <paramref name="requestedBucketMs"/>
     /// is the granularity the caller asked for, if any; the plan clamps it to
@@ -59,8 +62,21 @@ public static class TimelineQuery
     /// </summary>
     public static TimelineResult Execute(SqliteConnection conn, long from, long to, long? requestedBucketMs = null)
     {
-        var plan = TierSelection.Plan(from, to, isMachine: true,
-            TierCoverageReader.Read(conn, isMachine: true), requestedBucketMs);
+        TierCoverageSet tiers = TierCoverageReader.ReadSet(conn, isMachine: true);
+
+        // A database with no machine table has no timeline to read, and querying
+        // one that is not there would throw rather than answer. The check lives
+        // here rather than at the endpoint because the read above has already
+        // asked sqlite_master which tables exist, and asking twice was the whole
+        // cost of a check standing on its own.
+        //
+        // The requested width is normalised the way TierPlan normalises it, so a
+        // caller cannot tell the two paths apart by what the response echoes back.
+        if (!tiers.Has(RawTier))
+            return new TimelineResult(RawTier, 0, requestedBucketMs > 0 ? requestedBucketMs : null,
+                0, 0, Array.Empty<TimelinePoint>());
+
+        var plan = TierSelection.Plan(from, to, isMachine: true, tiers.Coverage, requestedBucketMs);
         TierSource source = TierSql.Source(plan, isMachine: true);
 
         // One number decides the shape of the query. Whether it came from the

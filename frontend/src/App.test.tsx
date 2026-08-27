@@ -24,6 +24,9 @@ vi.mock('./api', () => ({
   }),
   getThresholds: () => Promise.resolve(null),
   getAlerts: () => Promise.resolve({ alerts: [] }),
+  // The real one. It is a pure test on the rejection, and App has to be able to
+  // tell a called-off request from a failed one whichever way the api is stood in for.
+  isAbort: (error: unknown) => (error as { name?: string })?.name === 'AbortError',
   wipeCapture: (...args: unknown[]) => wipeCapture(...args),
   WipeError: class WipeError extends Error {
     constructor(message: string, readonly status: number) { super(message); }

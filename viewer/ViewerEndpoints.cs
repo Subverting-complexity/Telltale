@@ -160,11 +160,12 @@ public static class ViewerEndpoints
             try
             {
                 using var conn = OpenDb();
-                using var checkCmd = conn.CreateCommand();
-                checkCmd.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name='machine'";
-                if (checkCmd.ExecuteScalar() == null)
-                    return Results.Json(EmptyTimeline(requestedBucket), jsonOptions);
 
+                // No table check here. TimelineQuery has to ask sqlite_master which
+                // tier tables exist before it can read their coverage, and a check
+                // beside it asked the same question a second time on every request.
+                // It answers a database with no machine table with the same empty
+                // result this endpoint used to build for itself.
                 var result = TimelineQuery.Execute(conn, from, to, requestedBucket);
 
                 var points = result.Points.Select(p => new
