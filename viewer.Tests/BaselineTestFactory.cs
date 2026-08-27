@@ -3,15 +3,17 @@ using Microsoft.Data.Sqlite;
 namespace Viewer.Tests;
 
 /// <summary>
-/// Seeds the one minute rollup with three named processes, so /api/baselines
-/// can be asked about several at once and the answer checked name by name.
+/// Seeds the one minute rollup with four named processes across five instances,
+/// so /api/baselines can be asked about several at once and the answer checked
+/// name by name.
 ///
-/// Two of them carry more than the 24 hours of rollup data the endpoint insists
-/// on before it will report a baseline at all, and the third deliberately does
-/// not. The values are constant or evenly split so every average and standard
-/// deviation below is an exact number rather than an approximation, which is
-/// what lets a test tell a correct group-by from one that has mixed two
-/// processes together.
+/// Three of them carry more than the 24 hours of rollup data the endpoint
+/// insists on before it will report a baseline at all, and the fourth
+/// deliberately does not. One of the three is recorded under two instances, as
+/// a process that restarts during the window is. The values are constant or
+/// evenly split so every average and standard deviation below is an exact
+/// number rather than an approximation, which is what lets a test tell a
+/// correct group-by from one that has mixed two processes together.
 /// </summary>
 public class BaselineTestFactory : TelltaleTestFactory
 {
