@@ -46,6 +46,11 @@ export interface ProcessInstanceRow {
 
 export interface ProcessesResponse {
   grouped: boolean;
+  /**
+   * Which reading the rows were taken from, for a `latest` request. Null for a
+   * request over the range, which has no single reading to name.
+   */
+  latestTs: number | null;
   processes: ProcessGroupRow[] | ProcessInstanceRow[];
 }
 

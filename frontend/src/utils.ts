@@ -229,6 +229,42 @@ export function computeLinearFit(values: (number | null)[]): { slope: number; in
   return { slope, intercept };
 }
 
+/** The largest recorded value, or null when nothing was recorded. */
+export function computePeak(values: (number | null)[]): number | null {
+  let peak: number | null = null;
+  for (const v of values) {
+    if (v !== null && (peak === null || v > peak)) peak = v;
+  }
+  return peak;
+}
+
+/**
+ * Averages a series down to at most `buckets` points, for a sparkline that has
+ * to describe a whole range rather than its tail.
+ *
+ * Averaging rather than sampling every nth reading, because a sparkline drawn
+ * from samples of a day misses the spikes between them and reports a calm
+ * machine. A bucket with nothing recorded in it stays null, so a gap in the
+ * recording stays a gap instead of being drawn as zero.
+ *
+ * A series already short enough is returned as it is, not stretched.
+ */
+export function bucketSeries(values: (number | null)[], buckets: number): (number | null)[] {
+  if (buckets < 1) return [];
+  if (values.length <= buckets) return values;
+
+  const result: (number | null)[] = new Array(buckets);
+  for (let i = 0; i < buckets; i++) {
+    // Bounds are computed from the index rather than by stepping a fixed width,
+    // so a length that does not divide evenly spreads the remainder across the
+    // buckets instead of piling it all into the last one.
+    const start = Math.floor((i * values.length) / buckets);
+    const end = Math.floor(((i + 1) * values.length) / buckets);
+    result[i] = computeMean(values.slice(start, Math.max(end, start + 1)));
+  }
+  return result;
+}
+
 export function computeMean(values: (number | null)[]): number | null {
   let sum = 0;
   let count = 0;

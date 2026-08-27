@@ -1,8 +1,10 @@
-import { useMemo, type CSSProperties } from 'react';
+import { useMemo, useState, type CSSProperties } from 'react';
 import type { TimelinePoint } from './types';
-import { formatRate, formatSizeGb } from './utils';
+import { bucketSeries, clamp, computeMean, computePeak, formatRate, formatSizeGb } from './utils';
 import type { MetricKey } from './palette';
 import { metricCssVar } from './palette';
+import { ReadingViewToggle } from './ReadingView';
+import type { ReadingView } from './ReadingView';
 
 interface HealthSummaryProps {
   timeline: TimelinePoint[];
@@ -13,6 +15,9 @@ interface HealthSummaryProps {
 interface TileColorVars extends CSSProperties {
   '--tile-color': string;
 }
+
+/** How many points a sparkline is drawn from, in either view. */
+const SPARKLINE_POINTS = 60;
 
 // Same per-metric color as the sparkline and the line charts, rather than a
 // green/amber/red health-status color — the sparkline already makes a busy
@@ -63,93 +68,154 @@ function Sparkline({ id, values, metric }: { id: string; values: (number | null)
   );
 }
 
+interface TileProps {
+  metric: MetricKey;
+  header: string;
+  value: string;
+  /** Where the bar sits, as a percentage, or null for a tile that has no bar. */
+  barPct: number | null;
+  label: string | null;
+  ariaLabel: string;
+  spark: (number | null)[] | null;
+  onClick: () => void;
+}
+
+function Tile({ metric, header, value, barPct, label, ariaLabel, spark, onClick }: TileProps) {
+  return (
+    <button className="health-tile" onClick={onClick} aria-label={ariaLabel} style={tileColorVars(metric)}>
+      <div className="tile-header">{header}</div>
+      <div className="tile-value">{value}</div>
+      {barPct !== null && (
+        <div className="tile-bar-track">
+          <div className="tile-bar-fill" style={{ width: `${Math.min(barPct, 100)}%` }} />
+        </div>
+      )}
+      {spark && <Sparkline id={metric} values={spark} metric={metric} />}
+      {label && <div className="tile-label">{label}</div>}
+    </button>
+  );
+}
+
+/**
+ * The series a tile's sparkline is drawn from.
+ *
+ * Now shows the trailing readings, because the number above it is the newest of
+ * them and the line is there to say how it got there. Over time covers the whole
+ * range, averaged down to the same width, so the line describes the range the
+ * number is an average of rather than only its tail.
+ */
+function sparkSeries(values: (number | null)[], view: ReadingView): (number | null)[] {
+  return view === 'now' ? values.slice(-SPARKLINE_POINTS) : bucketSeries(values, SPARKLINE_POINTS);
+}
+
 export function HealthSummary({ timeline, logicalProcessors, onScrollTo }: HealthSummaryProps) {
+  const [view, setView] = useState<ReadingView>('now');
+
   const latest = timeline.length > 0 ? timeline[timeline.length - 1] : null;
 
-  const cpuSeries = useMemo(() => timeline.slice(-60).map(p => p.cpuPct), [timeline]);
-  const memSeries = useMemo(() => timeline.slice(-60).map(p => {
+  const cpuSeries = useMemo(() => timeline.map(p => p.cpuPct), [timeline]);
+  const memSeries = useMemo(() => timeline.map(p => {
     if (p.memoryAvailMb == null || p.memoryTotalMb == null || p.memoryTotalMb <= 0) return null;
-    return Math.min(((p.memoryTotalMb - p.memoryAvailMb) / p.memoryTotalMb) * 100, 100);
+    return clamp(((p.memoryTotalMb - p.memoryAvailMb) / p.memoryTotalMb) * 100, 0, 100);
   }), [timeline]);
-  const diskSeries = useMemo(() => timeline.slice(-60).map(p => p.diskBusyPct), [timeline]);
-  const netSeries = useMemo(() => timeline.slice(-60).map(p => p.netKbps), [timeline]);
+  const diskSeries = useMemo(() => timeline.map(p => p.diskBusyPct), [timeline]);
+  const netSeries = useMemo(() => timeline.map(p => p.netKbps), [timeline]);
 
   if (!latest) return null;
 
-  const cpuPct = latest.cpuPct ?? 0;
+  const overTime = view === 'over-time';
+  // Named once so every tile says the same thing about which reading it is on,
+  // in the accessible name as well as on screen.
+  const whenNow = 'at the latest reading';
+  const whenRange = 'across the range shown';
+
   const memTotalMb = latest.memoryTotalMb ?? 0;
   const memAvailMb = latest.memoryAvailMb;
   const memHasData = memAvailMb !== null && memAvailMb !== undefined && memTotalMb > 0;
-  const memUsedMb = memHasData ? Math.max(0, memTotalMb - memAvailMb) : null;
-  const memPct = memHasData && memUsedMb !== null ? Math.min((memUsedMb / memTotalMb) * 100, 100) : null;
-  const diskPct = latest.diskBusyPct ?? 0;
-  const netKbps = latest.netKbps;
+  const memPctNow = memHasData ? clamp(((memTotalMb - memAvailMb!) / memTotalMb) * 100, 0, 100) : null;
+  const memPctAvg = computeMean(memSeries);
+  const memPctPeak = computePeak(memSeries);
+  const memPct = overTime ? memPctAvg : memPctNow;
+  const memUsedMb = memPct !== null ? (memPct / 100) * memTotalMb : null;
+  const memPeakUsedMb = memPctPeak !== null ? (memPctPeak / 100) * memTotalMb : null;
+
+  const cpuPct = (overTime ? computeMean(cpuSeries) : latest.cpuPct) ?? 0;
+  const cpuPeak = computePeak(cpuSeries) ?? 0;
+  const diskPct = (overTime ? computeMean(diskSeries) : latest.diskBusyPct) ?? 0;
+  const diskPeak = computePeak(diskSeries) ?? 0;
+  const netKbps = overTime ? computeMean(netSeries) : latest.netKbps;
+  const netPeak = computePeak(netSeries);
+
+  const diskText = (pct: number) => (pct < 1 ? 'Idle' : `${pct.toFixed(1)}%`);
 
   return (
     <section className="health-summary" aria-label="System health summary">
-      <button
-        className="health-tile"
-        onClick={() => onScrollTo('cpu')}
-        aria-label={`CPU: ${cpuPct.toFixed(0)}% of ${logicalProcessors} cores`}
-        style={tileColorVars('cpu')}
-      >
-        <div className="tile-header">CPU</div>
-        <div className="tile-value">{cpuPct.toFixed(0)}%</div>
-        <div className="tile-bar-track">
-          <div className="tile-bar-fill" style={{ width: `${Math.min(cpuPct, 100)}%` }} />
-        </div>
-        <Sparkline id="cpu" values={cpuSeries} metric="cpu" />
-        <div className="tile-label">{logicalProcessors} cores</div>
-      </button>
+      <div className="health-summary-header">
+        <p className="health-summary-caption">
+          {overTime ? 'Averages across the range shown' : 'The latest reading'}
+        </p>
+        <ReadingViewToggle value={view} onChange={setView} label="System health reading" />
+      </div>
 
-      <button
-        className="health-tile"
-        onClick={() => onScrollTo('memory')}
-        aria-label={memPct !== null
-          ? `Memory: ${formatSizeGb(memUsedMb!)} / ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%)`
-          : `Memory: no data`}
-        style={tileColorVars('memory')}
-      >
-        <div className="tile-header">Memory</div>
-        <div className="tile-value">{memPct !== null ? `${memPct.toFixed(0)}%` : '-'}</div>
-        {memPct !== null ? (
-          <>
-            <div className="tile-bar-track">
-              <div className="tile-bar-fill" style={{ width: `${Math.min(memPct, 100)}%` }} />
-            </div>
-            <Sparkline id="memory" values={memSeries} metric="memory" />
-            <div className="tile-label">{formatSizeGb(memUsedMb!)} / {formatSizeGb(memTotalMb)}</div>
-          </>
-        ) : (
-          <div className="tile-label">{memTotalMb > 0 ? formatSizeGb(memTotalMb) : 'No data'}</div>
-        )}
-      </button>
+      <div className="health-tiles">
+        <Tile
+          metric="cpu"
+          header="CPU"
+          value={`${cpuPct.toFixed(0)}%`}
+          barPct={cpuPct}
+          label={overTime ? `Peak ${cpuPeak.toFixed(0)}% · ${logicalProcessors} cores` : `${logicalProcessors} cores`}
+          ariaLabel={overTime
+            ? `CPU: average ${cpuPct.toFixed(0)}%, peak ${cpuPeak.toFixed(0)}%, of ${logicalProcessors} cores ${whenRange}`
+            : `CPU: ${cpuPct.toFixed(0)}% of ${logicalProcessors} cores ${whenNow}`}
+          spark={sparkSeries(cpuSeries, view)}
+          onClick={() => onScrollTo('cpu')}
+        />
 
-      <button
-        className="health-tile"
-        onClick={() => onScrollTo('disk')}
-        aria-label={`Disk: ${diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}% busy`}`}
-        style={tileColorVars('disk')}
-      >
-        <div className="tile-header">Disk</div>
-        <div className="tile-value">{diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}%`}</div>
-        <div className="tile-bar-track">
-          <div className="tile-bar-fill" style={{ width: `${Math.min(diskPct, 100)}%` }} />
-        </div>
-        <Sparkline id="disk" values={diskSeries} metric="disk" />
-        {diskPct >= 1 && <div className="tile-label">busy</div>}
-      </button>
+        <Tile
+          metric="memory"
+          header="Memory"
+          value={memPct !== null ? `${memPct.toFixed(0)}%` : '-'}
+          barPct={memPct}
+          label={memPct === null || memUsedMb === null
+            ? (memTotalMb > 0 ? formatSizeGb(memTotalMb) : 'No data')
+            : overTime && memPeakUsedMb !== null
+              ? `Peak ${formatSizeGb(memPeakUsedMb)} / ${formatSizeGb(memTotalMb)}`
+              : `${formatSizeGb(memUsedMb)} / ${formatSizeGb(memTotalMb)}`}
+          ariaLabel={memPct === null || memUsedMb === null
+            ? 'Memory: no data'
+            : overTime && memPeakUsedMb !== null
+              ? `Memory: average ${formatSizeGb(memUsedMb)} of ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%), peak ${formatSizeGb(memPeakUsedMb)}, ${whenRange}`
+              : `Memory: ${formatSizeGb(memUsedMb)} / ${formatSizeGb(memTotalMb)} (${memPct.toFixed(0)}%) ${whenNow}`}
+          spark={memPct !== null ? sparkSeries(memSeries, view) : null}
+          onClick={() => onScrollTo('memory')}
+        />
 
-      <button
-        className="health-tile"
-        onClick={() => onScrollTo('network')}
-        aria-label={`Network: ${formatRate(netKbps)}`}
-        style={tileColorVars('network')}
-      >
-        <div className="tile-header">Network</div>
-        <div className="tile-value">{formatRate(netKbps)}</div>
-        <Sparkline id="network" values={netSeries} metric="network" />
-      </button>
+        <Tile
+          metric="disk"
+          header="Disk"
+          value={diskText(diskPct)}
+          barPct={diskPct}
+          label={overTime ? `Peak ${diskText(diskPeak)}` : diskPct >= 1 ? 'busy' : null}
+          ariaLabel={overTime
+            ? `Disk: average ${diskText(diskPct)} busy, peak ${diskText(diskPeak)}, ${whenRange}`
+            : `Disk: ${diskPct < 1 ? 'Idle' : `${diskPct.toFixed(1)}% busy`} ${whenNow}`}
+          spark={sparkSeries(diskSeries, view)}
+          onClick={() => onScrollTo('disk')}
+        />
+
+        <Tile
+          metric="network"
+          header="Network"
+          value={formatRate(netKbps)}
+          barPct={null}
+          label={overTime ? `Peak ${formatRate(netPeak)}` : null}
+          ariaLabel={overTime
+            ? `Network: average ${formatRate(netKbps)}, peak ${formatRate(netPeak)}, ${whenRange}`
+            : `Network: ${formatRate(netKbps)} ${whenNow}`}
+          spark={sparkSeries(netSeries, view)}
+          onClick={() => onScrollTo('network')}
+        />
+      </div>
     </section>
   );
 }

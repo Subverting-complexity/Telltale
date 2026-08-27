@@ -181,6 +181,12 @@ export default function App() {
   // to say when a request was widened.
   const [timelineDetail, setTimelineDetail] = useState<TimelineDetail | null>(null);
   const [processes, setProcesses] = useState<ProcessGroupRow[]>([]);
+  // The same processes as recorded at the newest reading in the range, which is
+  // what Top Consumers opens on. Fetched alongside rather than on the toggle, so
+  // switching views is instant and neither view can be caught showing the other
+  // one's numbers while a request is in flight.
+  const [latestProcesses, setLatestProcesses] = useState<ProcessGroupRow[]>([]);
+  const [latestProcessTs, setLatestProcessTs] = useState<number | null>(null);
   // Not restored, and deliberately so. It is the one piece of view state that
   // records what someone went looking for, and a filter in force on open reads
   // as missing data rather than as a filter.
@@ -380,8 +386,14 @@ export default function App() {
         limit: 50,
         sort: processSort,
         q: processFilter || undefined,
-      }).catch(() => ({ grouped: true, processes: [] })),
-    ]).then(([tl, procs]) => {
+      }).catch(() => ({ grouped: true, latestTs: null, processes: [] })),
+      getProcesses(from, to, {
+        limit: 50,
+        sort: processSort,
+        q: processFilter || undefined,
+        latest: true,
+      }).catch(() => ({ grouped: true, latestTs: null, processes: [] })),
+    ]).then(([tl, procs, latest]) => {
       if (request !== latestRequest.current) return;
 
       setTimeline(tl.points);
@@ -392,6 +404,8 @@ export default function App() {
         tierFloorMs: tl.tierFloorMs,
       });
       setProcesses(procs.processes as ProcessGroupRow[]);
+      setLatestProcesses(latest.processes as ProcessGroupRow[]);
+      setLatestProcessTs(latest.latestTs);
       setLoading(false);
     });
   }, [activeRange.from, activeRange.to, processSort, processFilter, refreshKey, granularity]);
@@ -647,6 +661,8 @@ export default function App() {
               <div className="tab-content">
                 <TopConsumers
                   processes={processes}
+                  latest={latestProcesses}
+                  latestTs={latestProcessTs}
                   logicalProcessors={logicalProcessors}
                   onSelectProcess={selectProcess}
                   categoryFilter={categoryFilter}

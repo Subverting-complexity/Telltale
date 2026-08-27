@@ -3,7 +3,8 @@ import {
   formatSize, formatElapsed, formatCpu, formatIo, formatDate, formatTime,
   getDaysInMonth, getDayRange, getMonthRange, getYearRange, getWeekRange, clamp,
   categoriseProcess, formatRate, formatMemoryPercent, formatSizeGb,
-  computeMovingAverage, computeLinearFit, computeMean, formatCpuOfAllCores, viewedDay,
+  computeMovingAverage, computeLinearFit, computeMean, computePeak, bucketSeries,
+  formatCpuOfAllCores, viewedDay,
 } from './utils';
 
 describe('formatSize', () => {
@@ -407,5 +408,52 @@ describe('viewedDay', () => {
   it('offers nothing when the day view has no day set', () => {
     expect(viewedDay({ scale: 'day', year: 2025, month: 3 })).toBeNull();
     expect(viewedDay({ scale: 'day', year: 2025 })).toBeNull();
+  });
+});
+
+describe('computePeak', () => {
+  it('returns the largest recorded value', () => {
+    expect(computePeak([3, 41, 12])).toBe(41);
+  });
+
+  it('skips readings that were never taken', () => {
+    expect(computePeak([null, 7, null])).toBe(7);
+  });
+
+  it('has no answer when nothing was recorded', () => {
+    expect(computePeak([])).toBeNull();
+    expect(computePeak([null, null])).toBeNull();
+  });
+
+  it('does not mistake zero for nothing', () => {
+    // An idle machine records zero, which is a reading. Returning null for it
+    // would draw a gap in the sparkline where the line should sit on the floor.
+    expect(computePeak([0, 0])).toBe(0);
+  });
+});
+
+describe('bucketSeries', () => {
+  it('leaves a series already short enough alone', () => {
+    const values = [1, 2, 3];
+    expect(bucketSeries(values, 5)).toBe(values);
+  });
+
+  it('averages rather than samples, so a spike between samples survives', () => {
+    // Taking every second reading would report 0 for both buckets and describe
+    // a machine that never did anything.
+    expect(bucketSeries([0, 100, 0, 100], 2)).toEqual([50, 50]);
+  });
+
+  it('spreads an uneven remainder instead of piling it into the last bucket', () => {
+    // Five into two: the first bucket holds two readings, the second three.
+    expect(bucketSeries([0, 10, 30, 30, 30], 2)).toEqual([5, 30]);
+  });
+
+  it('keeps a gap in the recording as a gap', () => {
+    expect(bucketSeries([null, null, 8, 12], 2)).toEqual([null, 10]);
+  });
+
+  it('returns nothing when asked for no buckets', () => {
+    expect(bucketSeries([1, 2, 3], 0)).toEqual([]);
   });
 });
