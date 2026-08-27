@@ -59,13 +59,23 @@ needs a reason written down here.
 The housekeeping after the delete may add a line of its own, and two do: one when
 the freed pages could not be handed back to the filesystem, and one when a reader
 was still using the write ahead log so it kept its size. That is the reason this
-paragraph asks for. Both say only that a step did not happen and that the next
-rollup cycle will do it instead. Neither carries the range, a timestamp, or
-anything else about what was deleted, so neither weakens the promise the audit
-line above is careful to keep, and each is worth having because the alternative
-is a wipe that quietly returns less disk than it reported. A line added here that
-says anything about what went, rather than about what the housekeeping did, is
-the widening the paragraph above refuses.
+paragraph asks for. Both say only that a step did not happen and when the space
+it would have returned comes back instead. Neither carries the range, a
+timestamp, or anything else about what was deleted, so neither weakens the
+promise the audit line above is careful to keep, and each is worth having because
+the alternative is a wipe that quietly returns less disk than it reported. A line
+added here that says anything about what went, rather than about what the
+housekeeping did, is the widening the paragraph above refuses.
+
+Those two lines have to be honest about when the space does come back, and the
+answer is not the same for each. Freed pages left on the database's own free list
+are picked up by the next rollup cycle, which vacuums. A log that kept its size
+is not: the rollup cycle's checkpoint is passive, and only a truncating one
+shortens the file, which nothing but a wipe runs. So the log comes back at the
+next wipe that is not held off, or when the recorder closes the database cleanly.
+Saying a rollup cycle will deal with it would be the same failure the wipe was
+reported for, which is telling someone their disk is coming back by a route that
+does not exist.
 
 Deleting one day deletes every row holding any part of it, including a rollup
 bucket that only overlaps it, and the bucket goes whole. That over-deletes, and

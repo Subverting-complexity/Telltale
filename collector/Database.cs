@@ -1274,7 +1274,10 @@ public sealed class Database : IDisposable
                         // is not a real recording, but subtracting from it silently
                         // turns the lower bound into a large positive number, and the
                         // wipe then matches nothing at all and honestly reports that
-                        // it deleted nothing.
+                        // it deleted nothing. Clamped, the comparison stays exclusive,
+                        // so a row stamped exactly long.MinValue survives such a wipe.
+                        // That is one unreachable timestamp against the whole range
+                        // silently going unwiped, which is the trade taken here.
                         long widenedFrom = from.Value < long.MinValue + bucketMs
                             ? long.MinValue
                             : from.Value - bucketMs;
@@ -1420,23 +1423,31 @@ public sealed class Database : IDisposable
     /// case: what holds the log is an open read transaction, which here is the span
     /// of one request the window made, and not the connection itself sitting idle
     /// between them. Being held off is not a failed wipe either way: the rows were
-    /// committed before this runs. It falls back to PASSIVE, so the database file
-    /// gives back its own pages exactly as it did before, and says in the log that
-    /// the log kept its size.
+    /// committed before this runs, so it says so in the log and leaves it.
+    ///
+    /// There is deliberately no fallback to PASSIVE. TRUNCATE does the same copying
+    /// FULL does and only then resets the log, so a PASSIVE run afterwards can never
+    /// fold in more than the held off TRUNCATE already did. Measured against a held
+    /// open read transaction, TRUNCATE reported four frames left and none copied, and
+    /// PASSIVE straight after it reported the same four frames and none copied. It
+    /// would be dead code with a comforting name.
+    ///
+    /// What is left over when this is held off is a database whose freed pages are on
+    /// its own free list and a log still at its old length, so nothing in the folder
+    /// has changed yet. Both come back at the next wipe that is not held off, or when
+    /// the recorder closes the database cleanly. They do not come back on a rollup
+    /// cycle: that runs <see cref="WalCheckpoint"/>, which is PASSIVE, and PASSIVE
+    /// never shortens the file.
     /// </remarks>
     private void TruncatingCheckpointLocked()
     {
         if (TryCheckpointLocked(CheckpointMode.Truncate)) return;
 
         _logger.LogInformation(
-            "A reader held the write ahead log open, so it kept its size and that "
-            + "space has not come back yet. The database file still gave back its own. "
-            + "The next checkpoint that is not held off shortens the log.");
-
-        // Costs nothing and cannot be held off, so the log is folded in as far as it
-        // can be even when it cannot be reset. Without it a wipe that met a reader
-        // would give back less than the passive checkpoint this replaced.
-        TryCheckpointLocked(CheckpointMode.Passive);
+            "A reader held the write ahead log open, so it kept its size and that space "
+            + "has not come back yet. The database released its own pages internally but "
+            + "the file has not shortened either. Both come back at the next wipe that is "
+            + "not held off, or when Telltale next closes the database.");
     }
 
     /// <summary>

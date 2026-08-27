@@ -172,6 +172,12 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         const long MinuteMs = 60_000L;
         (string Table, long Ts, bool Goes)[] buckets =
         [
+            // The raw rung, whose rows are readings rather than buckets and so are
+            // treated as a millisecond wide. Nothing else pins that: given any other
+            // width, the reading a millisecond before the range would be swept in
+            // along with up to that much more of the time nobody asked to lose.
+            ("machine", Day1 - 1, false),
+            ("machine", Day1, true),
             ("machine_1m", Day1 - (MinuteMs / 2), true),
             ("machine_1m", Day1 - MinuteMs, false),
             ("sample_10m", Day1 - (10 * MinuteMs / 2), true),
@@ -188,7 +194,9 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
 
         foreach (var (table, ts, _) in buckets)
         {
-            if (table.StartsWith("sample_"))
+            if (table == "machine")
+                Db.WriteMachineSample(ts, Machine());
+            else if (table.StartsWith("sample_"))
                 InsertProcessRollup(table, ts, instance);
             else
                 InsertMachineRollup(table, ts);
@@ -413,16 +421,25 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
 
             // Nothing else observes the difference between noticing the refusal and
             // assuming the checkpoint worked, because SQLite declines it either way and
-            // the log file looks the same afterwards. Without this, dropping the read
-            // back of the pragma's answer and the passive fallback it guards would
-            // leave every other wipe test green.
+            // the log file looks the same afterwards. Without this, discarding the
+            // pragma's answer and reporting every checkpoint as a success would leave
+            // every other wipe test green.
             Assert.Contains(logger.Entries,
                 e => e.Message.Contains("held the write ahead log open"));
         }
         finally
         {
-            foreach (var leftover in new[] { path, path + "-wal", path + "-shm" })
-                File.Delete(leftover);
+            // Swallowed the way SqliteTestBase does. A cleanup that throws here would
+            // replace the assertion above with a file handle complaint, which is the
+            // less useful of the two things to be told.
+            try
+            {
+                foreach (var leftover in new[] { path, path + "-wal", path + "-shm" })
+                    File.Delete(leftover);
+            }
+            catch (IOException)
+            {
+            }
         }
     }
 
