@@ -246,7 +246,7 @@ public sealed class Database : IDisposable
         CREATE TABLE schema_version (
             version INTEGER PRIMARY KEY
         );
-        INSERT INTO schema_version VALUES (4);
+        INSERT INTO schema_version VALUES (6);
 
         CREATE TABLE process_instance (
             id           INTEGER PRIMARY KEY,
@@ -303,6 +303,55 @@ public sealed class Database : IDisposable
         );
         CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
         CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
+
+        -- The hourly, daily and weekly tiers below carry the same columns as the ten
+        -- minute one, because a promotion between any two of them reads and writes the
+        -- same figures. What changes down the ladder is only how wide a row is.
+        --
+        -- The weekly tier is the floor. Nothing is promoted out of it and nothing is
+        -- deleted from it on a schedule, which is what lets a recording be kept
+        -- indefinitely: a year of weekly rows is a few hundred of them per process.
+        CREATE TABLE sample_1h (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        CREATE UNIQUE INDEX ux_s1h_ts_inst ON sample_1h(ts, instance_id);
+        CREATE INDEX ix_s1h_inst ON sample_1h(instance_id, ts);
+
+        CREATE TABLE sample_1d (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        CREATE UNIQUE INDEX ux_s1d_ts_inst ON sample_1d(ts, instance_id);
+        CREATE INDEX ix_s1d_inst ON sample_1d(instance_id, ts);
+
+        CREATE TABLE sample_1w (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        CREATE UNIQUE INDEX ux_s1w_ts_inst ON sample_1w(ts, instance_id);
+        CREATE INDEX ix_s1w_inst ON sample_1w(instance_id, ts);
 
         -- The machine the recording was made on. One row, rewritten whenever the
         -- collector starts, because a recording describes one machine.
@@ -364,6 +413,78 @@ public sealed class Database : IDisposable
             net_kbps_avg        REAL,
             gpu_busy_pct_avg    REAL,
             sample_count        INTEGER
+        );
+
+        -- The machine wide side of the hourly, daily and weekly tiers. Same columns as
+        -- machine_10m, for the same reason the per process tiers share theirs.
+        CREATE TABLE machine_1h (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+
+        CREATE TABLE machine_1d (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+
+        CREATE TABLE machine_1w (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+
+        -- How far size pressure has pulled each tier's retention in, keyed on the tier's
+        -- per process table name. Absent means the tier is still at what telltale.json
+        -- asks for; present means the file outgrew maxDatabaseSizeMb and this tier gave
+        -- up some of its hold so the data could be folded into the tier below.
+        --
+        -- This is not recorded history, so a wipe of one day leaves it alone. A wipe of
+        -- everything clears it: there is nothing left that was coarsened, so there is
+        -- nothing for the high-water mark to protect.
+        --
+        -- It only ever moves inward. Raising the limit later stops further tightening
+        -- but does not bring back detail that has already been folded away.
+        CREATE TABLE tier_pressure (
+            tier         TEXT PRIMARY KEY,
+            retention_ms INTEGER NOT NULL
         );
 
         -- What the recorder cost the machine, one row per tick. cpu_pct is the
@@ -721,10 +842,29 @@ public sealed class Database : IDisposable
     /// already holds is skipped, so running this repeatedly is safe: a bucket is
     /// never produced twice and never counted twice.
     /// </summary>
-    public void RollupSamples(long cutoffMs, string sourceTable, string targetTable,
-        int bucketMinutes, bool isMachine)
+    /// <param name="source">The tier being promoted out of.</param>
+    /// <param name="target">
+    /// The tier being promoted into, which supplies the bucket width. It must be
+    /// coarser than <paramref name="source"/>: promoting into an equal or finer
+    /// bucket would either rewrite a tier into itself or invent detail that was
+    /// never recorded.
+    /// </param>
+    /// <remarks>
+    /// The two tiers carry which columns their tables hold, rather than that being
+    /// inferred from the table names. It used to be inferred, by testing the source
+    /// name for <c>_1m</c> or <c>_10m</c>, and that only worked for as long as
+    /// there were exactly three tiers. A promotion out of <c>sample_1h</c> matches
+    /// neither string, so it would have been read as a promotion out of raw: no
+    /// exception, just an unweighted average of averages over columns the SQL
+    /// believed meant something else.
+    /// </remarks>
+    public void RollupSamples(long cutoffMs, StorageTier source, StorageTier target, bool isMachine)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(bucketMinutes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(target.BucketMinutes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(target.BucketMinutes, source.BucketMinutes);
+
+        string sourceTable = isMachine ? source.MachineTable : source.SampleTable;
+        string targetTable = isMachine ? target.MachineTable : target.SampleTable;
 
         lock (_gate)
         {
@@ -734,7 +874,7 @@ public sealed class Database : IDisposable
             using var cmd = _conn.CreateCommand();
             cmd.Transaction = tx;
 
-            long bucketMs = bucketMinutes * 60_000L;
+            long bucketMs = target.BucketMinutes * 60_000L;
 
             // Only ever promote whole buckets. The caller's cutoff is a wall clock
             // instant and rarely lands on a bucket boundary, so without this the bucket
@@ -743,7 +883,7 @@ public sealed class Database : IDisposable
             // the next cycle under the same bucket timestamp.
             long alignedCutoff = FloorToBucket(cutoffMs, bucketMs);
 
-            bool isReRollup = sourceTable.Contains("_1m") || sourceTable.Contains("_10m");
+            bool isReRollup = source.Shape == TierShape.Summarised;
 
             // The machine tables carry memory_total_mb, a value that describes the
             // machine rather than the interval, so it is taken from the last row in
@@ -765,7 +905,8 @@ public sealed class Database : IDisposable
             }
             else if (isMachine && isReRollup)
             {
-                cmd.CommandText = BuildMachineReRollupSql(sourceTable, targetTable);
+                cmd.CommandText = BuildMachineReRollupSql(sourceTable, targetTable,
+                    SustainedMaxProjection(source, target));
             }
             else if (!isMachine && !isReRollup)
             {
@@ -787,14 +928,16 @@ public sealed class Database : IDisposable
             }
             else
             {
+                (string sustainedColumn, string sustainedValue) = SustainedMaxProjection(source, target);
+
                 cmd.CommandText = $"""
                     INSERT INTO {targetTable}
                         (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
-                         working_set_mb_max, io_kb_total, sample_count)
+                         working_set_mb_max, io_kb_total, sample_count{sustainedColumn})
                     SELECT (ts / @bucket) * @bucket, instance_id,
                            {WeightedAvg("cpu_pct_avg", "sample_count")},
                            MAX(cpu_pct_max), MAX(private_mb_max),
-                           MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count)
+                           MAX(working_set_mb_max), SUM(io_kb_total), SUM(sample_count){sustainedValue}
                     FROM {sourceTable}
                     WHERE ts < @cutoff
                       AND NOT EXISTS (
@@ -872,7 +1015,36 @@ public sealed class Database : IDisposable
         GROUP BY s.ts / @bucket
         """;
 
-    internal static string BuildMachineReRollupSql(string sourceTable, string targetTable) =>
+    /// <summary>
+    /// The <c>cpu_pct_sustained_max</c> column and its expression for a promotion,
+    /// or two empty strings when the target does not carry that column.
+    /// </summary>
+    /// <remarks>
+    /// The sustained figure is the highest ten minute average inside the bucket,
+    /// which is what makes it readable at a week where the plain maximum is not:
+    /// something spikes at some point in seven days, so a maximum over that span is
+    /// pinned near the top whatever kind of week it was.
+    ///
+    /// It is seeded from the ten minute tier's own averages, and above that it is a
+    /// plain maximum of maxima, because the widest window it is allowed to describe
+    /// never gets wider than ten minutes.
+    ///
+    /// It cannot be computed after the fact. An average and a maximum do not carry
+    /// enough to recover it, so a tier that was filled before this existed holds
+    /// null there for good, and that is the honest answer rather than a figure
+    /// worked back from two that cannot produce it.
+    /// </remarks>
+    private static (string Column, string Value) SustainedMaxProjection(
+        StorageTier source, StorageTier target)
+    {
+        if (!target.HasSustainedMax) return (string.Empty, string.Empty);
+
+        return (", cpu_pct_sustained_max",
+                source.HasSustainedMax ? ", MAX(cpu_pct_sustained_max)" : ", MAX(cpu_pct_avg)");
+    }
+
+    internal static string BuildMachineReRollupSql(string sourceTable, string targetTable,
+        (string Column, string Value) sustained) =>
         $"""
         WITH last_total AS (
             SELECT bucket_ts, memory_total_mb
@@ -886,7 +1058,7 @@ public sealed class Database : IDisposable
         INSERT INTO {targetTable}
             (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
              commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
-             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count{sustained.Column})
         SELECT (s.ts / @bucket) * @bucket,
                {WeightedAvg("s.cpu_pct_avg", "s.sample_count")},
                MAX(s.cpu_pct_max),
@@ -899,7 +1071,7 @@ public sealed class Database : IDisposable
                MAX(s.disk_busy_pct_max),
                {WeightedAvg("s.net_kbps_avg", "s.sample_count")},
                {WeightedAvg("s.gpu_busy_pct_avg", "s.sample_count")},
-               SUM(s.sample_count)
+               SUM(s.sample_count){sustained.Value}
         FROM {sourceTable} s
         LEFT JOIN last_total lt ON lt.bucket_ts = (s.ts / @bucket) * @bucket
         WHERE s.ts < @cutoff
@@ -960,12 +1132,16 @@ public sealed class Database : IDisposable
     {
         using var cmd = _conn.CreateCommand();
         cmd.Transaction = transaction;
-        cmd.CommandText = """
-            DELETE FROM process_instance
-            WHERE id NOT IN (SELECT DISTINCT instance_id FROM sample)
-              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_1m)
-              AND id NOT IN (SELECT DISTINCT instance_id FROM sample_10m)
-            """;
+
+        // Built from the tier list rather than written out, so a tier added to
+        // StorageTiers is covered here without anyone remembering to come and add
+        // it. Missing one would delete process_instance rows that tier still
+        // refers to, and nothing would report it.
+        string notReferenced = string.Join(
+            "\n  AND ",
+            StorageTiers.SampleTables.Select(t => $"id NOT IN (SELECT DISTINCT instance_id FROM {t})"));
+
+        cmd.CommandText = $"DELETE FROM process_instance\nWHERE {notReferenced}";
         return cmd.ExecuteNonQuery();
     }
 
@@ -983,14 +1159,13 @@ public sealed class Database : IDisposable
     /// Emptying them would leave the viewer unable to convert a CPU reading and the
     /// next open unable to tell what shape the database is in.
     /// </remarks>
+    // The recorded tiers come from StorageTiers rather than being listed here, for
+    // the same reason the orphan cleanup builds its statement from that list: a
+    // tier missing from this one would survive a wipe, which is the one thing a
+    // wipe promises not to let happen.
     private static readonly string[] CaptureTables =
     [
-        "sample",
-        "sample_1m",
-        "sample_10m",
-        "machine",
-        "machine_1m",
-        "machine_10m",
+        .. StorageTiers.AllTables,
         "collector_health",
         "collector_tick_phase",
     ];
@@ -1016,9 +1191,17 @@ public sealed class Database : IDisposable
     /// bucket is stamped with the moment it starts, so it goes or stays whole
     /// rather than being half emptied: one that begins before the range and runs
     /// into it is kept, and one that begins inside the range and runs past its end
-    /// is deleted, taking up to ten minutes of the next day with it. Neither
-    /// happens on a calendar day boundary unless the local offset is not a whole
-    /// ten minutes, which is a handful of timezones.
+    /// is deleted, taking whatever of the next day it covers with it.
+    ///
+    /// How much that comes to depends on which tier still holds the day. Ten
+    /// minutes at most while the ten minute tier does, and that lands on a calendar
+    /// day boundary except in the handful of timezones whose offset is not a whole
+    /// ten minutes. Past rollup10mRetentionDays the hourly, daily and weekly tiers
+    /// hold it instead, and their buckets are aligned to the epoch, so to UTC rather
+    /// than to the local day. Both halves of the rule then bite: a weekly bucket
+    /// beginning inside the range takes six other days with it, and a weekly bucket
+    /// beginning before the range keeps the wiped day's readings inside a row that
+    /// survives. Which way that should be resolved is #170.
     /// </remarks>
     /// <exception cref="ArgumentException">
     /// The range ends before it starts, which is a caller error rather than an
@@ -1089,6 +1272,18 @@ public sealed class Database : IDisposable
                     instances.Transaction = tx;
                     instances.CommandText = "DELETE FROM process_instance";
                     deleted += instances.ExecuteNonQuery();
+
+                    // Size pressure is a high-water mark because coarsening cannot be
+                    // undone: the finer rows are gone. After a wipe of everything
+                    // there are no coarsened rows left for the mark to protect, so
+                    // holding a tightened retention would only keep punishing the
+                    // person for a file that no longer exists. The count is
+                    // deliberately not added to the total, which reports recorded
+                    // rows removed rather than every row the statement touched.
+                    using var pressure = _conn.CreateCommand();
+                    pressure.Transaction = tx;
+                    pressure.CommandText = "DELETE FROM tier_pressure";
+                    pressure.ExecuteNonQuery();
                 }
                 else
                 {
@@ -1197,26 +1392,56 @@ public sealed class Database : IDisposable
     /// The size checks and the deletes run under one acquisition, so a concurrent
     /// write cannot change the answer between a check and the delete it justified.
     /// </summary>
-    public void EnforceSizeLimit(long maxBytes)
+    /// <summary>
+    /// How far size pressure has pulled each tier's retention in, keyed on the
+    /// tier's per process table name. A tier with no entry is still at whatever
+    /// <c>telltale.json</c> asks for.
+    /// </summary>
+    public IReadOnlyDictionary<string, long> ReadTierPressure()
     {
         lock (_gate)
         {
             ThrowIfDisposed();
 
-            if (GetDatabaseSizeBytesLocked() <= maxBytes) return;
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT tier, retention_ms FROM tier_pressure";
 
-            DeleteOldestRollupDataLocked("sample_10m");
-            DeleteOldestRollupDataLocked("machine_10m");
+            var applied = new Dictionary<string, long>(StringComparer.Ordinal);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                applied[reader.GetString(0)] = reader.GetInt64(1);
 
-            // A DELETE moves pages to the free list but does not reduce
-            // page_count, so GetDatabaseSizeBytesLocked would still see
-            // the pre-delete size without a vacuum in between.
-            IncrementalVacuumLocked();
+            return applied;
+        }
+    }
 
-            if (GetDatabaseSizeBytesLocked() <= maxBytes) return;
+    /// <summary>
+    /// Records that <paramref name="tier"/> now keeps its rows for
+    /// <paramref name="retentionMs"/> rather than for what was configured.
+    /// </summary>
+    /// <remarks>
+    /// Written as a high-water mark: an existing entry is only ever lowered. A
+    /// caller that has recomputed a longer retention is describing a relaxation
+    /// that cannot actually happen, because the rows it would have kept have
+    /// already been folded into the tier below, so honouring it would leave the
+    /// database claiming a detail it does not hold.
+    /// </remarks>
+    public void WriteTierPressure(string tier, long retentionMs)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
 
-            DeleteOldestRollupDataLocked("sample_1m");
-            DeleteOldestRollupDataLocked("machine_1m");
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO tier_pressure (tier, retention_ms)
+                VALUES (@tier, @retention)
+                ON CONFLICT(tier) DO UPDATE SET
+                    retention_ms = MIN(retention_ms, excluded.retention_ms)
+                """;
+            cmd.Parameters.AddWithValue("@tier", tier);
+            cmd.Parameters.AddWithValue("@retention", retentionMs);
+            cmd.ExecuteNonQuery();
         }
     }
 
@@ -1225,16 +1450,6 @@ public sealed class Database : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size();";
         return (long)(cmd.ExecuteScalar() ?? 0L);
-    }
-
-    private void DeleteOldestRollupDataLocked(string table)
-    {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = $"""
-            DELETE FROM {table}
-            WHERE ts <= (SELECT MIN(ts) + 86400000 FROM {table})
-            """;
-        cmd.ExecuteNonQuery();
     }
 
     private void ThrowIfDisposed() =>

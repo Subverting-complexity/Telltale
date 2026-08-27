@@ -209,6 +209,30 @@ public class SchemaMigrationTests : IDisposable
         Assert.Equal(0, Scalar(after, "SELECT COUNT(*) FROM machine_info"));
     }
 
+    [Fact]
+    public void Migration_AddsTheCoarseTierTablesToAnExistingDatabase()
+    {
+        string path = CreateLegacyDatabase();
+
+        using (OpenCollectorDatabase(path)) { }
+
+        using var after = Connect(path);
+
+        foreach (StorageTier tier in new[] { StorageTiers.OneHour, StorageTiers.OneDay, StorageTiers.OneWeek })
+        {
+            foreach (string table in new[] { tier.SampleTable, tier.MachineTable })
+            {
+                Assert.Equal(1, Scalar(after,
+                    $"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{table}'"));
+
+                // Left empty on purpose. Backfilling would mean promoting a year of
+                // ten minute rows inside a migration, holding the write lock at
+                // startup to do work the rollup worker does on its own schedule.
+                Assert.Equal(0, Scalar(after, $"SELECT COUNT(*) FROM {table}"));
+            }
+        }
+    }
+
     /// <summary>
     /// The version 3 step creates a table, and SQLite has no way to write that so
     /// it both tolerates a repeat and stores a definition identical to the one in

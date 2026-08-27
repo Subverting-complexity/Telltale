@@ -9,7 +9,7 @@ PRAGMA synchronous = NORMAL;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version VALUES (4);
+INSERT INTO schema_version VALUES (6);
 
 CREATE TABLE process_instance (
     id           INTEGER PRIMARY KEY,
@@ -66,6 +66,55 @@ CREATE TABLE sample_10m (
 );
 CREATE UNIQUE INDEX ux_s10m_ts_inst ON sample_10m(ts, instance_id);
 CREATE INDEX ix_s10m_inst ON sample_10m(instance_id, ts);
+
+-- The hourly, daily and weekly tiers below carry the same columns as the ten
+-- minute one, because a promotion between any two of them reads and writes the
+-- same figures. What changes down the ladder is only how wide a row is.
+--
+-- The weekly tier is the floor. Nothing is promoted out of it and nothing is
+-- deleted from it on a schedule, which is what lets a recording be kept
+-- indefinitely: a year of weekly rows is a few hundred of them per process.
+CREATE TABLE sample_1h (
+    ts           INTEGER NOT NULL,
+    instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+    cpu_pct_avg  REAL,
+    cpu_pct_max  REAL,
+    private_mb_max REAL,
+    working_set_mb_max REAL,
+    io_kb_total  REAL,
+    sample_count INTEGER,
+    cpu_pct_sustained_max REAL
+);
+CREATE UNIQUE INDEX ux_s1h_ts_inst ON sample_1h(ts, instance_id);
+CREATE INDEX ix_s1h_inst ON sample_1h(instance_id, ts);
+
+CREATE TABLE sample_1d (
+    ts           INTEGER NOT NULL,
+    instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+    cpu_pct_avg  REAL,
+    cpu_pct_max  REAL,
+    private_mb_max REAL,
+    working_set_mb_max REAL,
+    io_kb_total  REAL,
+    sample_count INTEGER,
+    cpu_pct_sustained_max REAL
+);
+CREATE UNIQUE INDEX ux_s1d_ts_inst ON sample_1d(ts, instance_id);
+CREATE INDEX ix_s1d_inst ON sample_1d(instance_id, ts);
+
+CREATE TABLE sample_1w (
+    ts           INTEGER NOT NULL,
+    instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+    cpu_pct_avg  REAL,
+    cpu_pct_max  REAL,
+    private_mb_max REAL,
+    working_set_mb_max REAL,
+    io_kb_total  REAL,
+    sample_count INTEGER,
+    cpu_pct_sustained_max REAL
+);
+CREATE UNIQUE INDEX ux_s1w_ts_inst ON sample_1w(ts, instance_id);
+CREATE INDEX ix_s1w_inst ON sample_1w(instance_id, ts);
 
 -- The machine the recording was made on. One row, rewritten whenever the
 -- collector starts, because a recording describes one machine.
@@ -127,6 +176,78 @@ CREATE TABLE machine_10m (
     net_kbps_avg        REAL,
     gpu_busy_pct_avg    REAL,
     sample_count        INTEGER
+);
+
+-- The machine wide side of the hourly, daily and weekly tiers. Same columns as
+-- machine_10m, for the same reason the per process tiers share theirs.
+CREATE TABLE machine_1h (
+    ts                  INTEGER PRIMARY KEY,
+    cpu_pct_avg         REAL,
+    cpu_pct_max         REAL,
+    memory_avail_mb_avg REAL,
+    memory_total_mb     REAL,
+    commit_mb_max       REAL,
+    hard_faults_total   INTEGER,
+    disk_read_ms_avg    REAL,
+    disk_write_ms_avg   REAL,
+    disk_busy_pct_avg   REAL,
+    disk_busy_pct_max   REAL,
+    net_kbps_avg        REAL,
+    gpu_busy_pct_avg    REAL,
+    sample_count        INTEGER,
+    cpu_pct_sustained_max REAL
+);
+
+CREATE TABLE machine_1d (
+    ts                  INTEGER PRIMARY KEY,
+    cpu_pct_avg         REAL,
+    cpu_pct_max         REAL,
+    memory_avail_mb_avg REAL,
+    memory_total_mb     REAL,
+    commit_mb_max       REAL,
+    hard_faults_total   INTEGER,
+    disk_read_ms_avg    REAL,
+    disk_write_ms_avg   REAL,
+    disk_busy_pct_avg   REAL,
+    disk_busy_pct_max   REAL,
+    net_kbps_avg        REAL,
+    gpu_busy_pct_avg    REAL,
+    sample_count        INTEGER,
+    cpu_pct_sustained_max REAL
+);
+
+CREATE TABLE machine_1w (
+    ts                  INTEGER PRIMARY KEY,
+    cpu_pct_avg         REAL,
+    cpu_pct_max         REAL,
+    memory_avail_mb_avg REAL,
+    memory_total_mb     REAL,
+    commit_mb_max       REAL,
+    hard_faults_total   INTEGER,
+    disk_read_ms_avg    REAL,
+    disk_write_ms_avg   REAL,
+    disk_busy_pct_avg   REAL,
+    disk_busy_pct_max   REAL,
+    net_kbps_avg        REAL,
+    gpu_busy_pct_avg    REAL,
+    sample_count        INTEGER,
+    cpu_pct_sustained_max REAL
+);
+
+-- How far size pressure has pulled each tier's retention in, keyed on the tier's
+-- per process table name. Absent means the tier is still at what telltale.json
+-- asks for; present means the file outgrew maxDatabaseSizeMb and this tier gave
+-- up some of its hold so the data could be folded into the tier below.
+--
+-- This is not recorded history, so a wipe of one day leaves it alone. A wipe of
+-- everything clears it: there is nothing left that was coarsened, so there is
+-- nothing for the high-water mark to protect.
+--
+-- It only ever moves inward. Raising the limit later stops further tightening
+-- but does not bring back detail that has already been folded away.
+CREATE TABLE tier_pressure (
+    tier         TEXT PRIMARY KEY,
+    retention_ms INTEGER NOT NULL
 );
 
 -- What the recorder cost the machine, one row per tick. cpu_pct is the

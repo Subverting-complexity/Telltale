@@ -22,6 +22,11 @@ export interface TimelineResponse {
   minBucketMs: number;
   /** The finest width the tiers themselves store, ignoring how many points that comes to. */
   tierFloorMs: number;
+  /**
+   * Whether the recorder has summarised older data further than the settings ask
+   * for, to keep the recording inside its size limit.
+   */
+  summarisedFurther: boolean;
   points: TimelinePoint[];
 }
 

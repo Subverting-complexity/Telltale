@@ -15,7 +15,10 @@ function option(id: string) {
 
 /** How the server answered, with sensible defaults for the fields a test ignores. */
 function served(overrides: Partial<TimelineDetail> = {}): TimelineDetail {
-  return { bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 5_000, ...overrides };
+  return {
+    bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 5_000,
+    summarisedFurther: false, ...overrides,
+  };
 }
 
 describe('granularityById', () => {
@@ -71,6 +74,24 @@ describe('granularityAvailability', () => {
     const oneMinute = granularityAvailability(option('1m'), YEAR, rollupOnly);
     expect(oneMinute.available).toBe(false);
     expect(oneMinute.reason).toMatch(/retained/);
+  });
+
+  it('says the size limit took the detail when that is why it is missing', () => {
+    // Retention working as configured and the size limit overriding it look
+    // identical from here. Left unexplained, the second reads as a setting being
+    // quietly ignored.
+    const squeezed = served({ minBucketMs: 600_000, tierFloorMs: 600_000, summarisedFurther: true });
+
+    const oneMinute = granularityAvailability(option('1m'), YEAR, squeezed);
+    expect(oneMinute.available).toBe(false);
+    expect(oneMinute.reason).toMatch(/size limit/);
+    expect(oneMinute.reason).toMatch(/cannot be undone/);
+  });
+
+  it('does not blame the size limit when the recording is inside it', () => {
+    const roomy = served({ minBucketMs: 600_000, tierFloorMs: 600_000, summarisedFurther: false });
+
+    expect(granularityAvailability(option('1m'), YEAR, roomy).reason).not.toMatch(/size limit/);
   });
 
   it('blames the point cap for anything above the tier floor the window cannot carry', () => {

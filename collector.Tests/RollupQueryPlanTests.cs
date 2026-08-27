@@ -17,7 +17,15 @@ public sealed class RollupQueryPlanTests : SqliteTestBase
     public void MachineReRollup_HasNoCorrelatedSubquery()
     {
         AssertNoCorrelatedSubquery(
-            Database.BuildMachineReRollupSql("machine_1m", "machine_10m"));
+            Database.BuildMachineReRollupSql("machine_1m", "machine_10m", ("", "")));
+    }
+
+    [Fact]
+    public void MachineReRollup_IntoATierCarryingTheSustainedMax_HasNoCorrelatedSubqueryEither()
+    {
+        AssertNoCorrelatedSubquery(
+            Database.BuildMachineReRollupSql("machine_10m", "machine_1h",
+                (", cpu_pct_sustained_max", ", MAX(cpu_pct_avg)")));
     }
 
     private void AssertNoCorrelatedSubquery(string sql)

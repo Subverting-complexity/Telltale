@@ -32,6 +32,12 @@ export interface TimelineDetail {
   minBucketMs: number;
   /** Finest width the tiers themselves store, ignoring how many points that comes to. */
   tierFloorMs: number;
+  /**
+   * Whether the recording has been summarised further than the settings ask for,
+   * to stay inside its size limit. Changes why a width is unavailable, not
+   * whether it is.
+   */
+  summarisedFurther: boolean;
 }
 
 /**
@@ -129,9 +135,19 @@ export function midSentence(sentence: string): string {
  * return that many points of it.
  */
 function reasonFor(bucketMs: number, served: TimelineDetail): string {
-  return bucketMs < served.tierFloorMs
-    ? 'Finer detail is not retained this far back.'
-    : 'That would be more points than one response carries.';
+  if (bucketMs >= served.tierFloorMs) {
+    return 'That would be more points than one response carries.';
+  }
+
+  // Two different reasons the detail is not there, and they matter differently.
+  // The first is the retention working as configured. The second is the size
+  // limit overriding it, which otherwise looks identical from here and reads as
+  // a setting being ignored.
+  return served.summarisedFurther
+    ? 'Finer detail is not retained this far back. The recording reached its size '
+      + 'limit, so older data was summarised further than the settings ask for. '
+      + 'That cannot be undone.'
+    : 'Finer detail is not retained this far back.';
 }
 
 /**

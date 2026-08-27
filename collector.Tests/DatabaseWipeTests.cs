@@ -112,14 +112,19 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
     [Fact]
     public void WipeAll_ReportsHowManyRowsWent()
     {
-        // One process row, one sample, one machine row, one health row, one phase
-        // row and one bucket in each of the four rollup tables.
+        // One process row, one sample, one machine row, one health row and one phase
+        // row, plus one bucket in each summarised tier's pair of tables. Counted from
+        // the tier list rather than written down, so adding a tier does not turn this
+        // into a number nobody can derive.
+        int summarisedTiers = StorageTiers.Ordered.Count(t => t.Shape == TierShape.Summarised);
+        int expected = 5 + (2 * summarisedTiers);
+
         SeedDay(Day0);
 
         var result = Db.WipeAll();
 
         Assert.Equal(0, RowsInDatabase());
-        Assert.Equal(9, result.RowsDeleted);
+        Assert.Equal(expected, result.RowsDeleted);
     }
 
     [Fact]
@@ -266,10 +271,17 @@ public class DatabaseWipeTests() : SqliteTestBase("wipe")
         Db.WriteCollectorHealth(ts, 1, 10, 5, 300, 100);
         Db.WriteTickPhases(ts, new TickPhaseTimings(1, 2, 3, 4, 5, 6, 7));
 
-        InsertProcessRollup("sample_1m", ts, instance);
-        InsertProcessRollup("sample_10m", ts, instance);
-        InsertMachineRollup("machine_1m", ts);
-        InsertMachineRollup("machine_10m", ts);
+        // Driven off the tier list rather than written out, so a tier added to the
+        // ladder is seeded here without anyone remembering to. An unseeded tier makes
+        // the wipe assertions vacuous: they would pass on an empty table whether the
+        // wipe reached it or not.
+        foreach (StorageTier tier in StorageTiers.Ordered)
+        {
+            if (tier.Shape != TierShape.Summarised) continue;
+
+            InsertProcessRollup(tier.SampleTable, ts, instance);
+            InsertMachineRollup(tier.MachineTable, ts);
+        }
     }
 
     /// <summary>

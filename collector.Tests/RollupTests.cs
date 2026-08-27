@@ -1,3 +1,4 @@
+using System.Globalization;
 using Telltale.Collector;
 
 namespace Collector.Tests;
@@ -30,7 +31,7 @@ public class RollupTests : SqliteTestBase
 
         // A cutoff a third of the way into the second minute. Only the first minute
         // is complete, so only the first minute may be promoted.
-        Db.RollupSamples(straddling + 20_001, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(straddling + 20_001, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         Assert.Equal([earlier], Timestamps("machine_1m"));
         Assert.Equal(3, Count("machine"));
@@ -46,12 +47,12 @@ public class RollupTests : SqliteTestBase
         // First cycle: the cutoff lands inside the bucket. Before the fix this
         // promoted the two rows older than the cutoff and deleted them, leaving the
         // third behind under a bucket timestamp that now existed.
-        Db.RollupSamples(bucket + 30_000, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + 30_000, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         // Second cycle: the bucket is complete. Before the fix this tried to insert
         // the same bucket timestamp a second time, the primary key rejected it, and
         // the whole transaction including the delete rolled back.
-        Db.RollupSamples(bucket + MinuteMs + 30_000, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs + 30_000, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         Assert.Equal([bucket], Timestamps("machine_1m"));
         Assert.Equal(3L, Scalar($"SELECT sample_count FROM machine_1m WHERE ts = {bucket}"));
@@ -65,8 +66,8 @@ public class RollupTests : SqliteTestBase
         WriteMachine(bucket, bucket + 30_000);
         long cutoff = bucket + MinuteMs;
 
-        Db.RollupSamples(cutoff, "machine", "machine_1m", 1, isMachine: true);
-        Db.RollupSamples(cutoff, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(cutoff, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
+        Db.RollupSamples(cutoff, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         Assert.Equal([bucket], Timestamps("machine_1m"));
         Assert.Equal(2L, Scalar($"SELECT sample_count FROM machine_1m WHERE ts = {bucket}"));
@@ -77,13 +78,13 @@ public class RollupTests : SqliteTestBase
     {
         long bucket = BucketStart;
         WriteMachine(bucket, bucket + 30_000);
-        Db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         // A row arriving late for a bucket that has already been promoted, which is
         // also the shape of a database left wedged by the previous behaviour.
         WriteMachine(bucket + 45_000);
 
-        Db.RollupSamples(bucket + (2 * MinuteMs), "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + (2 * MinuteMs), StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         Assert.Equal([bucket], Timestamps("machine_1m"));
         Assert.Equal(2L, Scalar($"SELECT sample_count FROM machine_1m WHERE ts = {bucket}"));
@@ -99,10 +100,10 @@ public class RollupTests : SqliteTestBase
         long instanceId = Db.GetOrCreateProcessInstance(4321, 100, "test.exe", null, null, bucket);
 
         WriteSample(instanceId, bucket, bucket + 30_000);
-        Db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
 
         WriteSample(instanceId, bucket + 45_000);
-        Db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + (2 * MinuteMs), StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
 
         // Before issue #32 a repeated promotion inserted a second row for the same
         // minute here and silently double counted, because sample_1m had no key on
@@ -129,7 +130,7 @@ public class RollupTests : SqliteTestBase
         foreach (long instanceId in instances)
             WriteSample(instanceId, bucket, bucket + 30_000);
 
-        Db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
 
         // The bucket exclusion reads the table being inserted into, so a bucket that
         // is new for one process must not read as taken for the next.
@@ -145,7 +146,7 @@ public class RollupTests : SqliteTestBase
         long bucket = BucketStart;
         long early = Db.GetOrCreateProcessInstance(1, 100, "early.exe", null, null, bucket);
         WriteSample(early, bucket);
-        Db.RollupSamples(bucket + MinuteMs, "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
 
         // A process first sampled in the second half of a minute that was already
         // promoted. The exclusion is keyed on (ts, instance_id), so this process is
@@ -153,7 +154,7 @@ public class RollupTests : SqliteTestBase
         long late = Db.GetOrCreateProcessInstance(2, 100, "late.exe", null, null, bucket + 45_000);
         WriteSample(late, bucket + 45_000);
 
-        Db.RollupSamples(bucket + (2 * MinuteMs), "sample", "sample_1m", 1, isMachine: false);
+        Db.RollupSamples(bucket + (2 * MinuteMs), StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false);
 
         Assert.Equal(2, Count("sample_1m", $"ts = {bucket}"));
         Assert.Equal(1L, Scalar(
@@ -175,8 +176,8 @@ public class RollupTests : SqliteTestBase
 
         // A cutoff four minutes into the second ten minute bucket. Only the first is
         // complete. Running twice proves the incomplete one is not half promoted.
-        Db.RollupSamples(second + (4 * MinuteMs), "machine_1m", "machine_10m", 10, isMachine: true);
-        Db.RollupSamples(second + (4 * MinuteMs), "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(second + (4 * MinuteMs), StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
+        Db.RollupSamples(second + (4 * MinuteMs), StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         Assert.Equal([first], Timestamps("machine_10m"));
         Assert.Equal(10L, Scalar($"SELECT sample_count FROM machine_10m WHERE ts = {first}"));
@@ -199,11 +200,83 @@ public class RollupTests : SqliteTestBase
     }
 
     [Fact]
-    public void Rollup_RejectsABucketSizeBelowOneMinute()
+    public void Rollup_RejectsATargetTierThatIsNotCoarserThanTheSource()
     {
+        // A promotion only ever gives up detail. Into the same width it would
+        // rewrite a tier into itself, and into a finer one it would claim a
+        // resolution that was never recorded. The bucket width used to be passed
+        // separately from the table names, so a caller could name any three of them
+        // and get a statement that ran.
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => Db.RollupSamples(BucketStart, "machine", "machine_1m", 0, isMachine: true));
+            () => Db.RollupSamples(BucketStart, StorageTiers.OneMinute, StorageTiers.OneMinute, isMachine: true));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => Db.RollupSamples(BucketStart, StorageTiers.TenMinute, StorageTiers.OneMinute, isMachine: true));
     }
+
+    [Fact]
+    public void Rollup_OutOfASummarisedTier_WeightsBySampleCountRatherThanAveragingTheAverages()
+    {
+        // The shape of the source used to be inferred by testing its table name for
+        // "_1m" or "_10m". sample_1h matches neither, so this promotion would have
+        // been read as one out of raw: no exception, just an unweighted average over
+        // columns that do not hold what that statement believes they hold. The tier
+        // now carries its own shape, so the name is never consulted.
+        const long HourMs = 3_600_000L;
+        const long DayMs = 86_400_000L;
+
+        long day = Database.FloorToBucket(BucketStart, DayMs);
+        long id = Db.GetOrCreateProcessInstance(1, 100, "a.exe", null, null, day);
+
+        // One hour holding a single reading of 100, and one holding 600 readings of
+        // 0. Weighted by sample_count the day averages well under 1. Averaging the
+        // two averages unweighted would give 50.
+        WriteHourly(day, id, cpuAvg: 100.0, sampleCount: 1);
+        WriteHourly(day + HourMs, id, cpuAvg: 0.0, sampleCount: 600);
+
+        Db.RollupSamples(day + DayMs, StorageTiers.OneHour, StorageTiers.OneDay, isMachine: false);
+
+        double average = Real("SELECT cpu_pct_avg FROM sample_1d");
+        Assert.True(average < 1.0,
+            $"Expected one reading of 100 to be outweighed by 600 of 0, got {average}.");
+    }
+
+    [Fact]
+    public void Rollup_ThroughTheWholeLadder_LandsEveryReadingAtTheFloorWithNoneLost()
+    {
+        // Ageing gives up detail and only detail. Walking the full ladder, every
+        // reading should end up accounted for in the coarsest tier rather than
+        // deleted somewhere along the way, which is what used to happen to anything
+        // older than rollup10mRetentionDays.
+        const long WeekMs = 604_800_000L;
+
+        long week = Database.FloorToBucket(BucketStart, WeekMs);
+        long[] timestamps = [.. Enumerable.Range(0, 6).Select(i => week + (i * MinuteMs))];
+        WriteMachine(timestamps);
+
+        // Far enough past that every bucket at every width is complete.
+        long cutoff = week + (2 * WeekMs);
+
+        IReadOnlyList<StorageTier> tiers = StorageTiers.Ordered;
+        for (int i = 0; i < tiers.Count - 1; i++)
+            Db.RollupSamples(cutoff, tiers[i], tiers[i + 1], isMachine: true);
+
+        foreach (StorageTier tier in tiers.Take(tiers.Count - 1))
+            Assert.Equal(0, Count(tier.MachineTable));
+
+        Assert.Equal([week], Timestamps(StorageTiers.OneWeek.MachineTable));
+        Assert.Equal((long)timestamps.Length,
+            Scalar($"SELECT sample_count FROM {StorageTiers.OneWeek.MachineTable} WHERE ts = {week}"));
+    }
+
+    private void WriteHourly(long ts, long instanceId, double cpuAvg, int sampleCount) =>
+        Execute($"""
+            INSERT INTO sample_1h
+                (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                 working_set_mb_max, io_kb_total, sample_count)
+            VALUES ({ts}, {instanceId}, {cpuAvg.ToString(CultureInfo.InvariantCulture)},
+                    {cpuAvg.ToString(CultureInfo.InvariantCulture)}, 10, 20, 5, {sampleCount})
+            """);
 
     private void WriteMachine(params long[] timestamps)
     {

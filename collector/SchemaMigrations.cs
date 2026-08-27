@@ -19,7 +19,7 @@ public static class SchemaMigrations
     /// migration is added below, and change <c>schema.sql</c> to match, so a
     /// database created from scratch and one migrated up end at the same shape.
     /// </summary>
-    public const int LatestVersion = 4;
+    public const int LatestVersion = 6;
 
     /// <summary>
     /// One step, taking a database from the version before it to
@@ -58,6 +58,12 @@ public static class SchemaMigrations
         new(4, "record the logical processor count of the machine being recorded",
             AddMachineInfoTableSql,
             conn => HasTable(conn, "machine_info")),
+        new(5, "add the hourly, daily and weekly tiers below the ten minute one",
+            AddCoarseTierTablesSql,
+            conn => HasTable(conn, "sample_1h")),
+        new(6, "record how far size pressure has pulled each tier's retention in",
+            AddTierPressureTableSql,
+            conn => HasTable(conn, "tier_pressure")),
     ];
 
     /// <summary>
@@ -348,6 +354,148 @@ public static class SchemaMigrations
         CREATE TABLE machine_info (
             id                 INTEGER PRIMARY KEY CHECK (id = 1),
             logical_processors INTEGER NOT NULL
+        );
+        """;
+
+    /// <summary>
+    /// Version 5. Adds the hourly, daily and weekly tiers, so that ageing has
+    /// somewhere to put ten minute rows other than a delete.
+    ///
+    /// Purely additive, and safe for a build that predates it. An older
+    /// <c>TelltaleCapture.exe</c> refuses to open a database recorded at a version
+    /// it does not understand, and the viewer only reads, so a viewer that has
+    /// never heard of these tables simply does not select from them:
+    /// <c>TierCoverageReader</c> already skips a tier whose table is absent, and the
+    /// same tolerance covers a tier whose table is present but unknown to it.
+    ///
+    /// The tables are left empty. Backfilling them would mean promoting a year of
+    /// ten minute rows inside a migration, which is a large amount of work holding
+    /// the write lock at startup, and it is work the rollup worker does on its own
+    /// schedule anyway. An empty tier is the honest state until the first cycle
+    /// after the upgrade.
+    ///
+    /// Written out in full rather than with IF NOT EXISTS, for the reason given on
+    /// the version 3 step: what SQLite stores has to be character for character
+    /// what <c>schema.sql</c> says, so a migrated database and a fresh one are
+    /// provably the same shape.
+    /// </summary>
+    private const string AddCoarseTierTablesSql = """
+        CREATE TABLE sample_1h (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        CREATE UNIQUE INDEX ux_s1h_ts_inst ON sample_1h(ts, instance_id);
+        CREATE INDEX ix_s1h_inst ON sample_1h(instance_id, ts);
+
+        CREATE TABLE sample_1d (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        CREATE UNIQUE INDEX ux_s1d_ts_inst ON sample_1d(ts, instance_id);
+        CREATE INDEX ix_s1d_inst ON sample_1d(instance_id, ts);
+
+        CREATE TABLE sample_1w (
+            ts           INTEGER NOT NULL,
+            instance_id  INTEGER NOT NULL REFERENCES process_instance(id),
+            cpu_pct_avg  REAL,
+            cpu_pct_max  REAL,
+            private_mb_max REAL,
+            working_set_mb_max REAL,
+            io_kb_total  REAL,
+            sample_count INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        CREATE UNIQUE INDEX ux_s1w_ts_inst ON sample_1w(ts, instance_id);
+        CREATE INDEX ix_s1w_inst ON sample_1w(instance_id, ts);
+
+        CREATE TABLE machine_1h (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+
+        CREATE TABLE machine_1d (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+
+        CREATE TABLE machine_1w (
+            ts                  INTEGER PRIMARY KEY,
+            cpu_pct_avg         REAL,
+            cpu_pct_max         REAL,
+            memory_avail_mb_avg REAL,
+            memory_total_mb     REAL,
+            commit_mb_max       REAL,
+            hard_faults_total   INTEGER,
+            disk_read_ms_avg    REAL,
+            disk_write_ms_avg   REAL,
+            disk_busy_pct_avg   REAL,
+            disk_busy_pct_max   REAL,
+            net_kbps_avg        REAL,
+            gpu_busy_pct_avg    REAL,
+            sample_count        INTEGER,
+            cpu_pct_sustained_max REAL
+        );
+        """;
+
+    /// <summary>
+    /// Version 6. Adds the table recording how far size pressure has pulled each
+    /// tier's retention in.
+    ///
+    /// It exists so the tightening survives a restart, and so the viewer can say
+    /// why a window is being served coarser than telltale.json asks for. Without
+    /// it, every start would begin again from the configured retentions, find the
+    /// file still too large, and repeat work it had already done.
+    ///
+    /// Left empty, which is the honest state: a database that has just been
+    /// migrated has had no pressure applied to it.
+    ///
+    /// Written out in full rather than with IF NOT EXISTS, for the reason given on
+    /// the version 3 step.
+    /// </summary>
+    private const string AddTierPressureTableSql = """
+        CREATE TABLE tier_pressure (
+            tier         TEXT PRIMARY KEY,
+            retention_ms INTEGER NOT NULL
         );
         """;
 }

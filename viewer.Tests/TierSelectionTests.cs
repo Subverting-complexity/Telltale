@@ -314,8 +314,33 @@ public class TierSelectionTests
     [InlineData("sample_1m", 60_000)]
     [InlineData("machine_10m", 600_000)]
     [InlineData("sample_10m", 600_000)]
+    [InlineData("machine_1h", 3_600_000)]
+    [InlineData("sample_1h", 3_600_000)]
+    [InlineData("machine_1d", 86_400_000)]
+    [InlineData("sample_1d", 86_400_000)]
+    [InlineData("machine_1w", 604_800_000)]
+    [InlineData("sample_1w", 604_800_000)]
     public void NativeIntervalMatchesTierGranularity(string table, long expected)
     {
         Assert.Equal(expected, TierSelection.NativeIntervalMs(table));
+    }
+
+    [Fact]
+    public void EveryTierTheViewerWillSelect_HasANativeInterval()
+    {
+        // The suffix match falls back to the raw interval for anything it does not
+        // recognise, which is right for the raw tables and silently wrong for a tier
+        // added to the list and not to the switch. A weekly table read as five second
+        // detail would be offered a bucket no row in it can serve.
+        foreach (bool isMachine in new[] { true, false })
+        {
+            foreach (string table in TierSelection.TiersFor(isMachine))
+            {
+                if (TierSelection.IsRawTable(table)) continue;
+
+                Assert.True(TierSelection.NativeIntervalMs(table) > 5_000,
+                    $"{table} falls through to the raw interval, so its suffix has no case.");
+            }
+        }
     }
 }

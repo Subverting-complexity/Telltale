@@ -174,7 +174,8 @@ function updateGranularityUrl(view: ViewState, granularity: GranularityId) {
  * request that never arrived.
  */
 const EMPTY_TIMELINE: TimelineResponse = {
-  resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0, points: [],
+  resolution: '', bucketMs: 0, bucketRequestMs: null, minBucketMs: 0, tierFloorMs: 0,
+  summarisedFurther: false, points: [],
 };
 
 export default function App() {
@@ -253,6 +254,7 @@ export default function App() {
       bucketRequestMs: tl.bucketRequestMs,
       minBucketMs: tl.minBucketMs,
       tierFloorMs: tl.tierFloorMs,
+      summarisedFurther: tl.summarisedFurther,
     });
   }, []);
 

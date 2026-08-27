@@ -10,6 +10,7 @@ function answer(resolution: string, bucketRequestMs: number | null = null): Time
     bucketRequestMs,
     minBucketMs: 0,
     tierFloorMs: 5_000,
+    summarisedFurther: false,
     points: [],
   };
 }

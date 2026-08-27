@@ -75,7 +75,7 @@ public class DatabaseLifecycleTests() : SqliteTestBase("lifecycle")
             Db.WriteSampleBatch(1_000, [new SampleRow(1, 1.0, 10, 20, 1, 1, 1)]));
         Assert.Throws<ObjectDisposedException>(() => Db.IncrementalVacuum());
         Assert.Throws<ObjectDisposedException>(() =>
-            Db.RollupSamples(1_000, "sample", "sample_1m", 1, isMachine: false));
+            Db.RollupSamples(1_000, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: false));
 
         // Every gated method, not a sample of them. The guard rides the same
         // convention as the lock, so a method added later without either is the
@@ -87,6 +87,7 @@ public class DatabaseLifecycleTests() : SqliteTestBase("lifecycle")
         Assert.Throws<ObjectDisposedException>(() => Db.DeleteOldData("sample", 1_000));
         Assert.Throws<ObjectDisposedException>(() => Db.DeleteOrphanedProcessInstances());
         Assert.Throws<ObjectDisposedException>(() => Db.WalCheckpoint());
-        Assert.Throws<ObjectDisposedException>(() => Db.EnforceSizeLimit(long.MaxValue));
+        Assert.Throws<ObjectDisposedException>(() => Db.ReadTierPressure());
+        Assert.Throws<ObjectDisposedException>(() => Db.WriteTierPressure("sample_1m", 1_000));
     }
 }

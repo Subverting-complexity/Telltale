@@ -39,7 +39,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachine(second, memoryTotalMb: 32_000);
         WriteMachine(second + 30_000, memoryTotalMb: 32_002);
 
-        Db.RollupSamples(second + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(second + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         // Each bucket takes its own last reading. A lookup that resolved once for
         // the whole statement rather than once per bucket would give both buckets
@@ -56,7 +56,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachine(bucket, memoryTotalMb: 16_000);
         WriteMachine(bucket + 30_000, memoryTotalMb: null);
 
-        Db.RollupSamples(bucket + MinuteMs, "machine", "machine_1m", 1, isMachine: true);
+        Db.RollupSamples(bucket + MinuteMs, StorageTiers.Raw, StorageTiers.OneMinute, isMachine: true);
 
         // The rule is "the last reading in the bucket", not "the last reading that
         // happened to carry a value", so a NULL final reading stays NULL.
@@ -75,7 +75,7 @@ public class RollupAggregateTests : SqliteTestBase
             WriteMachineRollup(second + (i * MinuteMs), memoryTotalMb: 32_000 + i);
         }
 
-        Db.RollupSamples(second + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(second + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         Assert.Equal(16_009d, Scalar($"SELECT memory_total_mb FROM machine_10m WHERE ts = {first}"));
         Assert.Equal(32_009d, Scalar($"SELECT memory_total_mb FROM machine_10m WHERE ts = {second}"));
@@ -95,7 +95,7 @@ public class RollupAggregateTests : SqliteTestBase
         // sample deliberately, so this row carries a real sample_count and no average.
         WriteMachineRollup(bucket + (2 * MinuteMs), cpuPctAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         // The average of what was actually measured. Counting the unmeasured
         // minute's twelve samples in the divisor alone would give 33.3.
@@ -114,7 +114,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachineRollup(bucket, cpuPctAvg: null, sampleCount: 12);
         WriteMachineRollup(bucket + MinuteMs, cpuPctAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         // Dividing by a zero weight would report a busy machine as idle. NULL says
         // "not measured", which is what happened.
@@ -131,7 +131,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteMachineRollup(bucket + MinuteMs, cpuPctAvg: 20, netKbpsAvg: 300, sampleCount: 12);
         WriteMachineRollup(bucket + (2 * MinuteMs), cpuPctAvg: null, netKbpsAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "machine_1m", "machine_10m", 10, isMachine: true);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: true);
 
         Assert.Equal(600d, (double)Scalar($"SELECT net_kbps_avg FROM machine_10m WHERE ts = {bucket}")!, 6);
     }
@@ -146,7 +146,7 @@ public class RollupAggregateTests : SqliteTestBase
         WriteSampleRollup(bucket + MinuteMs, instanceId, cpuPctAvg: 10, sampleCount: 12);
         WriteSampleRollup(bucket + (2 * MinuteMs), instanceId, cpuPctAvg: null, sampleCount: 12);
 
-        Db.RollupSamples(bucket + TenMinutesMs, "sample_1m", "sample_10m", 10, isMachine: false);
+        Db.RollupSamples(bucket + TenMinutesMs, StorageTiers.OneMinute, StorageTiers.TenMinute, isMachine: false);
 
         // A short-lived process routinely produces a minute with nothing measurable,
         // so on the process side this is the common case rather than the rare one.
@@ -185,4 +185,128 @@ public class RollupAggregateTests : SqliteTestBase
     private static string Sql(double? value) =>
         value?.ToString(CultureInfo.InvariantCulture) ?? "NULL";
 
+    // ---- cpu_pct_sustained_max: busy for a while, not busy for an instant ----
+
+    [Fact]
+    public void PromotingIntoTheHourlyTier_TakesTheSustainedMaxFromTheTenMinuteAverages()
+    {
+        // A quiet ten minutes that briefly touched 99, and a busy ten minutes that
+        // sat at 80. The plain maximum reports the 99 and says the hour was flat out.
+        // The sustained figure reports the 80, which is the one that describes the
+        // hour rather than one reading inside it.
+        long hour = Database.FloorToBucket(BucketStart, HourMs);
+
+        WriteTenMinuteRollup(hour, cpuAvg: 20, cpuMax: 99);
+        WriteTenMinuteRollup(hour + TenMinutesMs, cpuAvg: 80, cpuMax: 85);
+
+        Db.RollupSamples(hour + HourMs, StorageTiers.TenMinute, StorageTiers.OneHour, isMachine: true);
+
+        Assert.Equal(99, Real("SELECT cpu_pct_max FROM machine_1h"));
+        Assert.Equal(80, Real("SELECT cpu_pct_sustained_max FROM machine_1h"));
+    }
+
+    [Fact]
+    public void PromotingBetweenCoarseTiers_CarriesTheSustainedMaxThroughAsAMaximum()
+    {
+        // Above the hourly tier it is already the widest window it is allowed to
+        // describe, so it composes as a plain maximum of maxima rather than being
+        // recomputed from averages.
+        long day = Database.FloorToBucket(BucketStart, DayMs);
+
+        WriteHourlyRollup(day, sustainedMax: 30);
+        WriteHourlyRollup(day + HourMs, sustainedMax: 75);
+        WriteHourlyRollup(day + (2 * HourMs), sustainedMax: 40);
+
+        Db.RollupSamples(day + DayMs, StorageTiers.OneHour, StorageTiers.OneDay, isMachine: true);
+
+        Assert.Equal(75, Real("SELECT cpu_pct_sustained_max FROM machine_1d"));
+    }
+
+    [Fact]
+    public void PromotingRowsRecordedBeforeTheSustainedMaxExisted_LeavesItNull()
+    {
+        // It cannot be worked back from an average and a maximum, so a bucket that
+        // predates the column keeps nothing there rather than a figure invented from
+        // two that cannot produce it.
+        long day = Database.FloorToBucket(BucketStart, DayMs);
+        WriteHourlyRollup(day, sustainedMax: null);
+
+        Db.RollupSamples(day + DayMs, StorageTiers.OneHour, StorageTiers.OneDay, isMachine: true);
+
+        Assert.Null(Scalar("SELECT cpu_pct_sustained_max FROM machine_1d") as double?);
+    }
+
+    [Fact]
+    public void PromotingProcessRowsIntoTheHourlyTier_TakesTheSustainedMaxFromTheTenMinuteAverages()
+    {
+        // The per process promotion builds its own statement rather than sharing the
+        // machine one, so the sustained column has to be pinned on both sides. A
+        // projection missing here would leave every process row null for good: the
+        // figure cannot be worked back from the average and the maximum later.
+        long hour = Database.FloorToBucket(BucketStart, HourMs);
+        long instanceId = Db.GetOrCreateProcessInstance(9876, 100, "test.exe", null, null, hour);
+
+        WriteTenMinuteSampleRollup(hour, instanceId, cpuAvg: 20, cpuMax: 99);
+        WriteTenMinuteSampleRollup(hour + TenMinutesMs, instanceId, cpuAvg: 80, cpuMax: 85);
+
+        Db.RollupSamples(hour + HourMs, StorageTiers.TenMinute, StorageTiers.OneHour, isMachine: false);
+
+        Assert.Equal(99, Real("SELECT cpu_pct_max FROM sample_1h"));
+        Assert.Equal(80, Real("SELECT cpu_pct_sustained_max FROM sample_1h"));
+    }
+
+    [Fact]
+    public void PromotingProcessRowsBetweenCoarseTiers_CarriesTheSustainedMaxThroughAsAMaximum()
+    {
+        long day = Database.FloorToBucket(BucketStart, DayMs);
+        long instanceId = Db.GetOrCreateProcessInstance(9877, 100, "test.exe", null, null, day);
+
+        WriteHourlySampleRollup(day, instanceId, sustainedMax: 30);
+        WriteHourlySampleRollup(day + HourMs, instanceId, sustainedMax: 75);
+        WriteHourlySampleRollup(day + (2 * HourMs), instanceId, sustainedMax: null);
+
+        Db.RollupSamples(day + DayMs, StorageTiers.OneHour, StorageTiers.OneDay, isMachine: false);
+
+        // MAX ignores the null rather than being poisoned by it, so an hour recorded
+        // before the column existed does not erase the hours that carry it.
+        Assert.Equal(75, Real("SELECT cpu_pct_sustained_max FROM sample_1d"));
+    }
+
+    private const long HourMs = 3_600_000L;
+    private const long DayMs = 24 * HourMs;
+
+    private void WriteTenMinuteRollup(long ts, double cpuAvg, double cpuMax) => Execute($"""
+        INSERT INTO machine_10m
+            (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+             commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg, sample_count)
+        VALUES ({ts}, {Sql(cpuAvg)}, {Sql(cpuMax)}, 8000, 16000, 12000, 0, 1.0, 2.0,
+                30.0, 40.0, 1000, NULL, 120)
+        """);
+
+    private void WriteTenMinuteSampleRollup(long ts, long instanceId, double cpuAvg, double cpuMax) =>
+        Execute($"""
+            INSERT INTO sample_10m
+                (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                 working_set_mb_max, io_kb_total, sample_count)
+            VALUES ({ts}, {instanceId}, {Sql(cpuAvg)}, {Sql(cpuMax)}, 100, 200, 50, 120)
+            """);
+
+    private void WriteHourlySampleRollup(long ts, long instanceId, double? sustainedMax) =>
+        Execute($"""
+            INSERT INTO sample_1h
+                (ts, instance_id, cpu_pct_avg, cpu_pct_max, private_mb_max,
+                 working_set_mb_max, io_kb_total, sample_count, cpu_pct_sustained_max)
+            VALUES ({ts}, {instanceId}, 50.0, 60.0, 100, 200, 50, 720, {Sql(sustainedMax)})
+            """);
+
+    private void WriteHourlyRollup(long ts, double? sustainedMax) => Execute($"""
+        INSERT INTO machine_1h
+            (ts, cpu_pct_avg, cpu_pct_max, memory_avail_mb_avg, memory_total_mb,
+             commit_mb_max, hard_faults_total, disk_read_ms_avg, disk_write_ms_avg,
+             disk_busy_pct_avg, disk_busy_pct_max, net_kbps_avg, gpu_busy_pct_avg,
+             sample_count, cpu_pct_sustained_max)
+        VALUES ({ts}, 50.0, 60.0, 8000, 16000, 12000, 0, 1.0, 2.0,
+                30.0, 40.0, 1000, NULL, 720, {Sql(sustainedMax)})
+        """);
 }
