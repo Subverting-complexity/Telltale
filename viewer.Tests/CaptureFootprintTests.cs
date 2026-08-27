@@ -10,8 +10,9 @@ namespace Viewer.Tests;
 /// It counted the database alone until #174, which could be a fraction of the disk
 /// in use, so someone could watch their history be summarised further while the
 /// number next to the clock said they were nowhere near the limit. It is also the
-/// only signal that a log is growing without bound, because the collector says
-/// nothing about that on its own cycle.
+/// only signal a person sees on screen: the collector reports the same footprint in
+/// its cycle completion line, but says nothing when a log alone is what puts the
+/// capture over its limit.
 ///
 /// The same two files the collector counts, but not the same figure: this reads
 /// their lengths and the collector takes the database as page count times page

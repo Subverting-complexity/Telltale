@@ -1579,6 +1579,12 @@ public sealed class Database : IDisposable
         // The database under the gate, the log outside it. The probe is a cheap
         // metadata call, but the gate is the same one every sample write takes, and
         // there is no reason for the sampler to wait behind a filesystem call.
+        //
+        // So the two halves are sampled at different instants, and a checkpoint
+        // landing between them leaves this briefly understating the footprint by what
+        // the log was holding. That is harmless here because nothing acts on this
+        // figure, only reports it, and the next report is a few minutes away. It would
+        // stop being harmless if anything ever enforced against it.
         long database = GetDatabaseSizeBytes();
 
         return database + GetWalSizeBytes(_dbPath);

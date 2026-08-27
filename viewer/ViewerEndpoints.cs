@@ -708,9 +708,11 @@ public static class ViewerEndpoints
             // in the status bar that could be a fraction of the disk actually in use,
             // and left the person unable to see why their history was being summarised
             // further: on the recording that prompted #145 it would have read 4.5 MB
-            // beside a 501 MB log. It is also the only signal that a log is growing
-            // without bound, because the collector deliberately says nothing about
-            // that on its own cycle (#174).
+            // beside a 501 MB log. It is also the only signal a person sees on screen.
+            // The collector reports the same footprint in its cycle completion line,
+            // but says nothing when a log alone is what puts the capture over its
+            // limit, deliberately, because a window left open would make that a line
+            // every few minutes (#172).
             //
             // The same two files the collector counts, but not the same figure. This
             // reads their lengths, where the collector's own measurement takes the
