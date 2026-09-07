@@ -67,7 +67,7 @@ take precedence — see `## Issue Types & Fields`.
 
 Every issue carries exactly one of these lifecycle labels. `status-ready`
 is kept as the default lifecycle state, but it no longer has a column of its
-own: it maps to the `Todo` column, same as a fresh backlog issue. See
+own: it maps to the `Backlog` column, same as a fresh backlog issue. See
 `### Status Options`.
 
 | Purpose                | Label                    |
@@ -126,7 +126,7 @@ straight through the open backlog. To take an issue out of the pick pool,
 apply `status-parked` or `status-blocked`, or assign it to someone.
 
 The board matches this. There is no `Ready` column, so an issue sitting in
-`Todo` is ready by default and the only board state that withholds it is
+`Backlog` is ready by default and the only board state that withholds it is
 `Blocked`. See `### Status Options`.
 
 ## Agent Gating
@@ -181,7 +181,7 @@ org issue fields listed under `## Issue Types & Fields`.
 
 | Status      | Purpose key                | Option ID  |
 | ----------- | -------------------------- | ---------- |
-| Todo        | `col-backlog`, `col-ready` | `63f5d64f` |
+| Backlog     | `col-backlog`, `col-ready` | `63f5d64f` |
 | In Progress | `col-in-progress`          | `adf2ed75` |
 | In Review   | `col-in-review`            | `b375b155` |
 | Blocked     | `col-blocked`              | `a3c1ddac` |
@@ -192,13 +192,13 @@ the pick pool in two for no benefit: with `ready-gate: none` an agent picks
 straight out of the open backlog, so a second column only added a manual
 promotion step that nobody performed.
 
-`Todo` therefore carries both purpose keys. `col-backlog` and `col-ready`
+`Backlog` therefore carries both purpose keys. `col-backlog` and `col-ready`
 both resolve to it, so a command that places a `status-ready` issue and a
 command that places a fresh backlog issue land in the same column. Work is
 taken out of the pick pool by `Blocked`, not by being left out of `Ready`.
 
 Every open issue belongs on the board. An issue with no Status is invisible
-to the board view, so put new issues in `Todo` unless they are genuinely
+to the board view, so put new issues in `Backlog` unless they are genuinely
 blocked, in which case put them in `Blocked`.
 
 ### Board Automation
@@ -209,7 +209,7 @@ Placement is handled by the project's own built-in workflows, configured at
 | Built-in workflow      | Configuration                          |
 | ---------------------- | -------------------------------------- |
 | Auto-add to project    | `Subverting-complexity/Telltale`, filter `is:issue,is:open` |
-| Item added to project  | Set `Status` to `Todo`                 |
+| Item added to project  | Set `Status` to `Backlog`              |
 
 These cannot be created or enabled through the API. GraphQL exposes
 `deleteProjectV2Workflow` but no create or update mutation, so changing them
@@ -226,7 +226,7 @@ Two consequences worth knowing:
 
 - Only issues are auto-added. Pull requests stay off the board deliberately,
   because PR state is tracked by the review labels in `docs/review.config.md`.
-- `Item added to project` stamps `Todo` on **every** add, including an issue
+- `Item added to project` stamps `Backlog` on **every** add, including an issue
   added by hand that is already in progress. Set the real Status after
   adding one manually.
 
